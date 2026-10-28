@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.2.4 - 2026-10-28
+- Badges stay inside the scene area; they no longer draw over open panels.
+
 ## 0.2.3 - 2026-10-28
 - Badges sit directly above their units (projection offset fix).
 

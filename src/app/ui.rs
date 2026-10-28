@@ -655,8 +655,19 @@ fn draw_badges(ctx: &egui::Context, store: &Store) {
     }
     let t = ctx.input(|i| i.time) as f32;
     let pulse = 0.55 + 0.45 * (t * 3.0).sin().abs();
-    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("badges")));
+    let vr = ctx.viewport_rect();
+    let (l, t, r, btm) = store.scene_insets.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let scene = egui::Rect::from_min_max(
+        egui::pos2(vr.min.x + l, vr.min.y + t),
+        egui::pos2(vr.max.x - r, vr.max.y - btm),
+    );
+    let painter = ctx
+        .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("badges")))
+        .with_clip_rect(scene);
     for b in &store.badges {
+        if !scene.contains(egui::pos2(b.x, b.y)) {
+            continue;
+        }
         let (glyph, color, label) = match b.kind {
             BadgeKind::Done => ("!", egui::Color32::from_rgb(255, 215, 90), "done"),
             BadgeKind::Waiting => ("💬", ACCENT, "awaiting your orders"),
