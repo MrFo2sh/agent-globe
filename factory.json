@@ -1,0 +1,24 @@
+{
+  "name": "agent-globe",
+  "one_liner": "A GPU-rendered 3D constellation of every coding-agent session, its subagents, and their terminal executions, live.",
+  "blueprint": "desktop-app",
+  "version": "0.1.0",
+  "check": [
+    "lint",
+    "typecheck",
+    "test",
+    "build",
+    "audit"
+  ],
+  "stopOnFail": true,
+  "commands": {
+    "install": "cargo fetch",
+    "lint": "cargo fmt --check && cargo clippy --all-targets -- -D warnings",
+    "typecheck": "cargo check --all-targets",
+    "test": "cargo test",
+    "build": "cargo build --release",
+    "audit": "cargo audit",
+    "run": "cargo run --release",
+    "release": "cargo build --release && powershell -NoProfile -Command \"New-Item -ItemType Directory -Force $env:LOCALAPPDATA/Programs/agent-globe | Out-Null; Copy-Item target/release/agent-globe.exe $env:LOCALAPPDATA/Programs/agent-globe/agent-globe.exe -Force\""
+  }
+}

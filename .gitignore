@@ -1,0 +1,4 @@
+target/
+.factory/logs/
+.factory/last-check.json
+*.log

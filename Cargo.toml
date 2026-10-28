@@ -1,0 +1,39 @@
+[package]
+name = "agent-globe"
+version = "0.1.0"
+edition = "2024"
+description = "GPU-rendered 3D globe of coding-agent sessions, subagents and their terminal executions, live."
+license = "MIT"
+
+[lib]
+name = "agent_globe"
+path = "src/lib.rs"
+
+[[bin]]
+name = "agent-globe"
+path = "src/main.rs"
+
+[dependencies]
+bevy = "0.20"
+bevy_egui = "0.43"
+bevy_panorbit_camera = { version = "0.36", features = ["bevy_egui"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+crossbeam-channel = "0.5"
+tiny_http = "0.12"
+anyhow = "1"
+thiserror = "2"
+dirs = "6"
+clap = { version = "4", features = ["derive"] }
+chrono = "0.4"
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

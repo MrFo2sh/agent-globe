@@ -1,0 +1,8 @@
+# cargo-audit exceptions. Each entry needs a reason and a re-check trigger.
+[advisories]
+ignore = [
+  # RUSTSEC-2026-0344: decompression bomb in ruzstd 0.8.x. Pulled in by bevy_image (non-optional).
+  # This app never loads zstd-compressed textures (no .ktx2 assets) and accepts no compressed input,
+  # so the vulnerable code path is unreachable. Re-check when Bevy depends on ruzstd >= 0.9.1.
+  "RUSTSEC-2026-0344",
+]
