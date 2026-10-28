@@ -477,6 +477,27 @@ pub fn draw(
                 ui.label(egui::RichText::new("RADIO").small().color(DIM));
                 ui.checkbox(&mut settings.sound, "sound on");
                 ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).text("volume"));
+                let current = if settings.audio_device.is_empty() {
+                    "system default".to_string()
+                } else {
+                    settings.audio_device.clone()
+                };
+                egui::ComboBox::from_label("output device")
+                    .selected_text(current)
+                    .show_ui(ui, |ui| {
+                        if ui
+                            .selectable_label(settings.audio_device.is_empty(), "system default")
+                            .clicked()
+                        {
+                            settings.audio_device.clear();
+                        }
+                        for name in sounds.device_names() {
+                            if ui.selectable_label(settings.audio_device == name, &name).clicked() {
+                                settings.audio_device = name;
+                            }
+                        }
+                    });
+                ui.label(egui::RichText::new(sounds.status()).small().color(DIM));
                 ui.checkbox(&mut settings.tool_blips, "blip on every tool call");
                 ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new("test:").small().color(DIM));

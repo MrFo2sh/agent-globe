@@ -368,10 +368,8 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
                             });
                         }
                         Some("text") if !is_meta => {
-                            if let Some(t) = b["text"].as_str()
-                                && !t.starts_with('<')
-                            {
-                                text.push_str(t);
+                            if let Some(t) = b["text"].as_str() {
+                                text.push_str(&strip_tag_blocks(t));
                             }
                         }
                         _ => {}
@@ -408,6 +406,33 @@ pub fn narrator_line(text: &str) -> String {
     truncate(cleaned[..end].trim(), 180)
 }
 
+/// Remove harness-injected `<tag>...</tag>` blocks (system reminders, IDE selection) so the
+/// human's own words remain. Unclosed tags are left alone.
+pub fn strip_tag_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('<') {
+        let after = &rest[start + 1..];
+        let name_end = after
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-' || c == '_'))
+            .unwrap_or(after.len());
+        let name = &after[..name_end];
+        let close = format!("</{name}>");
+        if !name.is_empty()
+            && after[name_end..].starts_with(['>', ' '])
+            && let Some(end) = rest[start..].find(&close)
+        {
+            out.push_str(&rest[..start]);
+            rest = &rest[start + end + close.len()..];
+        } else {
+            out.push_str(&rest[..=start]);
+            rest = &rest[start + 1..];
+        }
+    }
+    out.push_str(rest);
+    out.trim().to_string()
+}
+
 fn user_message(session_id: &str, agent: &str, text: &str, at: Millis) -> Event {
     Event::Message {
         session_id: session_id.to_string(),
@@ -433,6 +458,16 @@ mod tests {
         assert_eq!(summarize_tool("Read", &v), "C:/x/y.rs");
         let v = serde_json::json!({"weird": 1});
         assert!(summarize_tool("Other", &v).contains("weird"));
+    }
+
+    #[test]
+    fn strips_injected_tag_blocks_but_keeps_the_prompt() {
+        let t = "<system-reminder>
+noise
+</system-reminder>
+test input <b>bold</b> 1 < 2";
+        assert_eq!(strip_tag_blocks(t), "test input  1 < 2");
+        assert_eq!(strip_tag_blocks("plain"), "plain");
     }
 
     #[test]

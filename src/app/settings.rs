@@ -23,6 +23,8 @@ pub struct Settings {
     pub tool_blips: bool,
     /// Narrator line under each tool call.
     pub narrator: bool,
+    /// Output device name; empty = system default.
+    pub audio_device: String,
 }
 
 impl Default for Settings {
@@ -40,6 +42,7 @@ impl Default for Settings {
             volume: 0.7,
             tool_blips: false,
             narrator: true,
+            audio_device: String::new(),
         }
     }
 }

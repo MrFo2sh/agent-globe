@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.1 - 2026-10-28
+- Radio plays through its own audio sink with an output-device picker in settings. Bevy's audio
+  only ever used the Windows default device, which on multi-device machines can be a monitor.
+- User prompts wrapped in harness tags (system reminders, IDE selection) are no longer dropped, so
+  the "consider it done" cue fires on every prompt.
+
 ## 0.2.0 - 2026-10-28 — Army Men edition
 - Green plastic soldiers: capsule units with helmets on oval bases, a commander with twin halos,
   sand orbit rings, tracer rounds along busy beams, warm key light. Stencil headings (Black Ops One).
