@@ -16,14 +16,13 @@ running app themselves while you work: odd clicks in screenshots may be theirs.
 | `src/data/model.rs` | `Event` enum, `Session::apply` reducer, `Agent` (calls, tokens, artifacts, `turn_log`, `last_said`), `ToolCall`, `Turn`, `Throttle`, `snippet`. |
 | `src/data/artifacts.rs` | URLs, files, images, commits, test results pulled out of tool output. |
 | `src/data/files.rs` | Hot files of a session (`hot_files`) for the file ring. |
-| `src/data/cost.rs` | Price table per model family; `cost_usd`, `fmt_usd`. |
 | `src/data/layout.rs` | Orbital layout: `ring_radius`, `orbit_point`, `layout`, `curve`. |
 | `src/data/hooks.rs` | Events from Claude Code hooks posted to `/hooks/claude`. |
 | `src/bridge.rs` | Worker threads: scanner, multi-session tailer (`ToWorker::Open/Watch`), HTTP ingest on 127.0.0.1:4711 (`/events`, `/hooks/claude`, `/approvals` blocking hook, `/health`). |
-| `src/app/state.rs` | `Store` resource: sessions, watched set, attention queue, badges, approvals, viewer, queries; `drain_bridge`, `watch_stalls`, pattern alarms, fuel-gauge math (`spent_between`, `capacity_at`). |
+| `src/app/state.rs` | `Store` resource: sessions, watched set, attention queue, badges, approvals, viewer, queries; `drain_bridge`, `watch_stalls`, pattern alarms, radio triggers (`call_kind`). No cost anywhere: the owner asked for it to go. |
 | `src/app/scene.rs` | 3D: units keyed by (session, agent), rings, satellites, halos, dust, file ring, beams, badge projection, click/hover observers. |
 | `src/app/camera.rs` | HDR orbit camera, viewport between panels, fly-to, Esc handling. |
-| `src/app/ui.rs` | All egui: HUD, sidebar (Needs-You queue, sessions tree, compact strip), unit panel (artifact shelf, changes, turns, history search), hover cards, settings, debrief, badges, bubbles, approvals, viewer, file labels. ~2,500 lines; search for `fn draw_` and `fn agent_panel`. |
+| `src/app/ui.rs` | All egui: HUD, sidebar (Needs-You queue, sessions tree, compact strip), unit panel (artifact shelf, changes, turns, history search), hover cards, settings, debrief, badges, bubbles, approvals, image viewer (images only; other files open in VS Code), file labels. ~2,500 lines; search for `fn draw_` and `fn agent_panel`. |
 | `src/app/sounds.rs` | Radio voice lines (embedded WAVs), own rodio sink with device picker. |
 | `src/app/alerts.rs` | Tray icon moods, optional Windows toasts. |
 | `src/app/hotkeys.rs` | Global Ctrl+Alt+Y / Ctrl+Alt+N approval hotkeys (Win32 `RegisterHotKey` on its own thread). |

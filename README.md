@@ -11,17 +11,17 @@ soldiers on sand rings, a radio commander voice, stencil headings. No web view, 
 
 Put VS Code with your agent on one screen and this on the other.
 
-## What it shows (0.7)
+## What it shows (0.8)
 
 - Every session modified in the last 30 minutes is tailed at once; other active sessions orbit as
   satellites, and a "Needs you" queue lists approvals, failures, waiting commanders (with the
   question they asked) and stalls across all of them.
-- Unit panel: artifacts shelf (URLs, files, images, commits, test results), files changed with an
-  in-app diff, tool calls grouped under each of your prompts with calls, units, time and cost per
-  turn, and a history search.
+- Unit panel: artifacts shelf (URLs, files, images, commits, test results), files changed, tool
+  calls grouped under each of your prompts with calls, units and time per turn, and a history
+  search. Images open in the app; every other file opens in VS Code.
 - File ring: the session's hottest files on an outer orbit with beams from the units touching them.
-- Fuel gauge for Pro / Max plans, learned from Claude Code's own throttle records; API billing mode
-  shows list-price spend instead.
+- Radio: twenty spoken lines that let you follow a session by ear, from "Scouting ahead" to
+  "We have casualties!" and "Need your input, commander". Settings list what each one means.
 - Approvals from the globe (PreToolUse hook) with global Ctrl+Alt+Y / Ctrl+Alt+N hotkeys; 🖥 jumps
   to the session's VS Code window; radio voice lines, badges, progress rings, debrief coach.
 
