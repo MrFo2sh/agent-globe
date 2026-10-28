@@ -596,7 +596,7 @@ pub fn draw(
             ui.separator();
             ui.label(
                 egui::RichText::new(if compact {
-                    "drag · scroll · R home · F"
+                    "drag · scroll · R home"
                 } else {
                     "drag rotate · scroll zoom · right-drag pan · click unit or file · R home"
                 })

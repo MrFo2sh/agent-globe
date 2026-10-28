@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.7.1 - 2026-10-28
+- Compact status hint no longer mentions the removed F shortcut.
+
 ## 0.7.0 - 2026-10-28
 - The question in the bubble: when a commander waits for you, its badge, the Needs-You row, the hover card and the satellite card show what it actually said or asked, not just "awaiting your orders".
 - Fuel gauge for Pro / Max plans: Claude Code's rate-limit refusals in the transcripts (status, reset time) become Throttle events. The app learns what a five-hour window holds from the spend at the moment of each throttle, then shows "⛽ 62% · empty ~16:40" from the current window's spend and the pace of the last half hour. While throttled it shows the reset time in red. A throttle raises a toast and the alarm, for any watched session. Settings show the learned size with a "forget" button.
