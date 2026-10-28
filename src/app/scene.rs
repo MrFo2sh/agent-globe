@@ -13,6 +13,7 @@ use std::f32::consts::TAU;
 
 #[derive(Component)]
 pub struct NodeAgent {
+    pub session: String,
     pub id: String,
 }
 
@@ -26,6 +27,7 @@ pub struct Orbit {
 /// A rotating ring around a node. Node halos show state; core halos are always on.
 #[derive(Component)]
 pub struct Halo {
+    pub session: String,
     pub agent_id: String,
     pub tilt: f32,
     pub speed: f32,
@@ -34,6 +36,7 @@ pub struct Halo {
 
 #[derive(Component)]
 pub struct OrbitRing {
+    pub session: String,
     pub depth: u32,
 }
 
@@ -48,22 +51,41 @@ pub struct Dust {
 #[derive(Component)]
 pub struct Star;
 
+/// Unit entities keyed by (session id, agent id).
 #[derive(Resource, Default)]
-pub struct NodeEntities(pub HashMap<String, Entity>);
+pub struct NodeEntities(pub HashMap<(String, String), Entity>);
 
+/// Ring entities keyed by (session id, depth).
 #[derive(Resource, Default)]
-pub struct RingEntities(pub HashMap<u32, Entity>);
+pub struct RingEntities(pub HashMap<(String, u32), Entity>);
 
-#[derive(Resource, Default)]
-pub struct CurrentLayout {
-    pub layout: Option<Layout>,
-    pub session_id: Option<String>,
+/// Where one shown session sits in the world and how it is laid out.
+pub struct SessionScene {
+    pub layout: Layout,
     pub agent_count: usize,
+    pub offset: Vec3,
+    pub scale: f32,
+    dirty: bool,
 }
 
-/// Where every node is right now, after orbit animation. Links, pulses and the camera read this.
 #[derive(Resource, Default)]
-pub struct NodeWorldPos(pub HashMap<String, Vec3>);
+pub struct SceneLayout {
+    pub per: HashMap<String, SessionScene>,
+}
+
+/// World position of every unit, keyed by (session id, agent id).
+#[derive(Resource, Default)]
+pub struct NodeWorldPos(pub HashMap<(String, String), Vec3>);
+
+/// Where the i-th satellite constellation of `count` sits around the current session.
+pub fn satellite_offset(index: usize, count: usize) -> Vec3 {
+    let a = TAU * index as f32 / count.max(1) as f32 + 0.6;
+    Vec3::new(
+        theme::SATELLITE_RADIUS * a.cos(),
+        -0.8,
+        theme::SATELLITE_RADIUS * a.sin(),
+    )
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum MatKey {
@@ -261,11 +283,11 @@ fn is_stalled(store: &Store, agent: &agent_globe::data::model::Agent) -> bool {
         .any(|c| c.ended.is_none() && store.stalled.contains(&c.id))
 }
 
-fn material_for(store: &Store, agent: &agent_globe::data::model::Agent, now: i64) -> MatKey {
-    if store.selected.as_deref() == Some(agent.id.as_str()) {
+fn material_for(store: &Store, agent: &agent_globe::data::model::Agent, now: i64, is_current: bool) -> MatKey {
+    if is_current && store.selected.as_deref() == Some(agent.id.as_str()) {
         return MatKey::Selected;
     }
-    if store.hovered.as_deref() == Some(agent.id.as_str()) {
+    if is_current && store.hovered.as_deref() == Some(agent.id.as_str()) {
         return MatKey::Hover;
     }
     if is_stalled(store, agent) {
@@ -288,150 +310,188 @@ fn material_for(store: &Store, agent: &agent_globe::data::model::Agent, now: i64
 pub fn sync_nodes(
     mut commands: Commands,
     mut store: ResMut<Store>,
+    settings: Res<Settings>,
     assets: Res<SceneAssets>,
     mut entities: ResMut<NodeEntities>,
     mut rings: ResMut<RingEntities>,
-    mut current: ResMut<CurrentLayout>,
+    mut scene: ResMut<SceneLayout>,
     mut nodes: Query<(&NodeAgent, &mut Orbit, &mut MeshMaterial3d<StandardMaterial>)>,
 ) {
-    let Some(session) = store.current_session() else {
-        for (_, e) in entities.0.drain() {
-            commands.entity(e).despawn();
-        }
-        for (_, e) in rings.0.drain() {
-            commands.entity(e).despawn();
-        }
-        current.layout = None;
-        current.session_id = None;
-        return;
-    };
+    let now = now_millis();
+    let shown = store.shown_sessions(now, settings.satellites);
+    let dirty = store.layout_dirty;
 
-    let switched = current.session_id.as_deref() != Some(session.id.as_str());
-    if switched {
-        for (_, e) in entities.0.drain() {
-            commands.entity(e).despawn();
+    // Sessions that left the scene take their units and rings with them.
+    entities.0.retain(|(sid, _), e| {
+        let keep = shown.contains(sid);
+        if !keep {
+            commands.entity(*e).despawn();
         }
-        for (_, e) in rings.0.drain() {
-            commands.entity(e).despawn();
+        keep
+    });
+    rings.0.retain(|(sid, _), e| {
+        let keep = shown.contains(sid);
+        if !keep {
+            commands.entity(*e).despawn();
         }
-        current.session_id = Some(session.id.clone());
-    }
-    let relayout = store.layout_dirty || switched || current.agent_count != session.agents.len();
-    if relayout {
-        current.layout = Some(layout::layout(session));
-        current.agent_count = session.agents.len();
-    }
-    let Some(lay) = current.layout.as_ref() else { return };
+        keep
+    });
+    scene.per.retain(|sid, _| shown.contains(sid));
 
-    for depth in 1..=lay.max_depth {
-        if rings.0.contains_key(&depth) {
+    let satellites = shown.len().saturating_sub(1);
+    for (i, sid) in shown.iter().enumerate() {
+        let Some(session) = store.sessions.get(sid) else {
             continue;
-        }
-        let e = commands
-            .spawn((
-                OrbitRing { depth },
-                Transform::from_translation(Vec3::new(0.0, layout::ring_height(depth), 0.0)),
-                Visibility::default(),
-                Pickable::IGNORE,
-            ))
-            .id();
-        rings.0.insert(depth, e);
-    }
-
-    for n in &lay.nodes {
-        if entities.0.contains_key(&n.agent_id) {
-            continue;
-        }
-        let is_core = n.depth == 0;
-        let (body, base, base_y, helmet_y) = if is_core {
-            (
-                assets.commander_mesh.clone(),
-                assets.commander_base_mesh.clone(),
-                -0.56,
-                0.62,
-            )
-        } else {
-            (assets.soldier_mesh.clone(), assets.base_mesh.clone(), -0.30, 0.34)
         };
-        // New units deploy from the commander and march out to their ring.
-        let mut ec = commands.spawn((
-            Mesh3d(body),
-            MeshMaterial3d(assets.materials[&MatKey::Idle].clone()),
-            Transform::from_translation(Vec3::ZERO).with_scale(Vec3::splat(0.01)),
-            NodeAgent { id: n.agent_id.clone() },
-            Orbit {
-                depth: n.depth,
-                base_angle: n.angle,
-            },
-        ));
-        ec.observe(on_click).observe(on_over).observe(on_out);
-        let id = n.agent_id.clone();
-        ec.with_children(|p| {
-            p.spawn((
-                Mesh3d(base),
-                MeshMaterial3d(assets.base_material.clone()),
-                Transform::from_xyz(0.0, base_y, 0.0),
-                Pickable::IGNORE,
+        let (offset, scale) = if i == 0 {
+            (Vec3::ZERO, 1.0)
+        } else {
+            (satellite_offset(i - 1, satellites), theme::SATELLITE_SCALE)
+        };
+        let entry = scene.per.entry(sid.clone()).or_insert_with(|| SessionScene {
+            layout: layout::layout(session),
+            agent_count: session.agents.len(),
+            offset,
+            scale,
+            dirty: true,
+        });
+        if dirty || entry.agent_count != session.agents.len() {
+            entry.layout = layout::layout(session);
+            entry.agent_count = session.agents.len();
+            entry.dirty = true;
+        }
+        entry.offset = offset;
+        entry.scale = scale;
+
+        for depth in 1..=entry.layout.max_depth {
+            let key = (sid.clone(), depth);
+            if rings.0.contains_key(&key) {
+                continue;
+            }
+            let e = commands
+                .spawn((
+                    OrbitRing {
+                        session: sid.clone(),
+                        depth,
+                    },
+                    Transform::from_translation(offset + Vec3::Y * layout::ring_height(depth) * scale)
+                        .with_scale(Vec3::splat(scale)),
+                    Visibility::default(),
+                    Pickable::IGNORE,
+                ))
+                .id();
+            rings.0.insert(key, e);
+        }
+
+        for n in &entry.layout.nodes {
+            let key = (sid.clone(), n.agent_id.clone());
+            if entities.0.contains_key(&key) {
+                continue;
+            }
+            let is_core = n.depth == 0;
+            let (body, base, base_y, helmet_y) = if is_core {
+                (
+                    assets.commander_mesh.clone(),
+                    assets.commander_base_mesh.clone(),
+                    -0.56,
+                    0.62,
+                )
+            } else {
+                (assets.soldier_mesh.clone(), assets.base_mesh.clone(), -0.30, 0.34)
+            };
+            // New units deploy from their commander and march out to their ring.
+            let mut ec = commands.spawn((
+                Mesh3d(body),
+                MeshMaterial3d(assets.materials[&MatKey::Idle].clone()),
+                Transform::from_translation(offset).with_scale(Vec3::splat(0.01)),
+                NodeAgent {
+                    session: sid.clone(),
+                    id: n.agent_id.clone(),
+                },
+                Orbit {
+                    depth: n.depth,
+                    base_angle: n.angle,
+                },
             ));
-            if !is_core {
+            ec.observe(on_click).observe(on_over).observe(on_out);
+            let id = n.agent_id.clone();
+            let session_id = sid.clone();
+            ec.with_children(|p| {
                 p.spawn((
-                    Mesh3d(assets.helmet_mesh.clone()),
-                    MeshMaterial3d(assets.materials[&MatKey::Idle].clone()),
-                    Transform::from_xyz(0.0, helmet_y, 0.0).with_scale(Vec3::new(1.15, 0.7, 1.15)),
+                    Mesh3d(base),
+                    MeshMaterial3d(assets.base_material.clone()),
+                    Transform::from_xyz(0.0, base_y, 0.0),
                     Pickable::IGNORE,
                 ));
-            }
-            if is_core {
-                for (tilt, speed) in [(0.55_f32, 0.45_f32), (-0.55, -0.35)] {
+                if !is_core {
                     p.spawn((
-                        Mesh3d(assets.core_halo_mesh.clone()),
-                        MeshMaterial3d(assets.halos[&HaloKey::Core].clone()),
-                        Transform::from_rotation(Quat::from_rotation_x(tilt)),
+                        Mesh3d(assets.helmet_mesh.clone()),
+                        MeshMaterial3d(assets.materials[&MatKey::Idle].clone()),
+                        Transform::from_xyz(0.0, helmet_y, 0.0).with_scale(Vec3::new(1.15, 0.7, 1.15)),
+                        Pickable::IGNORE,
+                    ));
+                }
+                if is_core {
+                    for (tilt, speed) in [(0.55_f32, 0.45_f32), (-0.55, -0.35)] {
+                        p.spawn((
+                            Mesh3d(assets.core_halo_mesh.clone()),
+                            MeshMaterial3d(assets.halos[&HaloKey::Core].clone()),
+                            Transform::from_rotation(Quat::from_rotation_x(tilt)),
+                            Halo {
+                                session: session_id.clone(),
+                                agent_id: id.clone(),
+                                tilt,
+                                speed,
+                                is_core: true,
+                            },
+                            Pickable::IGNORE,
+                        ));
+                    }
+                } else {
+                    p.spawn((
+                        Mesh3d(assets.halo_mesh.clone()),
+                        MeshMaterial3d(assets.halos[&HaloKey::Active].clone()),
+                        Transform::from_rotation(Quat::from_rotation_x(1.2)),
+                        Visibility::Hidden,
                         Halo {
+                            session: session_id.clone(),
                             agent_id: id.clone(),
-                            tilt,
-                            speed,
-                            is_core: true,
+                            tilt: 1.2,
+                            speed: 1.6,
+                            is_core: false,
                         },
                         Pickable::IGNORE,
                     ));
                 }
-            } else {
-                p.spawn((
-                    Mesh3d(assets.halo_mesh.clone()),
-                    MeshMaterial3d(assets.halos[&HaloKey::Active].clone()),
-                    Transform::from_rotation(Quat::from_rotation_x(1.2)),
-                    Visibility::Hidden,
-                    Halo {
-                        agent_id: id.clone(),
-                        tilt: 1.2,
-                        speed: 1.6,
-                        is_core: false,
-                    },
-                    Pickable::IGNORE,
-                ));
-            }
-        });
-        entities.0.insert(n.agent_id.clone(), ec.id());
+            });
+            entities.0.insert(key, ec.id());
+        }
     }
 
-    let now = now_millis();
     for (node, mut orbit, mut mat) in nodes.iter_mut() {
-        if relayout && let Some(n) = lay.node(&node.id) {
+        let Some(entry) = scene.per.get(&node.session) else {
+            continue;
+        };
+        if entry.dirty
+            && let Some(n) = entry.layout.node(&node.id)
+        {
             orbit.depth = n.depth;
             orbit.base_angle = n.angle;
         }
-        if let Some(agent) = session.agent(&node.id) {
-            let handle = &assets.materials[&material_for(&store, agent, now)];
+        let is_current = store.current.as_deref() == Some(node.session.as_str());
+        if let Some(agent) = store.sessions.get(&node.session).and_then(|s| s.agent(&node.id)) {
+            let handle = &assets.materials[&material_for(&store, agent, now, is_current)];
             if mat.0 != *handle {
                 mat.0 = handle.clone();
             }
         }
     }
+    for e in scene.per.values_mut() {
+        e.dirty = false;
+    }
     store.layout_dirty = false;
 }
 
-/// Helmets take the body's material so the whole figure changes colour together.
 #[allow(clippy::type_complexity)]
 pub fn sync_helmets(
     bodies: Query<
@@ -480,44 +540,59 @@ fn orbit_angle(base: f32, depth: u32, t: f32, speed: f32) -> f32 {
 }
 
 /// March nodes toward their orbit position, bob the busy ones, publish world positions.
+#[allow(clippy::type_complexity)]
 pub fn animate_nodes(
     time: Res<Time>,
     store: Res<Store>,
     settings: Res<Settings>,
+    scene: Res<SceneLayout>,
     mut world_pos: ResMut<NodeWorldPos>,
     mut nodes: Query<(&NodeAgent, &Orbit, &mut Transform)>,
+    mut rings: Query<(&OrbitRing, &mut Transform), Without<NodeAgent>>,
 ) {
-    let Some(session) = store.current_session() else { return };
     let now = now_millis();
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
     world_pos.0.clear();
     for (node, orbit, mut tf) in nodes.iter_mut() {
+        let Some(sc) = scene.per.get(&node.session) else {
+            continue;
+        };
         let angle = orbit_angle(orbit.base_angle, orbit.depth, t, settings.drift_speed);
-        let mut target = Vec3::from(layout::orbit_point(orbit.depth, angle));
-        let busy = session
-            .agent(&node.id)
+        let mut target = sc.offset + Vec3::from(layout::orbit_point(orbit.depth, angle)) * sc.scale;
+        let busy = store
+            .sessions
+            .get(&node.session)
+            .and_then(|s| s.agent(&node.id))
             .map(|a| a.status(now, theme::ACTIVE_WINDOW_MS) == Status::Active && a.has_open_call())
             .unwrap_or(false);
         if busy {
-            // A working soldier bounces on the spot.
-            target.y += 0.12 * (t * 7.0 + orbit.base_angle).sin().abs();
+            target.y += 0.12 * sc.scale * (t * 7.0 + orbit.base_angle).sin().abs();
         }
         tf.translation = tf.translation.lerp(target, (dt * 4.0).min(1.0));
-        let s = tf.scale.x + (1.0 - tf.scale.x) * (dt * 5.0).min(1.0);
+        let s = tf.scale.x + (sc.scale - tf.scale.x) * (dt * 5.0).min(1.0);
         tf.scale = Vec3::splat(s);
-        // Units face along their ring; the commander slowly turns to survey the field.
         let facing = if orbit.depth == 0 {
             t * 0.2
         } else {
             -angle + std::f32::consts::FRAC_PI_2
         };
         tf.rotation = Quat::from_rotation_y(facing);
-        world_pos.0.insert(node.id.clone(), tf.translation);
+        world_pos
+            .0
+            .insert((node.session.clone(), node.id.clone()), tf.translation);
+    }
+    for (ring, mut tf) in rings.iter_mut() {
+        let Some(sc) = scene.per.get(&ring.session) else {
+            continue;
+        };
+        let target = sc.offset + Vec3::Y * layout::ring_height(ring.depth) * sc.scale;
+        tf.translation = tf.translation.lerp(target, (dt * 4.0).min(1.0));
+        let s = tf.scale.x + (sc.scale - tf.scale.x) * (dt * 5.0).min(1.0);
+        tf.scale = Vec3::splat(s);
     }
 }
 
-/// Halos spin; node halos show selection, hover, stall, or activity; core halos are always on.
 pub fn update_halos(
     time: Res<Time>,
     store: Res<Store>,
@@ -533,7 +608,6 @@ pub fn update_halos(
 ) {
     let t = time.elapsed_secs();
     let now = now_millis();
-    let session = store.current_session();
     for (halo, child_of, mut tf, mut vis, mut mat) in halos.iter_mut() {
         let parent_rot = parents
             .get(child_of.parent())
@@ -543,10 +617,11 @@ pub fn update_halos(
         if halo.is_core {
             continue;
         }
-        let agent = session.and_then(|s| s.agent(&halo.agent_id));
-        let key = if store.selected.as_deref() == Some(halo.agent_id.as_str()) {
+        let is_current = store.current.as_deref() == Some(halo.session.as_str());
+        let agent = store.sessions.get(&halo.session).and_then(|s| s.agent(&halo.agent_id));
+        let key = if is_current && store.selected.as_deref() == Some(halo.agent_id.as_str()) {
             Some(HaloKey::Selected)
-        } else if store.hovered.as_deref() == Some(halo.agent_id.as_str()) {
+        } else if is_current && store.hovered.as_deref() == Some(halo.agent_id.as_str()) {
             Some(HaloKey::Hover)
         } else if agent.is_some_and(|a| is_stalled(&store, a)) {
             Some(HaloKey::Stalled)
@@ -592,42 +667,49 @@ pub fn animate_dust(time: Res<Time>, settings: Res<Settings>, mut dust: Query<(&
 /// Radio beams between commander and units, and tracer rounds down busy beams.
 pub fn draw_links(mut gizmos: Gizmos, time: Res<Time>, store: Res<Store>, world_pos: Res<NodeWorldPos>) {
     let t = time.elapsed_secs();
-    let Some(session) = store.current_session() else { return };
     let now = now_millis();
-    for agent in &session.agents {
-        let Some(parent) = agent.parent.as_deref() else {
-            continue;
-        };
-        let (Some(&a), Some(&b)) = (world_pos.0.get(parent), world_pos.0.get(&agent.id)) else {
-            continue;
-        };
-        let pts = layout::curve(a.into(), b.into(), 1.2, 32);
-        let status = agent.status(now, theme::ACTIVE_WINDOW_MS);
-        let color = match status {
-            Status::Active => theme::LINK_ACTIVE,
-            Status::Idle => theme::LINK,
-            Status::Done => theme::LINK_DONE,
-        };
-        let v: Vec<Vec3> = pts.iter().map(|p| Vec3::from(*p)).collect();
-        gizmos.linestrip(v.clone(), color);
+    for session in store.sessions.values() {
+        for agent in &session.agents {
+            let Some(parent) = agent.parent.as_deref() else {
+                continue;
+            };
+            let (Some(&a), Some(&b)) = (
+                world_pos.0.get(&(session.id.clone(), parent.to_string())),
+                world_pos.0.get(&(session.id.clone(), agent.id.clone())),
+            ) else {
+                continue;
+            };
+            let lift = if store.current.as_deref() == Some(session.id.as_str()) {
+                1.2
+            } else {
+                0.6
+            };
+            let pts = layout::curve(a.into(), b.into(), lift, 32);
+            let status = agent.status(now, theme::ACTIVE_WINDOW_MS);
+            let color = match status {
+                Status::Active => theme::LINK_ACTIVE,
+                Status::Idle => theme::LINK,
+                Status::Done => theme::LINK_DONE,
+            };
+            let v: Vec<Vec3> = pts.iter().map(|p| Vec3::from(*p)).collect();
+            gizmos.linestrip(v.clone(), color);
 
-        if status == Status::Active && agent.has_open_call() {
-            let n = v.len();
-            // Two tracers per beam, spaced apart.
-            for k in 0..2 {
-                let phase = (t * 0.9 + agent.order as f32 * 0.37 + k as f32 * 0.5).fract();
-                let head = ((phase * (n - 1) as f32) as usize).min(n - 1);
-                let tail = head.saturating_sub(4);
-                if head > tail {
-                    gizmos.linestrip(v[tail..=head].to_vec(), theme::PULSE);
-                    gizmos.sphere(Isometry3d::from_translation(v[head]), 0.07, theme::PULSE);
+            if status == Status::Active && agent.has_open_call() {
+                let n = v.len();
+                for k in 0..2 {
+                    let phase = (t * 0.9 + agent.order as f32 * 0.37 + k as f32 * 0.5).fract();
+                    let head = ((phase * (n - 1) as f32) as usize).min(n - 1);
+                    let tail = head.saturating_sub(4);
+                    if head > tail {
+                        gizmos.linestrip(v[tail..=head].to_vec(), theme::PULSE);
+                        gizmos.sphere(Isometry3d::from_translation(v[head]), 0.07, theme::PULSE);
+                    }
                 }
             }
         }
     }
 }
 
-/// Project each unit's "above the head" point to window coordinates and decide its badge.
 pub fn project_badges(
     mut store: ResMut<Store>,
     settings: Res<Settings>,
@@ -637,63 +719,118 @@ pub fn project_badges(
     let Ok((cam, cam_tf)) = cams.single() else { return };
     let zoom = settings.ui_scale.max(0.1);
     let mut badges = Vec::new();
+    let mut satellites = Vec::new();
     let mut unit_screen = std::collections::HashMap::new();
-    if let Some(session) = store.current_session() {
-        for (node, tf) in &nodes {
-            let Some(agent) = session.agent(&node.id) else { continue };
-            if let Ok(p) = cam.world_to_viewport(cam_tf, tf.translation()) {
+    for (node, tf) in &nodes {
+        let Some(session) = store.sessions.get(&node.session) else {
+            continue;
+        };
+        let Some(agent) = session.agent(&node.id) else { continue };
+        let is_current = store.current.as_deref() == Some(session.id.as_str());
+        let scale = tf.scale().x.max(0.05);
+        if let Ok(p) = cam.world_to_viewport(cam_tf, tf.translation()) {
+            if is_current {
                 unit_screen.insert(agent.id.clone(), (p.x / zoom, p.y / zoom));
-            }
-            let pending_approval = store
-                .approvals
-                .iter()
-                .any(|a| a.session_id == session.id && a.agent_id == agent.id);
-            let kind = if pending_approval {
-                Some(super::state::BadgeKind::Approval)
-            } else if agent.last_call_failed() && !store.acked.contains(&format!("err:{}", agent.id)) {
-                Some(super::state::BadgeKind::Error)
-            } else if agent.depth == 0 && agent.waiting_for_user {
-                Some(super::state::BadgeKind::Waiting)
-            } else if agent.depth > 0 && agent.ended.is_some() && !store.acked.contains(&format!("done:{}", agent.id)) {
-                Some(super::state::BadgeKind::Done)
-            } else {
-                None
-            };
-            let Some(kind) = kind else { continue };
-            let head = tf.translation() + Vec3::Y * if agent.depth == 0 { 1.05 } else { 0.62 };
-            if let Ok(p) = cam.world_to_viewport(cam_tf, head) {
-                badges.push(super::state::Badge {
-                    agent_id: agent.id.clone(),
-                    kind,
+            } else if agent.depth == 0 {
+                satellites.push(super::state::Satellite {
+                    session_id: session.id.clone(),
                     x: p.x / zoom,
                     y: p.y / zoom,
                 });
             }
         }
+        let pending_approval = store
+            .approvals
+            .iter()
+            .any(|a| a.session_id == session.id && a.agent_id == agent.id);
+        let err_key = format!("err:{}:{}", session.id, agent.id);
+        let done_key = format!("done:{}:{}", session.id, agent.id);
+        let kind = if pending_approval {
+            Some(super::state::BadgeKind::Approval)
+        } else if agent.last_call_failed() && !store.acked.contains(&err_key) {
+            Some(super::state::BadgeKind::Error)
+        } else if agent
+            .calls
+            .iter()
+            .any(|c| c.ended.is_none() && store.stalled.contains(&c.id))
+        {
+            Some(super::state::BadgeKind::Stalled)
+        } else if agent.depth == 0 && agent.waiting_for_user {
+            Some(super::state::BadgeKind::Waiting)
+        } else if agent.depth > 0 && agent.ended.is_some() && !store.acked.contains(&done_key) {
+            Some(super::state::BadgeKind::Done)
+        } else {
+            None
+        };
+        let Some(kind) = kind else { continue };
+        // Satellites only flag what needs the human; finished units there are not news.
+        if !is_current && kind == super::state::BadgeKind::Done {
+            continue;
+        }
+        let head = tf.translation() + Vec3::Y * scale * if agent.depth == 0 { 1.05 } else { 0.62 };
+        if let Ok(p) = cam.world_to_viewport(cam_tf, head) {
+            badges.push(super::state::Badge {
+                session_id: session.id.clone(),
+                agent_id: agent.id.clone(),
+                kind,
+                x: p.x / zoom,
+                y: p.y / zoom,
+            });
+        }
     }
     store.badges = badges;
+    store.satellites = satellites;
     store.unit_screen = unit_screen;
 }
 
 fn on_click(ev: On<PointerClick>, nodes: Query<&NodeAgent>, mut store: ResMut<Store>) {
     if let Ok(n) = nodes.get(ev.entity) {
-        debug!("click node {}", n.id);
-        store.selected = Some(n.id.clone());
-        store.acked.insert(format!("done:{}", n.id));
-        store.acked.insert(format!("err:{}", n.id));
+        debug!("click node {}/{}", n.session, n.id);
+        // A click in cinematic mode brings the console back.
+        store.hide_ui = false;
+        store.acked.insert(format!("done:{}:{}", n.session, n.id));
+        store.acked.insert(format!("err:{}:{}", n.session, n.id));
+        if store.current.as_deref() == Some(n.session.as_str()) {
+            store.selected = Some(n.id.clone());
+        } else {
+            store.pending_open = Some(n.session.clone());
+            store.pending_select = Some(n.id.clone());
+        }
     }
 }
 
 fn on_over(ev: On<PointerOver>, nodes: Query<&NodeAgent>, mut store: ResMut<Store>) {
     if let Ok(n) = nodes.get(ev.entity) {
-        store.hovered = Some(n.id.clone());
+        if store.current.as_deref() == Some(n.session.as_str()) {
+            store.hovered = Some(n.id.clone());
+        } else {
+            store.hovered_session = Some(n.session.clone());
+        }
     }
 }
 
 fn on_out(ev: On<PointerOut>, nodes: Query<&NodeAgent>, mut store: ResMut<Store>) {
-    if let Ok(n) = nodes.get(ev.entity)
-        && store.hovered.as_deref() == Some(n.id.as_str())
-    {
-        store.hovered = None;
+    if let Ok(n) = nodes.get(ev.entity) {
+        if store.hovered.as_deref() == Some(n.id.as_str()) {
+            store.hovered = None;
+        }
+        if store.hovered_session.as_deref() == Some(n.session.as_str()) {
+            store.hovered_session = None;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn satellites_sit_on_a_ring_around_the_current_session() {
+        let a = satellite_offset(0, 3);
+        let b = satellite_offset(1, 3);
+        let r = theme::SATELLITE_RADIUS;
+        assert!((a.xz().length() - r).abs() < 1e-3);
+        assert!((b.xz().length() - r).abs() < 1e-3);
+        assert!(a.distance(b) > r, "neighbours are well apart");
     }
 }

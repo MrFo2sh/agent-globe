@@ -41,6 +41,45 @@ pub enum BadgeKind {
     Error,
     /// A tool call is blocked on your yes or no.
     Approval,
+    /// A tool call has run past the stall threshold.
+    Stalled,
+}
+
+/// One thing that needs the human, in any watched session.
+#[derive(Clone, Debug)]
+pub struct Attention {
+    pub session_id: String,
+    pub project: String,
+    pub agent_id: String,
+    pub kind: BadgeKind,
+    pub since: i64,
+    pub label: String,
+}
+
+/// Screen position of another session's commander, for its floating label.
+#[derive(Clone, Debug)]
+pub struct Satellite {
+    pub session_id: String,
+    pub x: f32,
+    pub y: f32,
+}
+
+/// Which sessions to tail: the current one plus the most recently modified ones still moving.
+pub fn desired_watch(list: &[SessionRef], current: Option<&str>, now: i64) -> Vec<SessionRef> {
+    let mut out: Vec<SessionRef> = Vec::new();
+    if let Some(c) = current
+        && let Some(s) = list.iter().find(|s| s.id == c)
+    {
+        out.push(s.clone());
+    }
+    let mut recent: Vec<&SessionRef> = list
+        .iter()
+        .filter(|s| now - s.modified < theme::WATCH_RECENT_MS && Some(s.id.as_str()) != current)
+        .collect();
+    recent.sort_by_key(|s| std::cmp::Reverse(s.modified));
+    let room = theme::WATCH_MAX.saturating_sub(out.len());
+    out.extend(recent.into_iter().take(room).cloned());
+    out
 }
 
 /// Images of one unit, browsable with previous / next.
@@ -56,6 +95,7 @@ pub struct Viewer {
 
 #[derive(Clone, Debug)]
 pub struct Badge {
+    pub session_id: String,
     pub agent_id: String,
     pub kind: BadgeKind,
     /// Window logical position of the point above the unit.
@@ -72,6 +112,18 @@ pub struct Store {
     pub current: Option<String>,
     pub selected: Option<String>,
     pub hovered: Option<String>,
+    /// A satellite constellation under the pointer (another session's unit).
+    pub hovered_session: Option<String>,
+    /// Session ids currently tailed by the worker.
+    pub watched: Vec<String>,
+    /// When each session's first event arrived; bursts right after are history, not news.
+    seen: HashMap<String, Instant>,
+    /// Set by the scene: switch to this session (by id) on the next frame.
+    pub pending_open: Option<String>,
+    /// Agent to select once the pending session is open.
+    pub pending_select: Option<String>,
+    /// Commanders of other shown sessions, in window logical coordinates.
+    pub satellites: Vec<Satellite>,
     pub status: String,
     pub errors: Vec<String>,
     pub toasts: Vec<Toast>,
@@ -112,8 +164,6 @@ pub struct Store {
     pub artifact_query: String,
     preferred: Option<String>,
     opened_once: bool,
-    /// When the current session was opened; batches in the first moments are history, not news.
-    opened_at: Instant,
 }
 
 const HISTORY_GRACE_S: f32 = 2.0;
@@ -128,6 +178,12 @@ impl Store {
             current: None,
             selected: None,
             hovered: None,
+            hovered_session: None,
+            watched: Vec::new(),
+            seen: HashMap::new(),
+            pending_open: None,
+            pending_select: None,
+            satellites: Vec::new(),
             status: "starting".into(),
             errors: Vec::new(),
             toasts: Vec::new(),
@@ -153,8 +209,122 @@ impl Store {
             artifact_query: String::new(),
             preferred,
             opened_once: false,
-            opened_at: Instant::now(),
         }
+    }
+
+    /// Sessions drawn in the scene: the current one first, then satellites that moved recently
+    /// or need the human, in a stable order.
+    pub fn shown_sessions(&self, now: i64, satellites: bool) -> Vec<String> {
+        let mut out = Vec::new();
+        if let Some(c) = &self.current
+            && self.sessions.contains_key(c)
+        {
+            out.push(c.clone());
+        }
+        if satellites {
+            let needy: HashSet<String> = self.attention(now).into_iter().map(|a| a.session_id).collect();
+            let mut others: Vec<&Session> = self
+                .sessions
+                .values()
+                .filter(|s| Some(&s.id) != self.current.as_ref())
+                .filter(|s| now - s.last_activity < theme::SATELLITE_RECENT_MS || needy.contains(&s.id))
+                .collect();
+            others.sort_by(|a, b| a.id.cmp(&b.id));
+            out.extend(others.into_iter().take(5).map(|s| s.id.clone()));
+        }
+        out
+    }
+
+    /// Everything waiting on the human across all watched sessions: approvals first, then
+    /// failures, then commanders waiting for orders, then stalls; newest first within a kind.
+    pub fn attention(&self, now: i64) -> Vec<Attention> {
+        let mut out: Vec<Attention> = Vec::new();
+        for s in self.sessions.values() {
+            for a in self.approvals.iter().filter(|a| a.session_id == s.id) {
+                out.push(Attention {
+                    session_id: s.id.clone(),
+                    project: s.project.clone(),
+                    agent_id: a.agent_id.clone(),
+                    kind: BadgeKind::Approval,
+                    since: now,
+                    label: format!("{} wants {}", a.tool, a.summary),
+                });
+            }
+            for agent in &s.agents {
+                if agent.last_call_failed() && !self.acked.contains(&format!("err:{}:{}", s.id, agent.id)) {
+                    let c = agent
+                        .calls
+                        .iter()
+                        .filter(|c| c.ended.is_some())
+                        .max_by_key(|c| c.ended.unwrap_or(0));
+                    out.push(Attention {
+                        session_id: s.id.clone(),
+                        project: s.project.clone(),
+                        agent_id: agent.id.clone(),
+                        kind: BadgeKind::Error,
+                        since: c.and_then(|c| c.ended).unwrap_or(agent.last_activity),
+                        label: format!("{} failed", c.map(|c| c.tool.as_str()).unwrap_or("call")),
+                    });
+                }
+                if agent.depth == 0 && agent.waiting_for_user {
+                    out.push(Attention {
+                        session_id: s.id.clone(),
+                        project: s.project.clone(),
+                        agent_id: agent.id.clone(),
+                        kind: BadgeKind::Waiting,
+                        since: s.last_activity,
+                        label: "awaiting your orders".into(),
+                    });
+                }
+                for c in agent
+                    .calls
+                    .iter()
+                    .filter(|c| c.ended.is_none() && self.stalled.contains(&c.id))
+                {
+                    out.push(Attention {
+                        session_id: s.id.clone(),
+                        project: s.project.clone(),
+                        agent_id: agent.id.clone(),
+                        kind: BadgeKind::Stalled,
+                        since: c.started,
+                        label: format!("{} stalled", c.tool),
+                    });
+                }
+            }
+        }
+        let rank = |k: BadgeKind| match k {
+            BadgeKind::Approval => 0,
+            BadgeKind::Error => 1,
+            BadgeKind::Waiting => 2,
+            BadgeKind::Stalled => 3,
+            BadgeKind::Done => 4,
+        };
+        out.sort_by(|a, b| rank(a.kind).cmp(&rank(b.kind)).then(b.since.cmp(&a.since)));
+        out
+    }
+
+    /// Keep the worker tailing exactly the sessions worth watching.
+    fn sync_watch(&mut self, bridge: &Bridge, now: i64) {
+        let desired = desired_watch(&self.session_list, self.current.as_deref(), now);
+        let mut ids: Vec<String> = desired.iter().map(|s| s.id.clone()).collect();
+        ids.sort();
+        let mut have = self.watched.clone();
+        have.sort();
+        if ids == have {
+            return;
+        }
+        for gone in have.iter().filter(|id| !ids.contains(id)) {
+            self.sessions.remove(gone);
+            self.seen.remove(gone);
+        }
+        self.watched = ids;
+        let _ = bridge.to_worker.send(ToWorker::Watch(desired));
+    }
+
+    fn is_live_for(&self, session_id: &str) -> bool {
+        self.seen
+            .get(session_id)
+            .is_some_and(|t| t.elapsed().as_secs_f32() > HISTORY_GRACE_S)
     }
 
     pub fn current_session(&self) -> Option<&Session> {
@@ -162,17 +332,23 @@ impl Store {
     }
 
     pub fn open(&mut self, r: &SessionRef, bridge: &Bridge) {
-        self.sessions.remove(&r.id);
+        let already = self.watched.iter().any(|w| w == &r.id) && self.sessions.contains_key(&r.id);
         self.current = Some(r.id.clone());
         self.selected = None;
         self.hovered = None;
+        self.hovered_session = None;
         self.layout_dirty = true;
         self.opened_once = true;
-        self.opened_at = Instant::now();
         self.toasts.clear();
-        self.stalled.clear();
         self.alarmed.clear();
-        self.acked.clear();
+        if already {
+            return;
+        }
+        self.sessions.remove(&r.id);
+        self.seen.remove(&r.id);
+        if !self.watched.contains(&r.id) {
+            self.watched.push(r.id.clone());
+        }
         let _ = bridge.to_worker.send(ToWorker::Open(r.clone()));
     }
 
@@ -181,8 +357,8 @@ impl Store {
         self.current = Some(id.to_string());
         self.selected = None;
         self.hovered = None;
+        self.hovered_session = None;
         self.layout_dirty = true;
-        self.opened_at = Instant::now();
     }
 
     pub fn toast(&mut self, kind: ToastKind, text: impl Into<String>) {
@@ -222,10 +398,6 @@ impl Store {
         if self.errors.len() > 50 {
             self.errors.remove(0);
         }
-    }
-
-    fn is_live(&self) -> bool {
-        self.opened_at.elapsed().as_secs_f32() > HISTORY_GRACE_S
     }
 }
 
@@ -340,6 +512,15 @@ fn check_patterns(store: &mut Store, ev: &Event) {
 }
 
 pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: Res<Settings>) {
+    let now = now_millis();
+    if let Some(id) = store.pending_open.take() {
+        if let Some(r) = store.session_list.iter().find(|s| s.id == id).cloned() {
+            store.open(&r, &bridge.0);
+        } else if store.sessions.contains_key(&id) {
+            store.show(&id);
+        }
+        store.selected = store.pending_select.take();
+    }
     while let Ok(msg) = bridge.0.to_app.try_recv() {
         match msg {
             ToApp::Sessions(list) => {
@@ -360,15 +541,40 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: 
             }
             ToApp::Events(events) => {
                 store.events_total += events.len() as u64;
-                let live = store.is_live();
                 for ev in events {
-                    let (toast, sfx) = if live { react(&store, &ev) } else { (None, None) };
                     let sid = ev.session_id().to_string();
+                    let live = store.is_live_for(&sid);
+                    store.seen.entry(sid.clone()).or_insert_with(Instant::now);
+                    let is_current = store.current.as_deref() == Some(sid.as_str());
+                    let (mut toast, mut sfx) = if live { react(&store, &ev) } else { (None, None) };
+                    let project = store
+                        .session_list
+                        .iter()
+                        .find(|s| s.id == sid)
+                        .map(|s| s.project.clone())
+                        .unwrap_or_else(|| sid.chars().take(8).collect());
                     let session = store
                         .sessions
                         .entry(sid.clone())
-                        .or_insert_with(|| Session::new(sid, "", 0));
+                        .or_insert_with(|| Session::new(sid, project.clone(), 0));
+                    if session.project.is_empty() {
+                        session.project = project.clone();
+                    }
                     session.apply(ev.clone());
+                    // Other sessions only speak up when they need the human.
+                    if live && !is_current {
+                        match &ev {
+                            Event::TurnEnd { agent_id, .. } if agent_id == ROOT_AGENT => {
+                                toast = Some((ToastKind::Done, format!("💬 {project}: awaiting your orders")));
+                                sfx = Some(Sfx::Waiting);
+                            }
+                            Event::ToolEnd { is_error: true, .. } => {
+                                toast = Some((ToastKind::Error, format!("✖ {project}: a call failed")));
+                                sfx = Some(Sfx::Error);
+                            }
+                            _ => {}
+                        }
+                    }
                     if let Some((kind, text)) = toast {
                         store.toast(kind, text);
                     }
@@ -377,7 +583,7 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: 
                     {
                         store.play(s);
                     }
-                    if live && Some(ev.session_id()) == store.current.as_deref() {
+                    if live && is_current {
                         check_patterns(&mut store, &ev);
                     }
                 }
@@ -418,6 +624,7 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: 
     }
     let cutoff = std::time::Duration::from_secs(7);
     store.toasts.retain(|t| t.born.elapsed() < cutoff);
+    store.sync_watch(&bridge.0, now);
 }
 
 /// Once a second: flag open tool calls that have run past the stall threshold.
@@ -430,12 +637,18 @@ pub fn watch_stalls(time: Res<Time>, mut store: ResMut<Store>, mut next: Local<f
     let now = now_millis();
     let mut newly: Vec<(String, String, i64)> = Vec::new();
     let mut open: HashSet<String> = HashSet::new();
-    if let Some(session) = store.current_session() {
+    for session in store.sessions.values() {
+        let is_current = store.current.as_deref() == Some(session.id.as_str());
         for a in &session.agents {
             for c in a.calls.iter().filter(|c| c.ended.is_none() && c.started > 0) {
                 open.insert(c.id.clone());
                 if now - c.started > theme::STALL_AFTER_MS && !store.stalled.contains(&c.id) {
-                    newly.push((c.id.clone(), c.tool.clone(), now - c.started));
+                    let tool = if is_current {
+                        c.tool.clone()
+                    } else {
+                        format!("{}: {}", session.project, c.tool)
+                    };
+                    newly.push((c.id.clone(), tool, now - c.started));
                 }
             }
         }
@@ -451,5 +664,44 @@ pub fn watch_stalls(time: Res<Time>, mut store: ResMut<Store>, mut next: Local<f
             ),
         );
         store.play(Sfx::Stall);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn r(id: &str, modified: i64) -> SessionRef {
+        SessionRef {
+            id: id.into(),
+            project: "p".into(),
+            path: PathBuf::from(id),
+            modified,
+            size: 1,
+        }
+    }
+
+    #[test]
+    fn watch_keeps_current_and_recent_sessions_only() {
+        let now = 10_000_000;
+        let list = vec![
+            r("old", now - theme::WATCH_RECENT_MS - 1),
+            r("a", now - 1_000),
+            r("b", now - 2_000),
+            r("c", now - 3_000),
+            r("d", now - 4_000),
+            r("e", now - 5_000),
+            r("f", now - 6_000),
+        ];
+        let w = desired_watch(&list, Some("old"), now);
+        let ids: Vec<&str> = w.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["old", "a", "b", "c", "d", "e"],
+            "current first, then newest, capped"
+        );
+        let w = desired_watch(&list, None, now);
+        assert_eq!(w.len(), theme::WATCH_MAX);
+        assert!(!w.iter().any(|s| s.id == "old"));
     }
 }

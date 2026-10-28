@@ -3,12 +3,13 @@
 //! the camera can ignore input that belongs to the UI.
 
 use super::debrief;
-use super::gitinfo::{GitInfo, GitWatch};
+use super::gitinfo::{self, FileChange, GitInfo, GitWatch};
 use super::probe::Probe;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
 use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer};
 use super::theme;
+use super::winjump;
 use agent_globe::bridge::Bridge;
 use agent_globe::data::artifacts::{Artifact, ArtifactKind};
 use agent_globe::data::claude::SessionRef;
@@ -145,6 +146,7 @@ pub fn draw(
     mut last_scale: Local<f32>,
     mut last_panel: Local<Option<String>>,
 ) -> Result {
+    let mut jump: Option<String> = None;
     let ctx = contexts.ctx_mut()?;
     if style_once(ctx, &mut styled) {
         return Ok(());
@@ -179,6 +181,7 @@ pub fn draw(
             });
         draw_badges(ctx, &store);
         draw_progress(ctx, &store, &settings, now);
+        draw_satellites(ctx, &mut store, now);
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
         draw_viewer(ctx, &mut store, &mut images, &mut docs);
         draw_toasts(ctx, &store);
@@ -230,6 +233,9 @@ pub fn draw(
                             .color(SAND)
                             .monospace(),
                     );
+                    if jump_button(ui).clicked() {
+                        jump = Some(winjump::needle_for(&s.cwd, &s.project));
+                    }
                     ui.separator();
                     tip(
                         ui,
@@ -328,6 +334,12 @@ pub fn draw(
     let mut open: Option<SessionRef> = None;
     let mut show: Option<String> = None;
     let mut pick: Option<String> = None;
+    let mut go: Option<(String, String)> = None;
+    let attention = store.attention(now);
+    let mut needy: HashMap<String, &'static str> = HashMap::new();
+    for a in &attention {
+        needy.entry(a.session_id.clone()).or_insert(badge_style(a.kind).0);
+    }
     let left = egui::Panel::left("sessions")
         .resizable(true)
         .default_size(230.0)
@@ -340,6 +352,31 @@ pub fn draw(
             );
             ui.separator();
             egui::ScrollArea::vertical().show(ui, |ui| {
+                if !attention.is_empty() {
+                    ui.label(egui::RichText::new("NEEDS YOU").small().color(AMBER))
+                        .on_hover_text("Across every session being watched: approvals, failures, commanders waiting for orders, stalls.");
+                    for a in attention.iter().take(8) {
+                        let (glyph, color, _) = badge_style(a.kind);
+                        ui.horizontal(|ui| {
+                            let text = format!("{glyph} {}  {}", a.project, a.label);
+                            let row = ui
+                                .add(
+                                    egui::Button::new(egui::RichText::new(text).small().color(color))
+                                        .frame(false)
+                                        .truncate(),
+                                )
+                                .on_hover_text(format!("{} · {} ago · click to look", short(&a.session_id), age(a.since)));
+                            if row.clicked() {
+                                go = Some((a.session_id.clone(), a.agent_id.clone()));
+                            }
+                            if jump_button(ui).clicked() {
+                                let cwd = store.sessions.get(&a.session_id).map(|s| s.cwd.clone()).unwrap_or_default();
+                                jump = Some(winjump::needle_for(&cwd, &a.project));
+                            }
+                        });
+                    }
+                    ui.separator();
+                }
                 let mut live: Vec<&str> = store
                     .sessions
                     .keys()
@@ -378,13 +415,24 @@ pub fn draw(
                                 let is_current = store.current.as_deref() == Some(s.id.as_str());
                                 let active = now - s.modified < theme::ACTIVE_WINDOW_MS;
                                 let dot = if active { "●" } else { "○" };
-                                let text =
-                                    format!("{dot} {}  {:>3}  {:>6}k", short(&s.id), age(s.modified), s.size / 1024);
+                                let flag = needy.get(&s.id).copied().unwrap_or("");
+                                let text = format!(
+                                    "{dot} {}  {:>3}  {:>6}k {flag}",
+                                    short(&s.id),
+                                    age(s.modified),
+                                    s.size / 1024
+                                );
                                 let rt = egui::RichText::new(text).monospace();
                                 let rt = if active { rt.color(ACCENT) } else { rt };
-                                if ui.selectable_label(is_current, rt).clicked() {
-                                    open = Some(s.clone());
-                                }
+                                ui.horizontal(|ui| {
+                                    if ui.selectable_label(is_current, rt).clicked() {
+                                        open = Some(s.clone());
+                                    }
+                                    if (is_current || store.watched.contains(&s.id)) && jump_button(ui).clicked() {
+                                        let cwd = store.sessions.get(&s.id).map(|x| x.cwd.clone()).unwrap_or_default();
+                                        jump = Some(winjump::needle_for(&cwd, &s.project));
+                                    }
+                                });
                                 if is_current && let Some(session) = store.sessions.get(&s.id) {
                                     agent_tree(ui, session, ROOT_AGENT, 0, now, store.selected.as_deref(), &mut pick);
                                 }
@@ -403,6 +451,21 @@ pub fn draw(
     }
     if let Some(id) = pick {
         store.selected = Some(id);
+    }
+    if let Some((sid, aid)) = go {
+        store.acked.insert(format!("err:{sid}:{aid}"));
+        store.acked.insert(format!("done:{sid}:{aid}"));
+        if store.current.as_deref() == Some(sid.as_str()) {
+            store.selected = Some(aid);
+        } else {
+            store.pending_open = Some(sid);
+            store.pending_select = Some(aid);
+        }
+    }
+    if let Some(needle) = jump.take()
+        && !winjump::focus(&needle)
+    {
+        store.toast(ToastKind::Warn, format!("no editor window titled \"{needle}\" found"));
     }
 
     // ---- bottom: status ----
@@ -452,6 +515,7 @@ pub fn draw(
         .cloned();
     let mut close = false;
     let mut view_image: Option<String> = None;
+    let mut view_diffs: Option<(String, Vec<String>)> = None;
     let mut query = std::mem::take(&mut store.artifact_query);
     let mut inset_right = 0.0_f32;
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
@@ -459,6 +523,36 @@ pub fn draw(
     if let Some(agent) = selected.as_ref() {
         let narrator = settings.narrator;
         let stalled = store.stalled.clone();
+        // Which changed files this session's agents edited, by repo-relative path.
+        let changes: Vec<FileChange> = if agent.depth == 0 {
+            git.as_ref().map(|g| g.changes.clone()).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let cwd = git.as_ref().map(|g| g.cwd.clone()).unwrap_or_default();
+        let touched: HashMap<String, usize> = if changes.is_empty() {
+            HashMap::new()
+        } else {
+            let edits: Vec<String> = store
+                .current_session()
+                .map(|s| {
+                    s.agents
+                        .iter()
+                        .flat_map(|a| a.calls.iter())
+                        .filter(|c| matches!(c.tool.as_str(), "Edit" | "Write" | "NotebookEdit" | "MultiEdit"))
+                        .map(|c| c.summary.replace('\\', "/").to_ascii_lowercase())
+                        .collect()
+                })
+                .unwrap_or_default();
+            changes
+                .iter()
+                .map(|c| {
+                    let needle = c.path.to_ascii_lowercase();
+                    (c.path.clone(), edits.iter().filter(|e| e.ends_with(&needle)).count())
+                })
+                .filter(|(_, n)| *n > 0)
+                .collect()
+        };
         let right = egui::Panel::right("agent")
             .resizable(true)
             .default_size(520.0)
@@ -483,6 +577,10 @@ pub fn draw(
                     &mut images,
                     &mut view_image,
                     &mut query,
+                    &changes,
+                    &cwd,
+                    &touched,
+                    &mut view_diffs,
                 );
             });
         inset_right = right.response.rect.width();
@@ -495,10 +593,42 @@ pub fn draw(
     if let Some(path) = view_image.take() {
         open_viewer(&mut store, &path);
     }
+    if let Some((path, items)) = view_diffs.take() {
+        let index = items.iter().position(|p| p == &path).unwrap_or(0);
+        store.viewer = Some(Viewer {
+            items,
+            index,
+            zoom: 1.0,
+            offset: (0.0, 0.0),
+        });
+    }
+    // Hover over a satellite: a card about that session.
+    let hovered_session = store
+        .hovered_session
+        .as_ref()
+        .and_then(|id| store.sessions.get(id))
+        .cloned();
+    if let Some(sess) = hovered_session.as_ref() {
+        egui::Area::new(egui::Id::new("hover-session"))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0 + inset_top))
+            .interactable(false)
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(PANEL)
+                    .stroke(egui::Stroke::new(1.0, SAND))
+                    .inner_margin(10.0)
+                    .corner_radius(6.0)
+                    .show(ui, |ui| {
+                        ui.set_max_width(340.0);
+                        session_card(ui, sess, now);
+                    });
+            });
+    }
     // Hover: a small card at the top right that never steals the pointer.
     if let Some(agent) = hovered
         .as_ref()
         .filter(|h| selected.as_ref().map(|s| &s.id) != Some(&h.id))
+        .filter(|_| hovered_session.is_none())
     {
         egui::Area::new(egui::Id::new("hover-card"))
             .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0 + inset_top))
@@ -592,6 +722,10 @@ pub fn draw(
                 ui.checkbox(&mut settings.scanlines, "CRT scanlines");
                 ui.checkbox(&mut settings.narrator, "narrator line under each call");
                 ui.checkbox(&mut settings.progress_rings, "progress rings and hints under units");
+                ui.checkbox(
+                    &mut settings.satellites,
+                    "other active sessions as satellites around this one",
+                );
                 ui.separator();
                 ui.label(egui::RichText::new("ALERTS").small().color(DIM));
                 ui.add(
@@ -690,6 +824,7 @@ pub fn draw(
 
     draw_badges(ctx, &store);
     draw_progress(ctx, &store, &settings, now);
+    draw_satellites(ctx, &mut store, now);
     draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
     if let Some(rect) = draw_viewer(ctx, &mut store, &mut images, &mut docs) {
         ui_rects.push(rect);
@@ -722,6 +857,127 @@ pub fn draw(
 }
 
 /// Notification badges floating above units: lamp for done, chat bubble for waiting, red for error.
+fn badge_style(kind: BadgeKind) -> (&'static str, egui::Color32, &'static str) {
+    match kind {
+        BadgeKind::Done => ("!", egui::Color32::from_rgb(255, 215, 90), "done"),
+        BadgeKind::Waiting => ("💬", ACCENT, "awaiting your orders"),
+        BadgeKind::Error => ("⚠", RED, "failed call"),
+        BadgeKind::Approval => ("🛡", AMBER, "authorization needed"),
+        BadgeKind::Stalled => ("⏳", AMBER, "stalled"),
+    }
+}
+
+fn jump_button(ui: &mut egui::Ui) -> egui::Response {
+    ui.small_button("🖥")
+        .on_hover_text("Bring this session's editor window (VS Code) to the front")
+}
+
+/// Floating label under every satellite commander: project, id, state. Click to switch.
+fn draw_satellites(ctx: &egui::Context, store: &mut Store, now: i64) {
+    if store.viewer.is_some() || store.satellites.is_empty() {
+        return;
+    }
+    let vr = ctx.viewport_rect();
+    let (l, t, r, b) = store.scene_insets.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let scene = egui::Rect::from_min_max(
+        egui::pos2(vr.min.x + l, vr.min.y + t),
+        egui::pos2(vr.max.x - r, vr.max.y - b),
+    );
+    let mut go: Option<String> = None;
+    for sat in store.satellites.clone() {
+        let Some(s) = store.sessions.get(&sat.session_id) else {
+            continue;
+        };
+        let pos = egui::pos2(sat.x, sat.y + 34.0);
+        if !scene.contains(pos) {
+            continue;
+        }
+        let root = s.root();
+        let active = s
+            .agents
+            .iter()
+            .filter(|a| a.status(now, theme::ACTIVE_WINDOW_MS) == Status::Active)
+            .count();
+        let (state, color) = if root.waiting_for_user {
+            ("💬 awaiting orders".to_string(), ACCENT)
+        } else if active > 0 {
+            (format!("active · {active} unit(s) moving"), ACCENT)
+        } else {
+            ("idle".to_string(), DIM)
+        };
+        egui::Area::new(egui::Id::new(("satellite", &sat.session_id)))
+            .fixed_pos(pos)
+            .pivot(egui::Align2::CENTER_TOP)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(PANEL)
+                    .stroke(egui::Stroke::new(1.0, DIM))
+                    .inner_margin(6.0)
+                    .corner_radius(6.0)
+                    .show(ui, |ui| {
+                        let title = format!("{}  {}", s.project, short(&s.id));
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new(title).small().color(SAND)).frame(false))
+                            .on_hover_text("click to switch to this session")
+                            .clicked()
+                        {
+                            go = Some(s.id.clone());
+                        }
+                        ui.label(egui::RichText::new(state).small().color(color));
+                    });
+            });
+    }
+    if let Some(id) = go {
+        store.pending_open = Some(id);
+    }
+}
+
+/// Hover card for a satellite: what that session is and whether it needs you.
+fn session_card(ui: &mut egui::Ui, s: &Session, now: i64) {
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(&s.project).font(stencil(15.0)).color(SAND));
+        ui.label(egui::RichText::new(short(&s.id)).monospace().small().color(DIM));
+    });
+    let active = s
+        .agents
+        .iter()
+        .filter(|a| a.status(now, theme::ACTIVE_WINDOW_MS) == Status::Active)
+        .count();
+    ui.label(
+        egui::RichText::new(format!(
+            "{} units · {active} active · {} calls · {} · {}",
+            s.agents.len(),
+            s.total_calls(),
+            dur(s.last_activity - s.started),
+            cost::fmt_usd(s.cost_usd())
+        ))
+        .small()
+        .monospace(),
+    );
+    let root = s.root();
+    if root.waiting_for_user {
+        ui.label(
+            egui::RichText::new("💬 commander is waiting for your orders")
+                .small()
+                .color(ACCENT),
+        );
+    } else if let Some(c) = root
+        .calls
+        .iter()
+        .rev()
+        .find(|c| c.ended.is_none())
+        .or(root.calls.last())
+    {
+        ui.label(
+            egui::RichText::new(format!("▸ {} {}", c.tool, c.summary))
+                .small()
+                .color(DIM),
+        );
+    }
+    ui.label(egui::RichText::new("click to switch").small().color(DIM));
+}
+
 fn draw_badges(ctx: &egui::Context, store: &Store) {
     if store.badges.is_empty() || store.viewer.is_some() {
         return;
@@ -741,12 +997,7 @@ fn draw_badges(ctx: &egui::Context, store: &Store) {
         if !scene.contains(egui::pos2(b.x, b.y)) {
             continue;
         }
-        let (glyph, color, label) = match b.kind {
-            BadgeKind::Done => ("!", egui::Color32::from_rgb(255, 215, 90), "done"),
-            BadgeKind::Waiting => ("💬", ACCENT, "awaiting your orders"),
-            BadgeKind::Error => ("⚠", RED, "failed call"),
-            BadgeKind::Approval => ("🛡", AMBER, "authorization needed"),
-        };
+        let (glyph, color, label) = badge_style(b.kind);
         let center = egui::pos2(b.x, b.y - 10.0 - 4.0 * (t * 2.0).sin());
         let glow = color.gamma_multiply(0.25 * pulse);
         painter.circle_filled(center, 22.0, glow);
@@ -870,6 +1121,10 @@ fn agent_panel(
     images: &mut HashMap<String, Option<egui::TextureHandle>>,
     view_image: &mut Option<String>,
     query: &mut String,
+    changes: &[FileChange],
+    cwd: &str,
+    touched: &HashMap<String, usize>,
+    view_diffs: &mut Option<(String, Vec<String>)>,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -948,7 +1203,8 @@ fn agent_panel(
         ui.label(egui::RichText::new("ARTIFACTS").small().color(DIM));
         let key = format!("{}:artifacts", a.id);
         let all = expanded.contains(&key);
-        let total = a.artifacts.len();
+        let folded = dedup_artifacts(&a.artifacts);
+        let total = folded.len();
         let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
         let shelf_h = if all { f32::INFINITY } else { row_h * 2.0 + 4.0 };
         let mut toggle = false;
@@ -979,7 +1235,7 @@ fn agent_panel(
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    for art in a.artifacts.iter().rev().filter(|x| {
+                    for (art, count) in folded.iter().filter(|(x, _)| {
                         needle.is_empty()
                             || x.label.to_ascii_lowercase().contains(&needle)
                             || x.target.to_ascii_lowercase().contains(&needle)
@@ -989,13 +1245,83 @@ fn agent_panel(
                         } else {
                             None
                         };
-                        if artifact_chip(ui, art, alive, images, row_h - 6.0).clicked()
+                        if artifact_chip(ui, art, alive, images, row_h - 6.0, *count).clicked()
                             && let Some(path) = open_artifact(ui.ctx(), art, git)
                         {
                             *view_image = Some(path);
                         }
                     }
                 });
+            });
+        if toggle {
+            if all {
+                expanded.remove(&key);
+            } else {
+                expanded.insert(key);
+            }
+        }
+    }
+    if !changes.is_empty() {
+        ui.add_space(4.0);
+        let key = format!("{}:changes", a.id);
+        let all = expanded.contains(&key);
+        let (add, del) = changes.iter().fold((0, 0), |(x, y), c| (x + c.added, y + c.deleted));
+        let mut toggle = false;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("CHANGES").small().color(DIM))
+                .on_hover_text("Files the working tree changed against the last commit. Click one to read its diff here; ✎ counts edits this session made to it.");
+            ui.label(
+                egui::RichText::new(format!("{} files  +{add} −{del}", changes.len()))
+                    .small()
+                    .color(SAND),
+            );
+            let label = if all { "▴ collapse" } else { "▾ expand" };
+            if ui.small_button(egui::RichText::new(label).small()).clicked() {
+                toggle = true;
+            }
+        });
+        let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+        let max_h = if all { 360.0 } else { row_h * 3.0 + 4.0 };
+        let all_paths: Vec<String> = changes.iter().map(|c| diff_path(cwd, &c.path, c.untracked)).collect();
+        egui::ScrollArea::vertical()
+            .id_salt(&key)
+            .max_height(max_h)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                for (i, c) in changes.iter().enumerate() {
+                    ui.horizontal(|ui| {
+                        let stat = if c.untracked {
+                            "new".to_string()
+                        } else {
+                            format!("+{} −{}", c.added, c.deleted)
+                        };
+                        let stat_color = if c.untracked { SAND } else { GREEN };
+                        ui.label(
+                            egui::RichText::new(format!("{stat:>9}"))
+                                .monospace()
+                                .small()
+                                .color(stat_color),
+                        );
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(&c.path).monospace().small())
+                                    .frame(false)
+                                    .truncate(),
+                            )
+                            .on_hover_text("read the diff")
+                            .clicked()
+                        {
+                            *view_diffs = Some((all_paths[i].clone(), all_paths.clone()));
+                        }
+                        if let Some(n) = touched.get(&c.path) {
+                            ui.label(egui::RichText::new(format!("✎ {n}")).small().color(DIM))
+                                .on_hover_text("edits by this session");
+                        }
+                        if ui.small_button("open").on_hover_text("open in VS Code").clicked() {
+                            open_in_editor(cwd, &c.path);
+                        }
+                    });
+                }
             });
         if toggle {
             if all {
@@ -1184,18 +1510,94 @@ fn glyph(a: &Artifact) -> (&'static str, egui::Color32) {
 }
 
 /// One clickable chip. A dead URL is dimmed; an image shows a small thumbnail.
+/// Newest first, with repeats folded into one chip and a count: forty "check passed" results
+/// become one chip that says ×40.
+fn dedup_artifacts(list: &[Artifact]) -> Vec<(&Artifact, usize)> {
+    let mut out: Vec<(&Artifact, usize)> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    for a in list.iter().rev() {
+        let key = if a.kind == ArtifactKind::Test {
+            format!("test:{}", a.label)
+        } else {
+            format!("{:?}:{}", a.kind, a.target)
+        };
+        match index.get(&key) {
+            Some(&i) => out[i].1 += 1,
+            None => {
+                index.insert(key, out.len());
+                out.push((a, 1));
+            }
+        }
+    }
+    out
+}
+
+/// Viewer path for a diff: `diff:<cwd>|<repo path>|<1 if untracked>`. `|` cannot appear in paths.
+fn diff_path(cwd: &str, path: &str, untracked: bool) -> String {
+    format!("diff:{cwd}|{path}|{}", u8::from(untracked))
+}
+
+fn parse_diff_path(p: &str) -> Option<(&str, &str, bool)> {
+    let rest = p.strip_prefix("diff:")?;
+    let mut it = rest.split('|');
+    let (cwd, path, flag) = (it.next()?, it.next()?, it.next().unwrap_or("0"));
+    Some((cwd, path, flag == "1"))
+}
+
+fn open_in_editor(cwd: &str, path: &str) {
+    let full = std::path::Path::new(cwd).join(path).display().to_string();
+    std::thread::spawn(move || {
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "code", "-g", &full]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000);
+        }
+        let _ = cmd.status();
+    });
+}
+
+/// A unified diff with the usual colours: additions green, removals red, hunk headers amber.
+fn render_diff(ui: &mut egui::Ui, text: &str) {
+    for line in text.lines() {
+        let color = if line.starts_with("+++") || line.starts_with("---") {
+            SAND
+        } else if line.starts_with('+') {
+            GREEN
+        } else if line.starts_with('-') {
+            RED
+        } else if line.starts_with("@@") {
+            AMBER
+        } else if line.starts_with("diff ") || line.starts_with("index ") {
+            DIM
+        } else {
+            TEXT
+        };
+        ui.add(
+            egui::Label::new(egui::RichText::new(line).monospace().color(color))
+                .wrap_mode(egui::TextWrapMode::Extend)
+                .selectable(true),
+        );
+    }
+}
+
 fn artifact_chip(
     ui: &mut egui::Ui,
     a: &Artifact,
     alive: Option<bool>,
     images: &mut HashMap<String, Option<egui::TextureHandle>>,
     thumb_px: f32,
+    count: usize,
 ) -> egui::Response {
     let (g, mut color) = glyph(a);
     if alive == Some(false) {
         color = DIM;
     }
     let mut text = format!("{g} {}", a.label);
+    if count > 1 {
+        text.push_str(&format!("  ×{count}"));
+    }
     if alive == Some(false) {
         text.push_str("  (down)");
     }
@@ -1329,7 +1731,7 @@ fn draw_bubbles(
                     .show(ui, |ui| {
                         ui.set_max_width(260.0);
                         ui.horizontal(|ui| {
-                            if artifact_chip(ui, &art, alive, images, 120.0).clicked()
+                            if artifact_chip(ui, &art, alive, images, 120.0, 1).clicked()
                                 && let Some(path) = open_artifact(ui.ctx(), &art, git)
                             {
                                 view.push(path);
@@ -1447,15 +1849,19 @@ fn draw_approvals(ctx: &egui::Context, store: &mut Store, bridge: &Bridge, inset
     Some(win.response.rect)
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DocKind {
     Image,
     Markdown,
     Pdf,
     Other,
+    Diff,
 }
 
 fn doc_kind(path: &str) -> DocKind {
+    if path.starts_with("diff:") {
+        return DocKind::Diff;
+    }
     let p = path.to_ascii_lowercase();
     if [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
         .iter()
@@ -1525,6 +1931,7 @@ fn doc_text<'a>(docs: &'a mut HashMap<String, Option<String>>, path: &str) -> Op
     if !docs.contains_key(path) {
         let loaded = match doc_kind(path) {
             DocKind::Pdf => pdf_extract::extract_text(path).ok(),
+            DocKind::Diff => parse_diff_path(path).and_then(|(cwd, rel, new)| gitinfo::diff_text(cwd, rel, new)),
             _ => std::fs::read_to_string(path).ok(),
         };
         docs.insert(path.to_string(), loaded);
@@ -1675,7 +2082,10 @@ fn draw_viewer(
         )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let name = path.rsplit(['/', '\\']).next().unwrap_or("").to_string();
+                let name = match parse_diff_path(&path) {
+                    Some((_, rel, _)) => format!("Δ {rel}"),
+                    None => path.rsplit(['/', '\\']).next().unwrap_or("").to_string(),
+                };
                 ui.add(egui::Label::new(egui::RichText::new(name).font(stencil(14.0)).color(SAND)).truncate())
                     .on_hover_text(&path);
                 ui.label(
@@ -1745,7 +2155,7 @@ fn draw_viewer(
                         ui.label(egui::RichText::new(format!("cannot read {path}")).color(RED));
                     }
                 },
-                DocKind::Markdown | DocKind::Pdf | DocKind::Other => {
+                DocKind::Markdown | DocKind::Pdf | DocKind::Other | DocKind::Diff => {
                     let body = doc_text(docs, &path).map(str::to_owned);
                     egui::ScrollArea::vertical()
                         .id_salt("viewer-doc")
@@ -1755,6 +2165,7 @@ fn draw_viewer(
                             ui.set_min_width(avail.x - 20.0);
                             match (kind, body) {
                                 (DocKind::Markdown, Some(t)) => render_markdown(ui, &t),
+                                (DocKind::Diff, Some(t)) => render_diff(ui, &t),
                                 (_, Some(t)) => {
                                     for (i, page) in t.split('\u{c}').enumerate() {
                                         if i > 0 {
@@ -1777,10 +2188,15 @@ fn draw_viewer(
             }
         })?;
     if open_ext {
-        let p = path.clone();
-        std::thread::spawn(move || {
-            let _ = open::that(&p);
-        });
+        match parse_diff_path(&path) {
+            Some((cwd, rel, _)) => open_in_editor(cwd, rel),
+            None => {
+                let p = path.clone();
+                std::thread::spawn(move || {
+                    let _ = open::that(&p);
+                });
+            }
+        }
     }
     if close {
         store.viewer = None;
@@ -1905,4 +2321,43 @@ fn draw_progress(ctx: &egui::Context, store: &Store, settings: &Settings, now: i
         );
     }
     ctx.request_repaint();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn art(kind: ArtifactKind, label: &str, target: &str) -> Artifact {
+        Artifact {
+            kind,
+            label: label.into(),
+            target: target.into(),
+            call_id: String::new(),
+            at: 0,
+            ok: None,
+        }
+    }
+
+    #[test]
+    fn shelf_folds_repeats_newest_first() {
+        let list = vec![
+            art(ArtifactKind::File, "a.rs", "/x/a.rs"),
+            art(ArtifactKind::Test, "check passed", "check:1"),
+            art(ArtifactKind::Test, "check passed", "check:2"),
+            art(ArtifactKind::File, "a.rs", "/x/a.rs"),
+            art(ArtifactKind::Test, "check passed", "check:3"),
+        ];
+        let folded = dedup_artifacts(&list);
+        assert_eq!(folded.len(), 2);
+        assert_eq!((folded[0].0.label.as_str(), folded[0].1), ("check passed", 3));
+        assert_eq!((folded[1].0.label.as_str(), folded[1].1), ("a.rs", 2));
+    }
+
+    #[test]
+    fn diff_paths_round_trip() {
+        let p = diff_path("D:\\repo", "src/app/ui.rs", true);
+        assert_eq!(doc_kind(&p), DocKind::Diff);
+        assert_eq!(parse_diff_path(&p), Some(("D:\\repo", "src/app/ui.rs", true)));
+        assert_eq!(doc_kind("notes.md"), DocKind::Markdown);
+    }
 }

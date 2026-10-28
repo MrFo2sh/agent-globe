@@ -33,6 +33,15 @@ pub const NODE_HOVER: Color = Color::srgb(0.78, 0.96, 0.62);
 pub const ACTIVE_WINDOW_MS: i64 = 20_000;
 /// An open tool call older than this is a stall.
 pub const STALL_AFTER_MS: i64 = 120_000;
+/// Sessions modified within this window are tailed alongside the current one.
+pub const WATCH_RECENT_MS: i64 = 30 * 60_000;
+/// How many sessions to tail at once (the current one included).
+pub const WATCH_MAX: usize = 6;
+/// Other sessions with activity this recent appear as satellite constellations.
+pub const SATELLITE_RECENT_MS: i64 = 10 * 60_000;
+/// Distance of satellite constellations from the current one, and their scale.
+pub const SATELLITE_RADIUS: f32 = 17.0;
+pub const SATELLITE_SCALE: f32 = 0.5;
 /// Context size that triggers the "context bloat" alarm, by model family.
 /// 1M-window models (Fable, Mythos, Opus 5+, Sonnet 5+) get a higher bar than 200k-window ones.
 pub fn context_alarm_tokens(model: &str) -> u64 {

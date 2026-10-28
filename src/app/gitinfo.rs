@@ -6,12 +6,72 @@ use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+/// One file the working tree changed against HEAD.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FileChange {
+    /// Repo-relative path with forward slashes.
+    pub path: String,
+    pub added: usize,
+    pub deleted: usize,
+    /// Not yet tracked by git.
+    pub untracked: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct GitInfo {
     pub cwd: String,
     pub branch: String,
     pub dirty: usize,
     pub remote: String,
+    /// Changed files, modified ones first, then untracked; capped so a huge tree stays cheap.
+    pub changes: Vec<FileChange>,
+}
+
+const MAX_CHANGES: usize = 200;
+
+/// Parse `git diff --numstat` (modified) and `git status --porcelain` (untracked) output.
+pub fn parse_changes(numstat: &str, porcelain: &str) -> Vec<FileChange> {
+    let mut out: Vec<FileChange> = Vec::new();
+    for line in numstat.lines() {
+        let mut parts = line.split('\t');
+        let (Some(a), Some(d), Some(path)) = (parts.next(), parts.next(), parts.next()) else {
+            continue;
+        };
+        out.push(FileChange {
+            path: path.trim().to_string(),
+            added: a.trim().parse().unwrap_or(0),
+            deleted: d.trim().parse().unwrap_or(0),
+            untracked: false,
+        });
+    }
+    for line in porcelain.lines() {
+        if let Some(path) = line.strip_prefix("?? ") {
+            out.push(FileChange {
+                path: path.trim().trim_matches('"').to_string(),
+                added: 0,
+                deleted: 0,
+                untracked: true,
+            });
+        }
+    }
+    out.truncate(MAX_CHANGES);
+    out
+}
+
+/// Unified diff of one file against HEAD; untracked files show as all additions.
+pub fn diff_text(cwd: &str, path: &str, untracked: bool) -> Option<String> {
+    if untracked {
+        let full = std::path::Path::new(cwd).join(path);
+        let text = std::fs::read_to_string(full).ok()?;
+        let mut out = format!("+++ {path} (new file)\n");
+        for l in text.lines() {
+            out.push('+');
+            out.push_str(l);
+            out.push('\n');
+        }
+        return Some(out);
+    }
+    git(cwd, &["diff", "HEAD", "--", path])
 }
 
 impl GitInfo {
@@ -56,11 +116,14 @@ pub fn read(cwd: &str) -> Option<GitInfo> {
         .map(|s| s.lines().filter(|l| !l.is_empty()).count())
         .unwrap_or(0);
     let remote = git(cwd, &["remote", "get-url", "origin"]).unwrap_or_default();
+    let numstat = git(cwd, &["diff", "HEAD", "--numstat"]).unwrap_or_default();
+    let porcelain = git(cwd, &["status", "--porcelain", "--untracked-files=all"]).unwrap_or_default();
     Some(GitInfo {
         cwd: cwd.to_string(),
         branch,
         dirty,
         remote,
+        changes: parse_changes(&numstat, &porcelain),
     })
 }
 
@@ -79,7 +142,7 @@ impl Default for GitWatch {
                         if let Ok(mut i) = info.lock() {
                             *i = next;
                         }
-                        std::thread::sleep(Duration::from_secs(12));
+                        std::thread::sleep(Duration::from_secs(6));
                     }
                 })
                 .expect("spawn git-watch");
@@ -108,6 +171,19 @@ impl GitWatch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn numstat_and_porcelain_become_changes() {
+        let c = parse_changes(
+            "12\t3\tsrc/app/ui.rs\n-\t-\tassets/icon.png\n",
+            " M src/app/ui.rs\n?? notes.md\n?? \"with space.txt\"\n",
+        );
+        assert_eq!(c.len(), 4);
+        assert_eq!((c[0].added, c[0].deleted, c[0].untracked), (12, 3, false));
+        assert_eq!((c[1].added, c[1].deleted), (0, 0), "binary counts read as zero");
+        assert!(c[2].untracked && c[2].path == "notes.md");
+        assert_eq!(c[3].path, "with space.txt");
+    }
 
     #[test]
     fn remote_to_web_url() {

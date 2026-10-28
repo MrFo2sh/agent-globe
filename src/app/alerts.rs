@@ -112,7 +112,7 @@ pub fn update(
     } else if store
         .badges
         .iter()
-        .any(|b| matches!(b.kind, BadgeKind::Waiting | BadgeKind::Approval))
+        .any(|b| matches!(b.kind, BadgeKind::Waiting | BadgeKind::Approval | BadgeKind::Stalled))
     {
         Mood::Waiting
     } else {
@@ -142,9 +142,9 @@ pub fn notify(
     // Badges present right after launch are history, not news.
     let warming_up = time.elapsed_secs() < 8.0;
     let focused = windows.iter().next().is_some_and(|w| w.focused);
-    let session = store.current_session();
     for b in &store.badges {
-        let key = format!("{:?}:{}", b.kind, b.agent_id);
+        let session = store.sessions.get(&b.session_id);
+        let key = format!("{:?}:{}:{}", b.kind, b.session_id, b.agent_id);
         if seen.contains(&key) {
             continue;
         }
@@ -153,12 +153,12 @@ pub fn notify(
             continue;
         }
         let name = session
-            .and_then(|s| s.agent(&b.agent_id))
-            .map(|a| {
+            .and_then(|s| s.agent(&b.agent_id).map(|a| (s, a)))
+            .map(|(s, a)| {
                 if a.depth == 0 {
-                    "commander".to_string()
+                    format!("{} commander", s.project)
                 } else {
-                    a.name.clone()
+                    format!("{} / {}", s.project, a.name)
                 }
             })
             .unwrap_or_default();
@@ -167,6 +167,7 @@ pub fn notify(
             BadgeKind::Done => ("Mission accomplished", format!("{name} is done.")),
             BadgeKind::Error => ("Taking fire", format!("A tool call failed in {name}.")),
             BadgeKind::Approval => ("Authorization needed", format!("{name} wants to run a command.")),
+            BadgeKind::Stalled => ("Stalled", format!("A call in {name} has been running a long time.")),
         };
         std::thread::spawn(move || {
             let _ = notify_rust::Notification::new()
@@ -181,6 +182,6 @@ pub fn notify(
         store
             .badges
             .iter()
-            .any(|b| k == &format!("{:?}:{}", b.kind, b.agent_id))
+            .any(|b| k == &format!("{:?}:{}:{}", b.kind, b.session_id, b.agent_id))
     });
 }

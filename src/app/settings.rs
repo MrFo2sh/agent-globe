@@ -27,6 +27,8 @@ pub struct Settings {
     pub audio_device: String,
     /// Progress rings and hints under units.
     pub progress_rings: bool,
+    /// Other active sessions as small constellations around the current one.
+    pub satellites: bool,
     /// Per-session spend alarm in USD; 0 disables it.
     pub budget_usd: f32,
     /// Windows notifications when the window is not focused (off by default: the radio is the alert).
@@ -50,6 +52,7 @@ impl Default for Settings {
             narrator: true,
             audio_device: String::new(),
             progress_rings: true,
+            satellites: true,
             budget_usd: 0.0,
             desktop_notifications: false,
         }

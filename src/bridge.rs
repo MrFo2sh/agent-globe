@@ -40,7 +40,10 @@ pub enum ToApp {
 }
 
 pub enum ToWorker {
+    /// Tail this session from the start (replaces a running tail of the same id).
     Open(SessionRef),
+    /// The full set of sessions to keep tailing: new ones start, missing ones stop.
+    Watch(Vec<SessionRef>),
     /// Answer an approval: "allow", "deny", or "ask" (fall back to the editor's own prompt).
     Decide {
         id: u64,
@@ -100,11 +103,19 @@ fn spawn_scanner(claude_dir: PathBuf, tx: Sender<ToApp>) {
         .expect("spawn scanner");
 }
 
-fn handle_command(cmd: ToWorker, tailer: &mut Option<Tailer>, tx: &Sender<ToApp>, pending: &Pending) {
+fn handle_command(cmd: ToWorker, tailers: &mut HashMap<String, Tailer>, tx: &Sender<ToApp>, pending: &Pending) {
     match cmd {
         ToWorker::Open(s) => {
             let _ = tx.send(ToApp::Status(format!("opening {}", s.id)));
-            *tailer = Some(Tailer::new(s));
+            tailers.insert(s.id.clone(), Tailer::new(s));
+        }
+        ToWorker::Watch(list) => {
+            tailers.retain(|id, _| list.iter().any(|s| &s.id == id));
+            for s in list {
+                if !tailers.contains_key(&s.id) {
+                    tailers.insert(s.id.clone(), Tailer::new(s));
+                }
+            }
         }
         ToWorker::Decide { id, decision } => {
             if let Some(reply) = pending.lock().ok().and_then(|mut p| p.remove(&id)) {
@@ -119,12 +130,12 @@ fn spawn_tailer(rx: Receiver<ToWorker>, tx: Sender<ToApp>, interval: Duration, p
     thread::Builder::new()
         .name("tailer".into())
         .spawn(move || {
-            let mut tailer: Option<Tailer> = None;
+            let mut tailers: HashMap<String, Tailer> = HashMap::new();
             loop {
                 while let Ok(cmd) = rx.try_recv() {
-                    handle_command(cmd, &mut tailer, &tx, &pending);
+                    handle_command(cmd, &mut tailers, &tx, &pending);
                 }
-                if let Some(t) = tailer.as_mut() {
+                for t in tailers.values_mut() {
                     let events = t.poll();
                     if !events.is_empty() && tx.send(ToApp::Events(events)).is_err() {
                         return;
@@ -136,7 +147,7 @@ fn spawn_tailer(rx: Receiver<ToWorker>, tx: Sender<ToApp>, interval: Duration, p
                     }
                 }
                 match rx.recv_timeout(interval) {
-                    Ok(cmd) => handle_command(cmd, &mut tailer, &tx, &pending),
+                    Ok(cmd) => handle_command(cmd, &mut tailers, &tx, &pending),
                     Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
                     Err(crossbeam_channel::RecvTimeoutError::Disconnected) => return,
                 }

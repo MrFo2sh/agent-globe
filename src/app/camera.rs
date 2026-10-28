@@ -19,7 +19,9 @@ use bevy_egui::{EguiGlobalSettings, PrimaryEguiContext};
 use bevy_panorbit_camera::PanOrbitCamera;
 
 pub const CAMERA_HOME: Vec3 = Vec3::new(0.0, 9.0, 20.0);
+/// Fly-to distance for a subagent, and for the commander whose halos need more room.
 const FOCUS_RADIUS: f32 = 6.5;
+const FOCUS_RADIUS_ROOT: f32 = 11.0;
 
 #[derive(Resource, Default)]
 pub struct CameraState {
@@ -162,10 +164,20 @@ pub fn drive(
 
     if store.selected != state.last_selected {
         state.last_selected = store.selected.clone();
-        match store.selected.as_deref().and_then(|id| world_pos.0.get(id)) {
-            Some(&p) => {
+        let current = store.current.clone().unwrap_or_default();
+        let target = store
+            .selected
+            .as_deref()
+            .and_then(|id| world_pos.0.get(&(current.clone(), id.to_string())).map(|p| (id, *p)));
+        match target {
+            Some((id, p)) => {
+                let depth = store
+                    .current_session()
+                    .and_then(|s| s.agent(id))
+                    .map(|a| a.depth)
+                    .unwrap_or(1);
                 cam.target_focus = p;
-                cam.target_radius = FOCUS_RADIUS;
+                cam.target_radius = if depth == 0 { FOCUS_RADIUS_ROOT } else { FOCUS_RADIUS };
                 cam.force_update = true;
             }
             None => go_home(&mut cam),

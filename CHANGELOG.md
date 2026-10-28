@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+## 0.5.0 - 2026-10-28
+- Control room: every session modified in the last 30 minutes is tailed at once (up to six), not just the open one.
+- "Needs you" queue at the top of the sidebar: approvals, failed calls, commanders waiting for orders and stalls across all watched sessions; click a row to jump there.
+- Other active sessions appear as satellite constellations around the current one; click a unit or its label to switch. Toggle in settings.
+- Window jump: the 🖥 button next to a session, in the queue and in the HUD brings that session's VS Code window to the front (title match).
+- Changes section in the commander panel: files changed against the last commit with +/- counts, how many edits this session made to each, an in-app diff viewer and an "open in VS Code" button.
+- Artifact shelf folds repeats into one chip with a count (forty "check passed" become ×40).
+- Fly-to frames the commander from further away so it no longer fills the view.
+- Clicking a unit in cinematic mode brings the console back.
+- Stalled calls get a ⏳ badge and appear in the queue; toasts and radio lines for other sessions only when they need you.
+
 ## 0.4.2 - 2026-10-28
 - The red "failed call" badge and red unit colour now mean the latest finished call failed; a failure buried in history no longer marks the commander as failed every time a session opens.
 

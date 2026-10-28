@@ -11,6 +11,7 @@ mod sounds;
 mod state;
 mod theme;
 mod ui;
+mod winjump;
 
 use agent_globe::bridge::{self, BridgeConfig};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
@@ -56,7 +57,7 @@ pub fn run(cfg: Config) {
         .insert_resource(state::BridgeRes(bridge))
         .init_resource::<scene::NodeEntities>()
         .init_resource::<scene::RingEntities>()
-        .init_resource::<scene::CurrentLayout>()
+        .init_resource::<scene::SceneLayout>()
         .init_resource::<scene::NodeWorldPos>()
         .init_resource::<camera::CameraState>()
         .init_resource::<probe::Probe>()
