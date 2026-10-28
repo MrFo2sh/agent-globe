@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.3.3 - 2026-10-28
+- Viewer header shows the file name only; bubbles and badges hide while the viewer is open.
+
 ## 0.3.2 - 2026-10-28
 - Artifact shelf: two rows by default, expand / collapse, scrollable; smaller thumbnails in the shelf.
 - Integrated image viewer: click an image artifact to open it inside Agent Globe. Scroll to zoom,

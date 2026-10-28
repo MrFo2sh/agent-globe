@@ -716,7 +716,7 @@ pub fn draw(
 
 /// Notification badges floating above units: lamp for done, chat bubble for waiting, red for error.
 fn draw_badges(ctx: &egui::Context, store: &Store) {
-    if store.badges.is_empty() {
+    if store.badges.is_empty() || store.viewer.is_some() {
         return;
     }
     let t = ctx.input(|i| i.time) as f32;
@@ -1265,6 +1265,9 @@ fn draw_bubbles(
     now: i64,
 ) {
     const FRESH_MS: i64 = 90_000;
+    if store.viewer.is_some() {
+        return;
+    }
     let Some(session) = store.current_session() else { return };
     let mut bubbles: Vec<(String, Artifact, (f32, f32))> = Vec::new();
     for a in &session.agents {
@@ -1504,7 +1507,9 @@ fn draw_viewer(
         )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new(short_path(&path)).font(stencil(14.0)).color(SAND));
+                let name = path.rsplit(['/', '\\']).next().unwrap_or("").to_string();
+                ui.add(egui::Label::new(egui::RichText::new(name).font(stencil(14.0)).color(SAND)).truncate())
+                    .on_hover_text(&path);
                 ui.label(
                     egui::RichText::new(format!("{} / {}", viewer.index + 1, n.max(1)))
                         .small()
@@ -1565,9 +1570,4 @@ fn draw_viewer(
         store.viewer = Some(viewer);
     }
     Some(win.response.rect)
-}
-
-fn short_path(p: &str) -> String {
-    let parts: Vec<&str> = p.rsplit(['/', '\\']).take(3).collect();
-    parts.into_iter().rev().collect::<Vec<_>>().join("/")
 }
