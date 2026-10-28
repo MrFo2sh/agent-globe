@@ -1,5 +1,6 @@
 //! Session model and the single reducer that applies ingest events to it.
 
+use super::artifacts::{self, Artifact};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
@@ -79,6 +80,15 @@ pub enum Event {
         #[serde(default)]
         context_tokens: u64,
         #[serde(default)]
+        input_tokens: u64,
+        #[serde(default)]
+        cache_read_tokens: u64,
+        #[serde(default)]
+        cache_write_tokens: u64,
+        /// Working directory of the session, when the source knows it.
+        #[serde(default)]
+        cwd: String,
+        #[serde(default)]
         at: Millis,
     },
     AgentEnd {
@@ -154,6 +164,15 @@ pub struct Agent {
     /// Latest prompt size the model saw, in tokens (0 if unknown).
     #[serde(default)]
     pub context_tokens: u64,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+    /// URLs, files, images, commits, PRs, test results this agent produced, oldest first.
+    #[serde(default)]
+    pub artifacts: Vec<Artifact>,
     /// Completed turns (root agent: times it handed control back to the user).
     #[serde(default)]
     pub turns: u32,
@@ -178,12 +197,33 @@ impl Agent {
     pub fn has_open_call(&self) -> bool {
         self.calls.iter().any(|c| c.ended.is_none())
     }
+
+    pub fn cost_usd(&self) -> f64 {
+        super::cost::cost_usd(
+            &self.model,
+            self.input_tokens,
+            self.cache_read_tokens,
+            self.cache_write_tokens,
+            self.output_tokens,
+        )
+    }
+
+    fn add_artifacts(&mut self, found: Vec<Artifact>) {
+        for a in found {
+            if !self.artifacts.iter().any(|x| x.kind == a.kind && x.target == a.target) {
+                self.artifacts.push(a);
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Session {
     pub id: String,
     pub project: String,
+    /// Working directory of the root agent, when known.
+    #[serde(default)]
+    pub cwd: String,
     pub started: Millis,
     pub last_activity: Millis,
     /// Agents in spawn order; index 0 is always the root.
@@ -230,6 +270,10 @@ impl Session {
 
     pub fn total_calls(&self) -> usize {
         self.agents.iter().map(|a| a.calls.len()).sum()
+    }
+
+    pub fn cost_usd(&self) -> f64 {
+        self.agents.iter().map(Agent::cost_usd).sum()
     }
 
     pub fn calls_since(&self, since: Millis) -> usize {
@@ -292,6 +336,10 @@ impl Session {
             messages: 0,
             output_tokens: 0,
             context_tokens: 0,
+            input_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            artifacts: Vec::new(),
             turns: 0,
             waiting_for_user: false,
             order,
@@ -406,7 +454,7 @@ impl Session {
                 let a = self.agent_mut(&agent_id).expect("ensured");
                 a.waiting_for_user = false;
                 if !a.calls.iter().any(|c| c.id == call_id) {
-                    a.calls.push(ToolCall {
+                    let call = ToolCall {
                         id: call_id,
                         tool,
                         summary,
@@ -417,7 +465,10 @@ impl Session {
                         is_error: false,
                         started: at,
                         ended: None,
-                    });
+                    };
+                    let found = artifacts::from_call(&call);
+                    a.calls.push(call);
+                    a.add_artifacts(found);
                 }
                 self.touch(&agent_id, at);
                 self.resolve_tree();
@@ -435,12 +486,15 @@ impl Session {
                 let owner = self.call_owner.get(&call_id).cloned().unwrap_or(agent_id);
                 self.ensure_agent(&owner, None, None, "", "", "", "", at);
                 let a = self.agent_mut(&owner).expect("ensured");
+                let mut found = Vec::new();
                 if let Some(c) = a.calls.iter_mut().find(|c| c.id == call_id) {
                     c.stdout = stdout;
                     c.stderr = stderr;
                     c.is_error = is_error;
                     c.ended = Some(at);
+                    found = artifacts::from_call(c);
                 }
+                a.add_artifacts(found);
                 // A finished spawn call means the child agent is done.
                 let child: Option<String> = self
                     .agents
@@ -462,14 +516,24 @@ impl Session {
                 model,
                 output_tokens,
                 context_tokens,
+                input_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                cwd,
                 at,
                 ..
             } => {
+                if self.cwd.is_empty() && !cwd.is_empty() {
+                    self.cwd = cwd;
+                }
                 self.ensure_agent(&agent_id, None, None, "", "", &model, "", at);
                 let a = self.agent_mut(&agent_id).expect("ensured");
                 a.waiting_for_user = false;
                 a.messages += 1;
                 a.output_tokens += output_tokens;
+                a.input_tokens += input_tokens;
+                a.cache_read_tokens += cache_read_tokens;
+                a.cache_write_tokens += cache_write_tokens;
                 if context_tokens > 0 {
                     a.context_tokens = context_tokens;
                 }

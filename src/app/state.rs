@@ -4,8 +4,9 @@
 use super::settings::Settings;
 use super::sounds::Sfx;
 use super::theme;
-use agent_globe::bridge::{Bridge, ToApp, ToWorker};
+use agent_globe::bridge::{ApprovalRequest, Bridge, ToApp, ToWorker};
 use agent_globe::data::claude::SessionRef;
+use agent_globe::data::cost;
 use agent_globe::data::model::{Event, ROOT_AGENT, Session, now_millis};
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -38,10 +39,13 @@ pub enum BadgeKind {
     Waiting,
     /// A tool call failed, until acknowledged.
     Error,
+    /// A tool call is blocked on your yes or no.
+    Approval,
 }
 
 #[derive(Clone, Debug)]
 pub struct Badge {
+    pub agent_id: String,
     pub kind: BadgeKind,
     /// Window logical position of the point above the unit.
     pub x: f32,
@@ -84,6 +88,13 @@ pub struct Store {
     pub acked: HashSet<String>,
     /// Badges to draw this frame, in window logical coordinates.
     pub badges: Vec<Badge>,
+    /// Where every unit of the current session sits on screen this frame (logical coords).
+    pub unit_screen: HashMap<String, (f32, f32)>,
+    /// Tool calls waiting for a human decision, oldest first.
+    pub approvals: Vec<ApprovalRequest>,
+    /// Artifact targets the user dismissed from the speech bubbles.
+    pub dismissed_bubbles: HashSet<String>,
+    pub tray_mood: Option<super::alerts::Mood>,
     preferred: Option<String>,
     opened_once: bool,
     /// When the current session was opened; batches in the first moments are history, not news.
@@ -119,6 +130,10 @@ impl Store {
             alarmed: HashSet::new(),
             acked: HashSet::new(),
             badges: Vec::new(),
+            unit_screen: HashMap::new(),
+            approvals: Vec::new(),
+            dismissed_bubbles: HashSet::new(),
+            tray_mood: None,
             preferred,
             opened_once: false,
             opened_at: Instant::now(),
@@ -166,6 +181,15 @@ impl Store {
 
     pub fn play(&mut self, sfx: Sfx) {
         self.sfx.push(sfx);
+    }
+
+    /// Answer an approval request and drop it from the queue.
+    pub fn decide(&mut self, bridge: &Bridge, id: u64, decision: &str) {
+        self.approvals.retain(|a| a.id != id);
+        let _ = bridge.to_worker.send(ToWorker::Decide {
+            id,
+            decision: decision.to_string(),
+        });
     }
 
     /// Raise an alarm once per key: toast + sound.
@@ -345,6 +369,28 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: 
                     store.current = first;
                 }
                 store.layout_dirty = true;
+                if settings.budget_usd > 0.0
+                    && let Some(s) = store.current_session()
+                    && s.cost_usd() >= settings.budget_usd as f64
+                {
+                    let (id, spent) = (s.id.clone(), s.cost_usd());
+                    store.alarm(
+                        format!("budget:{id}"),
+                        format!(
+                            "$ BUDGET: this session has spent {} (limit {})",
+                            cost::fmt_usd(spent),
+                            cost::fmt_usd(settings.budget_usd as f64)
+                        ),
+                        Sfx::Alarm,
+                    );
+                }
+            }
+            ToApp::Approval(req) => {
+                let label = req.command.clone().unwrap_or_else(|| req.summary.clone());
+                let short: String = label.lines().next().unwrap_or("").chars().take(70).collect();
+                store.toast(ToastKind::Warn, format!("🛡 authorization: {} wants {short}", req.tool));
+                store.play(Sfx::Waiting);
+                store.approvals.push(req);
             }
             ToApp::Status(s) => {
                 store.toast(ToastKind::Info, s.clone());

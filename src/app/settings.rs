@@ -25,6 +25,10 @@ pub struct Settings {
     pub narrator: bool,
     /// Output device name; empty = system default.
     pub audio_device: String,
+    /// Per-session spend alarm in USD; 0 disables it.
+    pub budget_usd: f32,
+    /// Windows notifications when the window is not focused.
+    pub desktop_notifications: bool,
 }
 
 impl Default for Settings {
@@ -43,6 +47,8 @@ impl Default for Settings {
             tool_blips: false,
             narrator: true,
             audio_device: String::new(),
+            budget_usd: 0.0,
+            desktop_notifications: true,
         }
     }
 }

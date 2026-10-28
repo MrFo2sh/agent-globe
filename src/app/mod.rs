@@ -1,7 +1,10 @@
 //! Bevy application. One file per concern; none of them parse files.
 
+mod alerts;
 mod camera;
 mod debrief;
+mod gitinfo;
+mod probe;
 mod scene;
 mod settings;
 mod sounds;
@@ -56,7 +59,9 @@ pub fn run(cfg: Config) {
         .init_resource::<scene::CurrentLayout>()
         .init_resource::<scene::NodeWorldPos>()
         .init_resource::<camera::CameraState>()
-        .add_systems(Startup, (camera::setup, scene::setup, sounds::setup))
+        .init_resource::<probe::Probe>()
+        .init_resource::<gitinfo::GitWatch>()
+        .add_systems(Startup, (camera::setup, scene::setup, sounds::setup, alerts::setup))
         .add_systems(
             Update,
             (
@@ -72,6 +77,8 @@ pub fn run(cfg: Config) {
                 camera::drive,
                 camera::apply_viewport,
                 scene::project_badges,
+                alerts::update,
+                alerts::notify,
                 sounds::play,
                 settings::persist,
                 maximize_window,

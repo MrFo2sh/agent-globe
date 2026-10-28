@@ -273,9 +273,10 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
             let model = msg["model"].as_str().unwrap_or("").to_string();
             let usage = &msg["usage"];
             let output_tokens = usage["output_tokens"].as_u64().unwrap_or(0);
-            let context_tokens = usage["input_tokens"].as_u64().unwrap_or(0)
-                + usage["cache_read_input_tokens"].as_u64().unwrap_or(0)
-                + usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            let input_tokens = usage["input_tokens"].as_u64().unwrap_or(0);
+            let cache_read_tokens = usage["cache_read_input_tokens"].as_u64().unwrap_or(0);
+            let cache_write_tokens = usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            let context_tokens = input_tokens + cache_read_tokens + cache_write_tokens;
             // Text first: it is the narrator line for every tool call in the same message.
             let mut text = String::new();
             if let Some(blocks) = msg["content"].as_array() {
@@ -321,6 +322,10 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
                 model,
                 output_tokens,
                 context_tokens,
+                input_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                cwd: v["cwd"].as_str().unwrap_or("").to_string(),
                 at,
             });
         }
@@ -376,13 +381,19 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
                     }
                 }
                 if !text.trim().is_empty() {
-                    events.push(user_message(session_id, agent, &text, at));
+                    events.push(user_message(
+                        session_id,
+                        agent,
+                        &text,
+                        v["cwd"].as_str().unwrap_or(""),
+                        at,
+                    ));
                 }
             } else if let Some(s) = content.as_str()
                 && !is_meta
                 && !s.trim().is_empty()
             {
-                events.push(user_message(session_id, agent, s, at));
+                events.push(user_message(session_id, agent, s, v["cwd"].as_str().unwrap_or(""), at));
             }
         }
         _ => {}
@@ -433,7 +444,7 @@ pub fn strip_tag_blocks(text: &str) -> String {
     out.trim().to_string()
 }
 
-fn user_message(session_id: &str, agent: &str, text: &str, at: Millis) -> Event {
+fn user_message(session_id: &str, agent: &str, text: &str, cwd: &str, at: Millis) -> Event {
     Event::Message {
         session_id: session_id.to_string(),
         agent_id: agent.to_string(),
@@ -442,6 +453,10 @@ fn user_message(session_id: &str, agent: &str, text: &str, at: Millis) -> Event 
         model: String::new(),
         output_tokens: 0,
         context_tokens: 0,
+        input_tokens: 0,
+        cache_read_tokens: 0,
+        cache_write_tokens: 0,
+        cwd: cwd.to_string(),
         at,
     }
 }

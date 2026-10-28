@@ -3,17 +3,22 @@
 //! the camera can ignore input that belongs to the UI.
 
 use super::debrief;
+use super::gitinfo::{GitInfo, GitWatch};
+use super::probe::Probe;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
 use super::state::{BadgeKind, BridgeRes, Store, ToastKind};
 use super::theme;
+use agent_globe::bridge::Bridge;
+use agent_globe::data::artifacts::{Artifact, ArtifactKind};
 use agent_globe::data::claude::SessionRef;
+use agent_globe::data::cost;
 use agent_globe::data::model::{Agent, ROOT_AGENT, Session, Status, now_millis};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use bevy_panorbit_camera::PanOrbitCamera;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 // Army palette.
 const ACCENT: egui::Color32 = egui::Color32::from_rgb(160, 232, 110); // light plastic
@@ -132,6 +137,9 @@ pub fn draw(
     diagnostics: Res<DiagnosticsStore>,
     cams: Query<&PanOrbitCamera>,
     sounds: Res<Sounds>,
+    probe: Res<Probe>,
+    gitw: Res<GitWatch>,
+    mut images: Local<HashMap<String, Option<egui::TextureHandle>>>,
     mut styled: Local<bool>,
     mut last_scale: Local<f32>,
     mut last_panel: Local<Option<String>>,
@@ -145,6 +153,18 @@ pub fn draw(
         *last_scale = settings.ui_scale;
     }
     let now = now_millis();
+    if let Some(s) = store.current_session() {
+        gitw.watch(&s.cwd);
+        probe.watch(
+            s.agents
+                .iter()
+                .flat_map(|a| a.artifacts.iter())
+                .filter(|a| a.kind == ArtifactKind::Url)
+                .map(|a| a.target.clone())
+                .collect(),
+        );
+    }
+    let git = gitw.info();
 
     // ---- cinematic mode: scene only ----
     if store.hide_ui {
@@ -157,6 +177,7 @@ pub fn draw(
                 ui.label(egui::RichText::new("F or Esc: back to the console").small().color(DIM));
             });
         draw_badges(ctx, &store);
+        draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
         draw_toasts(ctx, &store);
         return Ok(());
     }
@@ -237,6 +258,20 @@ pub fn draw(
                         egui::RichText::new(format!("ctx {ctx_k}k")).monospace().color(ctx_color),
                         "Context size: how many tokens the commander's last request carried (prompt + history + tool results).\nAmber at two thirds of this model's window, red near the limit: that is where the agent starts forgetting early instructions.",
                     );
+                    let spent = s.cost_usd();
+                    let spent_color = if settings.budget_usd > 0.0 && spent >= settings.budget_usd as f64 { RED } else { SAND };
+                    tip(
+                        ui,
+                        egui::RichText::new(cost::fmt_usd(spent)).monospace().color(spent_color),
+                        "Estimated spend for this session from token counts and list prices (input, cache reads, cache writes, output).\nSet a budget alarm in settings.",
+                    );
+                    if let Some(g) = git.as_ref() {
+                        tip(
+                            ui,
+                            egui::RichText::new(format!("⎇ {} · {}Δ", g.branch, g.dirty)).monospace().color(DIM),
+                            "Git branch of the session's folder and how many files are uncommitted right now.",
+                        );
+                    }
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -438,6 +473,9 @@ pub fn draw(
                     just_opened,
                     narrator,
                     &stalled,
+                    &probe,
+                    git.as_ref(),
+                    &mut images,
                 );
             });
         inset_right = right.response.rect.width();
@@ -543,6 +581,21 @@ pub fn draw(
                 ui.checkbox(&mut settings.scanlines, "CRT scanlines");
                 ui.checkbox(&mut settings.narrator, "narrator line under each call");
                 ui.separator();
+                ui.label(egui::RichText::new("ALERTS").small().color(DIM));
+                ui.add(
+                    egui::Slider::new(&mut settings.budget_usd, 0.0..=200.0)
+                        .text("budget alarm ($ per session, 0 = off)"),
+                );
+                ui.checkbox(
+                    &mut settings.desktop_notifications,
+                    "Windows notifications when unfocused",
+                );
+                ui.label(
+                    egui::RichText::new("approvals from the globe: add the PreToolUse hook from the README")
+                        .small()
+                        .color(DIM),
+                );
+                ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("reset defaults").clicked() {
                         *settings = Settings::default();
@@ -624,6 +677,10 @@ pub fn draw(
     }
 
     draw_badges(ctx, &store);
+    draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
+    if let Some(rect) = draw_approvals(ctx, &mut store, &bridge.0, inset_top) {
+        ui_rects.push(rect);
+    }
     draw_toasts(ctx, &store);
 
     store.scene_insets = Some((inset_left, inset_top, inset_right, inset_bottom));
@@ -672,6 +729,7 @@ fn draw_badges(ctx: &egui::Context, store: &Store) {
             BadgeKind::Done => ("!", egui::Color32::from_rgb(255, 215, 90), "done"),
             BadgeKind::Waiting => ("💬", ACCENT, "awaiting your orders"),
             BadgeKind::Error => ("⚠", RED, "failed call"),
+            BadgeKind::Approval => ("🛡", AMBER, "authorization needed"),
         };
         let center = egui::pos2(b.x, b.y - 10.0 - 4.0 * (t * 2.0).sin());
         let glow = color.gamma_multiply(0.25 * pulse);
@@ -791,6 +849,9 @@ fn agent_panel(
     jump_to_end: bool,
     narrator: bool,
     stalled: &HashSet<String>,
+    probe: &Probe,
+    git: Option<&GitInfo>,
+    images: &mut HashMap<String, Option<egui::TextureHandle>>,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -864,6 +925,22 @@ fn agent_panel(
             .fill(fill)
             .text(egui::RichText::new(format!("{open_calls} open")).small()),
     );
+    if !a.artifacts.is_empty() {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("ARTIFACTS").small().color(DIM));
+        ui.horizontal_wrapped(|ui| {
+            for art in a.artifacts.iter().rev() {
+                let alive = if art.kind == ArtifactKind::Url {
+                    probe.is_alive(&art.target)
+                } else {
+                    None
+                };
+                if artifact_chip(ui, art, alive, images).clicked() {
+                    open_artifact(ui.ctx(), art, git);
+                }
+            }
+        });
+    }
     ui.separator();
 
     egui::ScrollArea::vertical()
@@ -1023,4 +1100,271 @@ fn agent_tree(
             agent_tree(ui, session, &a.id, depth + 1, now, selected, pick);
         }
     }
+}
+
+fn glyph(a: &Artifact) -> (&'static str, egui::Color32) {
+    match a.kind {
+        ArtifactKind::Url => ("🌐", ACCENT),
+        ArtifactKind::Pr => ("🔀", SAND),
+        ArtifactKind::File => ("📄", TEXT),
+        ArtifactKind::Image => ("🖼", SAND),
+        ArtifactKind::Commit => ("🔖", SAND),
+        ArtifactKind::Test => {
+            if a.ok == Some(false) {
+                ("❌", RED)
+            } else {
+                ("✅", GREEN)
+            }
+        }
+    }
+}
+
+/// One clickable chip. A dead URL is dimmed; an image shows a small thumbnail.
+fn artifact_chip(
+    ui: &mut egui::Ui,
+    a: &Artifact,
+    alive: Option<bool>,
+    images: &mut HashMap<String, Option<egui::TextureHandle>>,
+) -> egui::Response {
+    let (g, mut color) = glyph(a);
+    if alive == Some(false) {
+        color = DIM;
+    }
+    let mut text = format!("{g} {}", a.label);
+    if alive == Some(false) {
+        text.push_str("  (down)");
+    }
+    let hover = match a.kind {
+        ArtifactKind::Url | ArtifactKind::Pr => format!("open {}", a.target),
+        ArtifactKind::File => format!("open in VS Code: {}", a.target),
+        ArtifactKind::Image => format!("open {}", a.target),
+        ArtifactKind::Commit => format!("commit {}", a.target),
+        ArtifactKind::Test => "test result".to_string(),
+    };
+    if a.kind == ArtifactKind::Image
+        && let Some(tex) = thumbnail(ui.ctx(), images, &a.target)
+    {
+        let size = fit(tex.size_vec2(), 120.0);
+        return ui
+            .add(egui::Button::image(egui::Image::new(egui::load::SizedTexture::new(
+                tex.id(),
+                size,
+            ))))
+            .on_hover_text(hover);
+    }
+    ui.button(egui::RichText::new(text).color(color)).on_hover_text(hover)
+}
+
+fn fit(size: egui::Vec2, max: f32) -> egui::Vec2 {
+    let k = (max / size.x.max(size.y)).min(1.0);
+    egui::vec2((size.x * k).max(1.0), (size.y * k).max(1.0))
+}
+
+/// Decode an image once and keep it as a texture. None when the file cannot be read.
+fn thumbnail<'a>(
+    ctx: &egui::Context,
+    images: &'a mut HashMap<String, Option<egui::TextureHandle>>,
+    path: &str,
+) -> Option<&'a egui::TextureHandle> {
+    if !images.contains_key(path) {
+        let loaded = image::open(path).ok().map(|img| {
+            let thumb = img.thumbnail(320, 320).to_rgba8();
+            let (w, h) = thumb.dimensions();
+            let ci = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], thumb.as_raw());
+            ctx.load_texture(format!("thumb:{path}"), ci, egui::TextureOptions::LINEAR)
+        });
+        images.insert(path.to_string(), loaded);
+    }
+    images.get(path).and_then(|t| t.as_ref())
+}
+
+/// Click handling for every artifact kind. Opening runs off-thread so the frame never waits.
+fn open_artifact(ctx: &egui::Context, a: &Artifact, git: Option<&GitInfo>) {
+    match a.kind {
+        ArtifactKind::Url | ArtifactKind::Pr | ArtifactKind::Image => {
+            let t = a.target.clone();
+            std::thread::spawn(move || {
+                let _ = open::that(&t);
+            });
+        }
+        ArtifactKind::File => {
+            let t = a.target.clone();
+            std::thread::spawn(move || {
+                let mut cmd = std::process::Command::new("cmd");
+                cmd.args(["/c", "code", "-g", &t]);
+                #[cfg(windows)]
+                {
+                    use std::os::windows::process::CommandExt;
+                    cmd.creation_flags(0x0800_0000);
+                }
+                let _ = cmd.spawn();
+            });
+        }
+        ArtifactKind::Commit => match git.and_then(GitInfo::web_url) {
+            Some(web) => {
+                let url = format!("{web}/commit/{}", a.target);
+                std::thread::spawn(move || {
+                    let _ = open::that(&url);
+                });
+            }
+            None => ctx.copy_text(a.target.clone()),
+        },
+        ArtifactKind::Test => {}
+    }
+}
+
+/// Speech bubbles: the newest artifact of each unit, for 90 s, floating above the unit.
+fn draw_bubbles(
+    ctx: &egui::Context,
+    store: &mut Store,
+    probe: &Probe,
+    git: Option<&GitInfo>,
+    images: &mut HashMap<String, Option<egui::TextureHandle>>,
+    now: i64,
+) {
+    const FRESH_MS: i64 = 90_000;
+    let Some(session) = store.current_session() else { return };
+    let mut bubbles: Vec<(String, Artifact, (f32, f32))> = Vec::new();
+    for a in &session.agents {
+        let Some(art) = a.artifacts.iter().rev().find(|x| now - x.at < FRESH_MS && x.at > 0) else {
+            continue;
+        };
+        if store.dismissed_bubbles.contains(&art.target) {
+            continue;
+        }
+        let Some(&pos) = store.unit_screen.get(&a.id) else {
+            continue;
+        };
+        bubbles.push((a.id.clone(), art.clone(), pos));
+    }
+    let mut dismiss: Vec<String> = Vec::new();
+    for (agent_id, art, (x, y)) in bubbles {
+        let alive = if art.kind == ArtifactKind::Url {
+            probe.is_alive(&art.target)
+        } else {
+            None
+        };
+        egui::Area::new(egui::Id::new(("bubble", &agent_id)))
+            .fixed_pos(egui::pos2(x + 18.0, y - 70.0))
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(PANEL)
+                    .stroke(egui::Stroke::new(1.5, glyph(&art).1))
+                    .inner_margin(8.0)
+                    .corner_radius(10.0)
+                    .show(ui, |ui| {
+                        ui.set_max_width(260.0);
+                        ui.horizontal(|ui| {
+                            if artifact_chip(ui, &art, alive, images).clicked() {
+                                open_artifact(ui.ctx(), &art, git);
+                            }
+                            if ui.small_button("✕").on_hover_text("dismiss").clicked() {
+                                dismiss.push(art.target.clone());
+                            }
+                        });
+                        let what = match art.kind {
+                            ArtifactKind::Url => "serving, click to open",
+                            ArtifactKind::Pr => "pull request",
+                            ArtifactKind::File => "written, click to open in VS Code",
+                            ArtifactKind::Image => "looked at this",
+                            ArtifactKind::Commit => "committed",
+                            ArtifactKind::Test => "test run",
+                        };
+                        ui.label(egui::RichText::new(what).small().color(DIM));
+                    });
+                // Tail pointing down at the unit.
+                let r = ui.min_rect();
+                let p = ui.painter();
+                let tip_x = r.left() + 14.0;
+                p.add(egui::Shape::convex_polygon(
+                    vec![
+                        egui::pos2(tip_x, r.bottom()),
+                        egui::pos2(tip_x + 12.0, r.bottom()),
+                        egui::pos2(tip_x - 6.0, r.bottom() + 12.0),
+                    ],
+                    PANEL,
+                    egui::Stroke::new(1.0, glyph(&art).1),
+                ));
+            });
+    }
+    for t in dismiss {
+        store.dismissed_bubbles.insert(t);
+    }
+}
+
+/// The authorization card: the oldest pending approval, with Allow / Deny / Ask in VS Code.
+/// Y and N on the keyboard do the same.
+fn draw_approvals(ctx: &egui::Context, store: &mut Store, bridge: &Bridge, inset_top: f32) -> Option<egui::Rect> {
+    let req = store.approvals.first().cloned()?;
+    let pending = store.approvals.len();
+    let mut decision: Option<&str> = None;
+    let key_yes = ctx.input(|i| i.key_pressed(egui::Key::Y));
+    let key_no = ctx.input(|i| i.key_pressed(egui::Key::N));
+    let win = egui::Window::new("🛡 AUTHORIZATION REQUEST")
+        .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, inset_top + 24.0))
+        .resizable(false)
+        .collapsible(false)
+        .show(ctx, |ui| {
+            ui.set_min_width(520.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "{} wants to run {}",
+                    if req.agent_id == ROOT_AGENT {
+                        "commander"
+                    } else {
+                        &req.agent_id
+                    },
+                    req.tool
+                ))
+                .font(stencil(15.0))
+                .color(AMBER),
+            );
+            if !req.cwd.is_empty() {
+                ui.label(egui::RichText::new(&req.cwd).small().color(DIM));
+            }
+            egui::Frame::NONE.fill(INK).inner_margin(8.0).show(ui, |ui| {
+                let body = req.command.clone().unwrap_or_else(|| req.summary.clone());
+                let shown: String = body.lines().take(12).collect::<Vec<_>>().join("\n");
+                ui.add(
+                    egui::Label::new(egui::RichText::new(shown).monospace())
+                        .wrap()
+                        .selectable(true),
+                );
+                if body.lines().count() > 12 {
+                    ui.label(egui::RichText::new("…").small().color(DIM));
+                }
+            });
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui
+                    .button(egui::RichText::new("✔ Allow  (Y)").color(GREEN).strong())
+                    .clicked()
+                    || key_yes
+                {
+                    decision = Some("allow");
+                }
+                if ui
+                    .button(egui::RichText::new("✖ Deny  (N)").color(RED).strong())
+                    .clicked()
+                    || key_no
+                {
+                    decision = Some("deny");
+                }
+                if ui.button(egui::RichText::new("↪ Ask in VS Code").color(DIM)).clicked() {
+                    decision = Some("ask");
+                }
+                if pending > 1 {
+                    ui.label(
+                        egui::RichText::new(format!("+{} more waiting", pending - 1))
+                            .small()
+                            .color(DIM),
+                    );
+                }
+            });
+        })?;
+    if let Some(d) = decision {
+        store.decide(bridge, req.id, d);
+    }
+    Some(win.response.rect)
 }

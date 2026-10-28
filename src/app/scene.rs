@@ -637,11 +637,20 @@ pub fn project_badges(
     let Ok((cam, cam_tf)) = cams.single() else { return };
     let zoom = settings.ui_scale.max(0.1);
     let mut badges = Vec::new();
+    let mut unit_screen = std::collections::HashMap::new();
     if let Some(session) = store.current_session() {
         for (node, tf) in &nodes {
             let Some(agent) = session.agent(&node.id) else { continue };
-            let kind = if agent.calls.iter().any(|c| c.is_error) && !store.acked.contains(&format!("err:{}", agent.id))
-            {
+            if let Ok(p) = cam.world_to_viewport(cam_tf, tf.translation()) {
+                unit_screen.insert(agent.id.clone(), (p.x / zoom, p.y / zoom));
+            }
+            let pending_approval = store
+                .approvals
+                .iter()
+                .any(|a| a.session_id == session.id && a.agent_id == agent.id);
+            let kind = if pending_approval {
+                Some(super::state::BadgeKind::Approval)
+            } else if agent.calls.iter().any(|c| c.is_error) && !store.acked.contains(&format!("err:{}", agent.id)) {
                 Some(super::state::BadgeKind::Error)
             } else if agent.depth == 0 && agent.waiting_for_user {
                 Some(super::state::BadgeKind::Waiting)
@@ -654,6 +663,7 @@ pub fn project_badges(
             let head = tf.translation() + Vec3::Y * if agent.depth == 0 { 1.05 } else { 0.62 };
             if let Ok(p) = cam.world_to_viewport(cam_tf, head) {
                 badges.push(super::state::Badge {
+                    agent_id: agent.id.clone(),
                     kind,
                     x: p.x / zoom,
                     y: p.y / zoom,
@@ -662,6 +672,7 @@ pub fn project_badges(
         }
     }
     store.badges = badges;
+    store.unit_screen = unit_screen;
 }
 
 fn on_click(ev: On<PointerClick>, nodes: Query<&NodeAgent>, mut store: ResMut<Store>) {

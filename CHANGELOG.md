@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.3.0 - 2026-10-28 — Control tower
+- Artifacts: served URLs, files written, images looked at, commits, pull requests and test results
+  are extracted from every tool call. Chips in the unit panel; a speech bubble above the unit for
+  90 s after a new one. Click opens the browser, VS Code at the file, the image, or the commit on
+  GitHub. URL chips dim when the port stops answering.
+- Approvals from the globe: a PreToolUse hook posts to `/approvals` and blocks until you click
+  Allow, Deny, or "Ask in VS Code" (Y / N keys). Badge and radio line on the unit while it waits.
+- Windows notifications when the window is unfocused and a unit needs you; tray icon whose
+  colour is the status (green clear, amber waiting, red fire) with Show / Mute / Quit.
+- Cost per session in the HUD from token counts and list prices, per-unit cost in the panel,
+  budget alarm in settings.
+- Git awareness: branch and uncommitted-change count of the session's folder in the HUD.
+
 ## 0.2.4 - 2026-10-28
 - Badges stay inside the scene area; they no longer draw over open panels.
 

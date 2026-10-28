@@ -23,6 +23,10 @@ pub fn from_claude_hook(v: &Value) -> Option<Event> {
             model: String::new(),
             output_tokens: 0,
             context_tokens: 0,
+            input_tokens: 0,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+            cwd: v["cwd"].as_str().unwrap_or("").to_string(),
             at,
         },
         "PreToolUse" => {
