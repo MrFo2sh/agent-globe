@@ -928,8 +928,13 @@ fn agent_panel(
     if !a.artifacts.is_empty() {
         ui.add_space(4.0);
         ui.label(egui::RichText::new("ARTIFACTS").small().color(DIM));
+        const SHOWN: usize = 18;
+        let key = format!("{}:artifacts", a.id);
+        let all = expanded.contains(&key);
+        let total = a.artifacts.len();
+        let mut toggle = false;
         ui.horizontal_wrapped(|ui| {
-            for art in a.artifacts.iter().rev() {
+            for art in a.artifacts.iter().rev().take(if all { total } else { SHOWN }) {
                 let alive = if art.kind == ArtifactKind::Url {
                     probe.is_alive(&art.target)
                 } else {
@@ -939,7 +944,24 @@ fn agent_panel(
                     open_artifact(ui.ctx(), art, git);
                 }
             }
+            if total > SHOWN {
+                let label = if all {
+                    "▴ fewer".to_string()
+                } else {
+                    format!("▾ {} more", total - SHOWN)
+                };
+                if ui.small_button(egui::RichText::new(label).small()).clicked() {
+                    toggle = true;
+                }
+            }
         });
+        if toggle {
+            if all {
+                expanded.remove(&key);
+            } else {
+                expanded.insert(key);
+            }
+        }
     }
     ui.separator();
 

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.3.1 - 2026-10-28
+- Artifact extraction rejects template URLs, shell fragments and sentence words; the chip strip
+  shows the newest 18 with a "more" toggle.
+
 ## 0.3.0 - 2026-10-28 — Control tower
 - Artifacts: served URLs, files written, images looked at, commits, pull requests and test results
   are extracted from every tool call. Chips in the unit panel; a speech bubble above the unit for

@@ -55,6 +55,25 @@ fn file_name(path: &str) -> String {
     path.rsplit(['/', '\\']).next().unwrap_or(path).to_string()
 }
 
+/// Reject matches that are templates or shell fragments rather than addresses.
+fn plausible_url(u: &str) -> bool {
+    let Some(rest) = u.strip_prefix("https://").or_else(|| u.strip_prefix("http://")) else {
+        return false;
+    };
+    let host = rest.split(['/', '?', '#', ':']).next().unwrap_or("");
+    let bad_chars = u
+        .chars()
+        .any(|c| matches!(c, '$' | '*' | '|' | '%' | '{' | '}' | '<' | '>' | '`'));
+    let numeric = host.chars().all(|c| c.is_ascii_digit() || c == '.') && host.contains('.');
+    let hosty = host == "localhost" || numeric || (host.contains('.') && host.len() > 3);
+    !bad_chars && hosty && !host.ends_with('.')
+}
+
+/// A created-file path must look like a path, not a word from a sentence.
+fn plausible_path(p: &str) -> bool {
+    (p.contains('/') || p.contains('\\') || p.contains('.')) && !p.contains("://") && p.len() > 2
+}
+
 fn trim_url(u: &str) -> &str {
     u.trim_end_matches(['.', ',', ';', ':', ')', ']', '"', '\'', '>'])
 }
@@ -105,6 +124,9 @@ pub fn from_call(call: &ToolCall) -> Vec<Artifact> {
     .captures_iter(&text)
     {
         let path = cap[1].trim_end_matches(['.', ',']).to_string();
+        if !plausible_path(&path) {
+            continue;
+        }
         let kind = if is_image(&path) {
             ArtifactKind::Image
         } else {
@@ -120,6 +142,9 @@ pub fn from_call(call: &ToolCall) -> Vec<Artifact> {
             .replace("0.0.0.0", "localhost")
             .replace("[::]", "localhost");
         let u = normalized.as_str();
+        if !plausible_url(u) {
+            continue;
+        }
         if u.contains("rustsec.org") || u.contains("support.claude.com") || u.contains("platform.claude.com") {
             continue;
         }
@@ -298,6 +323,24 @@ mod tests {
         let bad = bad.iter().find(|x| x.kind == ArtifactKind::Test).unwrap();
         assert_eq!(bad.label, "2 failed");
         assert_eq!(bad.ok, Some(false));
+    }
+
+    #[test]
+    fn rejects_templates_and_sentence_words() {
+        let a = from_call(&call(
+            "Bash",
+            "x",
+            Some("cat README"),
+            "use $ZROK_URL or http://host:port and *|https://* then http://the
+written to the file
+File created successfully at: D:/x/y.txt",
+        ));
+        let targets: Vec<_> = a.iter().map(|x| x.target.clone()).collect();
+        assert_eq!(targets, vec!["D:/x/y.txt".to_string()]);
+        assert!(plausible_url("http://localhost:3000"));
+        assert!(plausible_url("https://github.com/MrFo2sh/agent-globe"));
+        assert!(!plausible_url("http://host:port"));
+        assert!(!plausible_url("http://$ZROK_URL"));
     }
 
     #[test]
