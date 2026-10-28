@@ -189,6 +189,7 @@ mod tests {
             summary: String::new(),
             command: cmd.map(String::from),
             note: String::new(),
+            todos: None,
             at,
         });
         s.apply(Event::ToolEnd {

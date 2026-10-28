@@ -140,6 +140,7 @@ pub fn draw(
     probe: Res<Probe>,
     gitw: Res<GitWatch>,
     mut images: Local<HashMap<String, Option<egui::TextureHandle>>>,
+    mut docs: Local<HashMap<String, Option<String>>>,
     mut styled: Local<bool>,
     mut last_scale: Local<f32>,
     mut last_panel: Local<Option<String>>,
@@ -177,8 +178,9 @@ pub fn draw(
                 ui.label(egui::RichText::new("F or Esc: back to the console").small().color(DIM));
             });
         draw_badges(ctx, &store);
+        draw_progress(ctx, &store, &settings, now);
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
-        draw_viewer(ctx, &mut store, &mut images);
+        draw_viewer(ctx, &mut store, &mut images, &mut docs);
         draw_toasts(ctx, &store);
         return Ok(());
     }
@@ -450,6 +452,7 @@ pub fn draw(
         .cloned();
     let mut close = false;
     let mut view_image: Option<String> = None;
+    let mut query = std::mem::take(&mut store.artifact_query);
     let mut inset_right = 0.0_f32;
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
     *last_panel = selected.as_ref().map(|a| a.id.clone());
@@ -479,11 +482,13 @@ pub fn draw(
                     git.as_ref(),
                     &mut images,
                     &mut view_image,
+                    &mut query,
                 );
             });
         inset_right = right.response.rect.width();
         ui_rects.push(right.response.rect);
     }
+    store.artifact_query = query;
     if close {
         store.selected = None;
     }
@@ -586,6 +591,7 @@ pub fn draw(
                 ui.add(egui::Slider::new(&mut settings.ui_scale, 0.6..=1.8).text("ui scale"));
                 ui.checkbox(&mut settings.scanlines, "CRT scanlines");
                 ui.checkbox(&mut settings.narrator, "narrator line under each call");
+                ui.checkbox(&mut settings.progress_rings, "progress rings and hints under units");
                 ui.separator();
                 ui.label(egui::RichText::new("ALERTS").small().color(DIM));
                 ui.add(
@@ -683,8 +689,9 @@ pub fn draw(
     }
 
     draw_badges(ctx, &store);
+    draw_progress(ctx, &store, &settings, now);
     draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
-    if let Some(rect) = draw_viewer(ctx, &mut store, &mut images) {
+    if let Some(rect) = draw_viewer(ctx, &mut store, &mut images, &mut docs) {
         ui_rects.push(rect);
     }
     if let Some(rect) = draw_approvals(ctx, &mut store, &bridge.0, inset_top) {
@@ -862,6 +869,7 @@ fn agent_panel(
     git: Option<&GitInfo>,
     images: &mut HashMap<String, Option<egui::TextureHandle>>,
     view_image: &mut Option<String>,
+    query: &mut String,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -951,13 +959,31 @@ fn agent_panel(
                 toggle = true;
             }
         });
+        if all {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("🔍").small());
+                ui.add(
+                    egui::TextEdit::singleline(query)
+                        .hint_text("search artifacts")
+                        .desired_width(220.0),
+                );
+                if !query.is_empty() && ui.small_button("✕").clicked() {
+                    query.clear();
+                }
+            });
+        }
+        let needle = if all { query.to_ascii_lowercase() } else { String::new() };
         egui::ScrollArea::vertical()
             .id_salt(&key)
             .max_height(shelf_h)
             .auto_shrink([false, true])
             .show(ui, |ui| {
                 ui.horizontal_wrapped(|ui| {
-                    for art in a.artifacts.iter().rev() {
+                    for art in a.artifacts.iter().rev().filter(|x| {
+                        needle.is_empty()
+                            || x.label.to_ascii_lowercase().contains(&needle)
+                            || x.target.to_ascii_lowercase().contains(&needle)
+                    }) {
                         let alive = if art.kind == ArtifactKind::Url {
                             probe.is_alive(&art.target)
                         } else {
@@ -1222,6 +1248,7 @@ fn thumbnail<'a>(
 fn open_artifact(ctx: &egui::Context, a: &Artifact, git: Option<&GitInfo>) -> Option<String> {
     match a.kind {
         ArtifactKind::Image => return Some(a.target.clone()),
+        ArtifactKind::File if doc_kind(&a.target) != DocKind::Other => return Some(a.target.clone()),
         ArtifactKind::Url | ArtifactKind::Pr => {
             let t = a.target.clone();
             std::thread::spawn(move || {
@@ -1420,9 +1447,33 @@ fn draw_approvals(ctx: &egui::Context, store: &mut Store, bridge: &Bridge, inset
     Some(win.response.rect)
 }
 
-/// Open the in-app viewer on `path`, with every image of the same unit as siblings.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DocKind {
+    Image,
+    Markdown,
+    Pdf,
+    Other,
+}
+
+fn doc_kind(path: &str) -> DocKind {
+    let p = path.to_ascii_lowercase();
+    if [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
+        .iter()
+        .any(|e| p.ends_with(e))
+    {
+        DocKind::Image
+    } else if p.ends_with(".md") || p.ends_with(".markdown") {
+        DocKind::Markdown
+    } else if p.ends_with(".pdf") {
+        DocKind::Pdf
+    } else {
+        DocKind::Other
+    }
+}
+
+/// Open the in-app viewer on `path`, with every viewable artifact of the same unit as siblings.
 fn open_viewer(store: &mut Store, path: &str) {
-    let mut paths: Vec<String> = store
+    let mut items: Vec<String> = store
         .current_session()
         .map(|s| {
             s.agents
@@ -1431,21 +1482,22 @@ fn open_viewer(store: &mut Store, path: &str) {
                 .map(|a| {
                     a.artifacts
                         .iter()
-                        .filter(|x| x.kind == ArtifactKind::Image)
+                        .filter(|x| doc_kind(&x.target) != DocKind::Other)
                         .map(|x| x.target.clone())
                         .collect()
                 })
                 .unwrap_or_default()
         })
         .unwrap_or_default();
-    if paths.is_empty() {
-        paths.push(path.to_string());
+    if items.is_empty() {
+        items.push(path.to_string());
     }
-    let index = paths.iter().position(|p| p == path).unwrap_or(0);
+    let index = items.iter().position(|p| p == path).unwrap_or(0);
     store.viewer = Some(Viewer {
-        paths,
+        items,
         index,
         zoom: 1.0,
+        offset: (0.0, 0.0),
     });
 }
 
@@ -1468,35 +1520,151 @@ fn full_image<'a>(
     images.get(&key).and_then(|t| t.as_ref())
 }
 
-/// Centered image viewer: scroll to zoom, ◀ ▶ or arrow keys to browse, Esc or ✕ to close.
+/// Text of a markdown or pdf file, read once. PDFs give extracted text with page breaks.
+fn doc_text<'a>(docs: &'a mut HashMap<String, Option<String>>, path: &str) -> Option<&'a str> {
+    if !docs.contains_key(path) {
+        let loaded = match doc_kind(path) {
+            DocKind::Pdf => pdf_extract::extract_text(path).ok(),
+            _ => std::fs::read_to_string(path).ok(),
+        };
+        docs.insert(path.to_string(), loaded);
+    }
+    docs.get(path).and_then(|t| t.as_deref())
+}
+
+/// A small markdown renderer: headings, bullets, numbered lists, fenced code, inline code, bold.
+fn render_markdown(ui: &mut egui::Ui, text: &str) {
+    let mut in_code = false;
+    let mut code = String::new();
+    for raw in text.lines() {
+        let line = raw.trim_end();
+        if line.trim_start().starts_with("```") {
+            if in_code {
+                egui::Frame::NONE.fill(INK).inner_margin(6.0).show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(code.trim_end()).monospace())
+                            .wrap()
+                            .selectable(true),
+                    );
+                });
+                code.clear();
+            }
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            code.push_str(raw);
+            code.push('\n');
+            continue;
+        }
+        let trimmed = line.trim_start();
+        if trimmed.is_empty() {
+            ui.add_space(6.0);
+        } else if let Some(h) = trimmed.strip_prefix("### ") {
+            ui.label(egui::RichText::new(h).strong().color(SAND));
+        } else if let Some(h) = trimmed.strip_prefix("## ") {
+            ui.label(egui::RichText::new(h).font(stencil(15.0)).color(SAND));
+        } else if let Some(h) = trimmed.strip_prefix("# ") {
+            ui.label(egui::RichText::new(h).font(stencil(18.0)).color(ACCENT));
+        } else if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
+            ui.horizontal_wrapped(|ui| {
+                ui.add_space((line.len() - trimmed.len()) as f32 * 4.0);
+                ui.label(egui::RichText::new("•").color(SAND));
+                inline_markdown(ui, item);
+            });
+        } else if trimmed.starts_with('|') {
+            ui.label(egui::RichText::new(trimmed).monospace().small());
+        } else {
+            ui.horizontal_wrapped(|ui| inline_markdown(ui, trimmed));
+        }
+    }
+    if in_code && !code.is_empty() {
+        ui.add(
+            egui::Label::new(egui::RichText::new(code.trim_end()).monospace())
+                .wrap()
+                .selectable(true),
+        );
+    }
+}
+
+/// `code` and **bold** inside a line.
+fn inline_markdown(ui: &mut egui::Ui, text: &str) {
+    ui.spacing_mut().item_spacing.x = 0.0;
+    let mut rest = text;
+    loop {
+        let code_at = rest.find('`');
+        let bold_at = rest.find("**");
+        let next = match (code_at, bold_at) {
+            (None, None) => None,
+            (Some(c), None) => Some((c, false)),
+            (None, Some(b)) => Some((b, true)),
+            (Some(c), Some(b)) => Some(if c <= b { (c, false) } else { (b, true) }),
+        };
+        let Some((at, is_bold)) = next else {
+            ui.label(rest);
+            return;
+        };
+        ui.label(&rest[..at]);
+        let marker = if is_bold { "**" } else { "`" };
+        let after = &rest[at + marker.len()..];
+        match after.find(marker) {
+            Some(end) => {
+                let inner = &after[..end];
+                if is_bold {
+                    ui.label(egui::RichText::new(inner).strong());
+                } else {
+                    ui.label(egui::RichText::new(inner).monospace().color(ACCENT));
+                }
+                rest = &after[end + marker.len()..];
+            }
+            None => {
+                ui.label(after);
+                return;
+            }
+        }
+    }
+}
+
+/// Centered, movable, resizable viewer. Images: drag to pan, scroll to zoom. Markdown is rendered,
+/// PDFs show extracted text. ◀ ▶ or arrow keys browse the unit's items, Esc or ✕ closes.
 fn draw_viewer(
     ctx: &egui::Context,
     store: &mut Store,
     images: &mut HashMap<String, Option<egui::TextureHandle>>,
+    docs: &mut HashMap<String, Option<String>>,
 ) -> Option<egui::Rect> {
     let mut viewer = store.viewer.clone()?;
-    let n = viewer.paths.len();
+    let n = viewer.items.len();
     let (left, right) = ctx.input(|i| {
         (
             i.key_pressed(egui::Key::ArrowLeft),
             i.key_pressed(egui::Key::ArrowRight),
         )
     });
-    if left && n > 0 {
-        viewer.index = (viewer.index + n - 1) % n;
+    let step = |v: &mut Viewer, d: isize| {
+        if n > 0 {
+            v.index = ((v.index as isize + d).rem_euclid(n as isize)) as usize;
+            v.zoom = 1.0;
+            v.offset = (0.0, 0.0);
+        }
+    };
+    if left {
+        step(&mut viewer, -1);
     }
-    if right && n > 0 {
-        viewer.index = (viewer.index + 1) % n;
+    if right {
+        step(&mut viewer, 1);
     }
-    let path = viewer.paths.get(viewer.index).cloned().unwrap_or_default();
+    let path = viewer.items.get(viewer.index).cloned().unwrap_or_default();
+    let kind = doc_kind(&path);
     let vr = ctx.viewport_rect();
-    let max = egui::vec2(vr.width() * 0.82, vr.height() * 0.78);
+    let default_size = egui::vec2(vr.width() * 0.7, vr.height() * 0.75);
     let mut close = false;
     let mut open_ext = false;
-    let win = egui::Window::new("image viewer")
+    let win = egui::Window::new("viewer")
         .title_bar(false)
-        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
-        .resizable(false)
+        .default_pos(vr.center() - default_size / 2.0)
+        .default_size(default_size)
+        .resizable(true)
         .collapsible(false)
         .frame(
             egui::Frame::NONE
@@ -1523,38 +1691,88 @@ fn draw_viewer(
                         open_ext = true;
                     }
                     if n > 1 && ui.button("▶").clicked() {
-                        viewer.index = (viewer.index + 1) % n;
+                        step(&mut viewer, 1);
                     }
                     if n > 1 && ui.button("◀").clicked() {
-                        viewer.index = (viewer.index + n - 1) % n;
+                        step(&mut viewer, -1);
                     }
-                    ui.label(
-                        egui::RichText::new(format!("{:.0}%  (scroll to zoom)", viewer.zoom * 100.0))
+                    if kind == DocKind::Image {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{:.0}%  · drag to pan · scroll to zoom · drag the corner to resize",
+                                viewer.zoom * 100.0
+                            ))
                             .small()
                             .color(DIM),
-                    );
+                        );
+                    } else {
+                        ui.label(egui::RichText::new("drag the corner to resize").small().color(DIM));
+                    }
                 });
             });
             ui.add_space(6.0);
-            match full_image(ctx, images, &path) {
-                Some(tex) => {
-                    let fitted = fit(tex.size_vec2(), max.x.min(max.y)) * viewer.zoom;
-                    let shown = egui::vec2(fitted.x.min(max.x), fitted.y.min(max.y));
-                    let resp = egui::ScrollArea::both()
-                        .max_width(max.x)
-                        .max_height(max.y)
-                        .show(ui, |ui| {
-                            ui.add(egui::Image::new(egui::load::SizedTexture::new(tex.id(), fitted)))
-                        })
-                        .inner;
-                    let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-                    if resp.hovered() && scroll != 0.0 {
-                        viewer.zoom = (viewer.zoom * (1.0 + scroll * 0.002)).clamp(0.2, 8.0);
+            let avail = ui.available_size();
+            match kind {
+                DocKind::Image => match full_image(ctx, images, &path) {
+                    Some(tex) => {
+                        let fitted = fit(tex.size_vec2(), avail.x.min(avail.y)) * viewer.zoom;
+                        let out = egui::ScrollArea::both()
+                            .id_salt("viewer-scroll")
+                            .scroll_offset(egui::vec2(viewer.offset.0, viewer.offset.1))
+                            .max_width(avail.x)
+                            .max_height(avail.y)
+                            .show(ui, |ui| {
+                                ui.add(egui::Image::new(egui::load::SizedTexture::new(tex.id(), fitted)))
+                                    .interact(egui::Sense::drag())
+                            });
+                        let resp = out.inner;
+                        let mut offset = out.state.offset;
+                        if resp.dragged() {
+                            offset -= resp.drag_delta();
+                        }
+                        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                        if (resp.hovered()
+                            || out
+                                .inner_rect
+                                .contains(ui.input(|i| i.pointer.hover_pos().unwrap_or_default())))
+                            && scroll != 0.0
+                        {
+                            viewer.zoom = (viewer.zoom * (1.0 + scroll * 0.002)).clamp(0.2, 8.0);
+                        }
+                        viewer.offset = (offset.x.max(0.0), offset.y.max(0.0));
                     }
-                    let _ = shown;
-                }
-                None => {
-                    ui.label(egui::RichText::new(format!("cannot read {path}")).color(RED));
+                    None => {
+                        ui.label(egui::RichText::new(format!("cannot read {path}")).color(RED));
+                    }
+                },
+                DocKind::Markdown | DocKind::Pdf | DocKind::Other => {
+                    let body = doc_text(docs, &path).map(str::to_owned);
+                    egui::ScrollArea::vertical()
+                        .id_salt("viewer-doc")
+                        .max_width(avail.x)
+                        .max_height(avail.y)
+                        .show(ui, |ui| {
+                            ui.set_min_width(avail.x - 20.0);
+                            match (kind, body) {
+                                (DocKind::Markdown, Some(t)) => render_markdown(ui, &t),
+                                (_, Some(t)) => {
+                                    for (i, page) in t.split('\u{c}').enumerate() {
+                                        if i > 0 {
+                                            ui.separator();
+                                            ui.label(egui::RichText::new(format!("page {}", i + 1)).small().color(DIM));
+                                        }
+                                        ui.add(
+                                            egui::Label::new(egui::RichText::new(page.trim()).monospace())
+                                                .wrap()
+                                                .selectable(true),
+                                        );
+                                    }
+                                }
+                                (_, None) => {
+                                    ui.label(egui::RichText::new(format!("cannot read {path}")).color(RED));
+                                }
+                            }
+                        });
                 }
             }
         })?;
@@ -1570,4 +1788,120 @@ fn draw_viewer(
         store.viewer = Some(viewer);
     }
     Some(win.response.rect)
+}
+
+/// Under every unit: a ring with the task-list percentage when the agent keeps one, and a hint of
+/// what it is doing right now, or "idle". Finished units show nothing.
+fn draw_progress(ctx: &egui::Context, store: &Store, settings: &Settings, now: i64) {
+    if store.viewer.is_some() || !settings.progress_rings {
+        return;
+    }
+    let Some(session) = store.current_session() else { return };
+    let t = ctx.input(|i| i.time) as f32;
+    let vr = ctx.viewport_rect();
+    let (l, tp, r, b) = store.scene_insets.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let scene = egui::Rect::from_min_max(
+        egui::pos2(vr.min.x + l, vr.min.y + tp),
+        egui::pos2(vr.max.x - r, vr.max.y - b),
+    );
+    let painter = ctx
+        .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("progress")))
+        .with_clip_rect(scene);
+    for (id, &(x, y)) in &store.unit_screen {
+        let Some(agent) = session.agent(id) else { continue };
+        if agent.ended.is_some() {
+            continue;
+        }
+        let center = egui::pos2(x, y + 34.0);
+        if !scene.contains(center) {
+            continue;
+        }
+        let active = agent.status(now, theme::ACTIVE_WINDOW_MS) == Status::Active;
+        let busy = active && agent.has_open_call();
+        let open_call = agent.calls.iter().rev().find(|c| c.ended.is_none());
+        // Hint: the in-progress task, else the running call, else idle.
+        let hint: String = if busy {
+            agent
+                .progress
+                .as_ref()
+                .filter(|p| !p.current.is_empty())
+                .map(|p| p.current.clone())
+                .or_else(|| {
+                    open_call.map(|c| {
+                        if c.note.is_empty() {
+                            format!("{} {}", c.tool, c.summary)
+                        } else {
+                            c.note.clone()
+                        }
+                    })
+                })
+                .unwrap_or_default()
+        } else if active {
+            "thinking".into()
+        } else {
+            "idle".into()
+        };
+        let hint: String = hint.chars().take(42).collect();
+        let color = if busy { ACCENT } else { DIM };
+        let radius = 11.0;
+        match agent.progress.as_ref().filter(|p| p.total > 0) {
+            Some(p) => {
+                painter.circle_stroke(
+                    center,
+                    radius,
+                    egui::Stroke::new(2.5, egui::Color32::from_rgb(35, 55, 28)),
+                );
+                let frac = p.fraction().clamp(0.0, 1.0);
+                if frac > 0.0 {
+                    let steps = (frac * 40.0).ceil().max(1.0) as usize;
+                    let pts: Vec<egui::Pos2> = (0..=steps)
+                        .map(|i| {
+                            let a =
+                                -std::f32::consts::FRAC_PI_2 + frac * std::f32::consts::TAU * (i as f32 / steps as f32);
+                            egui::pos2(center.x + radius * a.cos(), center.y + radius * a.sin())
+                        })
+                        .collect();
+                    painter.add(egui::Shape::line(pts, egui::Stroke::new(2.5, SAND)));
+                }
+                painter.text(
+                    center,
+                    egui::Align2::CENTER_CENTER,
+                    format!("{:.0}", frac * 100.0),
+                    egui::FontId::proportional(10.0),
+                    TEXT,
+                );
+            }
+            None if busy => {
+                // No task list: a spinner says "working".
+                let a0 = t * 4.0;
+                let pts: Vec<egui::Pos2> = (0..=12)
+                    .map(|i| {
+                        let a = a0 + i as f32 * 0.14;
+                        egui::pos2(center.x + radius * a.cos(), center.y + radius * a.sin())
+                    })
+                    .collect();
+                painter.circle_stroke(
+                    center,
+                    radius,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(35, 55, 28)),
+                );
+                painter.add(egui::Shape::line(pts, egui::Stroke::new(2.5, ACCENT)));
+            }
+            None => {
+                painter.circle_stroke(
+                    center,
+                    radius,
+                    egui::Stroke::new(1.5, egui::Color32::from_rgb(35, 55, 28)),
+                );
+            }
+        }
+        painter.text(
+            center + egui::vec2(0.0, radius + 4.0),
+            egui::Align2::CENTER_TOP,
+            hint,
+            egui::FontId::proportional(11.0),
+            color,
+        );
+    }
+    ctx.request_repaint();
 }

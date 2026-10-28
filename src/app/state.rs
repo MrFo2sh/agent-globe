@@ -46,9 +46,12 @@ pub enum BadgeKind {
 /// Images of one unit, browsable with previous / next.
 #[derive(Clone, Debug)]
 pub struct Viewer {
-    pub paths: Vec<String>,
+    /// Paths of everything viewable in-app for the unit: images, markdown, pdf.
+    pub items: Vec<String>,
     pub index: usize,
     pub zoom: f32,
+    /// Scroll offset of the content, driven by dragging.
+    pub offset: (f32, f32),
 }
 
 #[derive(Clone, Debug)]
@@ -103,8 +106,10 @@ pub struct Store {
     /// Artifact targets the user dismissed from the speech bubbles.
     pub dismissed_bubbles: HashSet<String>,
     pub tray_mood: Option<super::alerts::Mood>,
-    /// The in-app image viewer, when open.
+    /// The in-app viewer, when open.
     pub viewer: Option<Viewer>,
+    /// Filter text for the expanded artifact shelf.
+    pub artifact_query: String,
     preferred: Option<String>,
     opened_once: bool,
     /// When the current session was opened; batches in the first moments are history, not news.
@@ -145,6 +150,7 @@ impl Store {
             dismissed_bubbles: HashSet::new(),
             tray_mood: None,
             viewer: None,
+            artifact_query: String::new(),
             preferred,
             opened_once: false,
             opened_at: Instant::now(),

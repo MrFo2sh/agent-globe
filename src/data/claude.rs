@@ -5,7 +5,7 @@
 //! `<claude_dir>/projects/<project>/<session>/subagents/agent-<id>.jsonl` + `agent-<id>.meta.json`.
 //! The meta's `toolUseId` is the `Agent` tool call in the parent that spawned the subagent.
 
-use super::model::{Event, Millis, ROOT_AGENT, parse_millis};
+use super::model::{Event, Millis, Progress, ROOT_AGENT, parse_millis};
 use serde_json::Value;
 use std::collections::HashMap;
 use std::fs;
@@ -309,6 +309,11 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
                             summary: summarize_tool(&name, input),
                             command,
                             note: note.clone(),
+                            todos: if name == "TodoWrite" {
+                                todo_progress(input)
+                            } else {
+                                None
+                            },
                             at,
                         });
                     }
@@ -400,6 +405,23 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
     }
 }
 
+/// Done / total and the in-progress item from a TodoWrite input.
+pub fn todo_progress(input: &Value) -> Option<Progress> {
+    let todos = input["todos"].as_array()?;
+    let total = todos.len() as u32;
+    let done = todos
+        .iter()
+        .filter(|t| t["status"].as_str() == Some("completed"))
+        .count() as u32;
+    let current = todos
+        .iter()
+        .find(|t| t["status"].as_str() == Some("in_progress"))
+        .and_then(|t| t["activeForm"].as_str().or_else(|| t["content"].as_str()))
+        .unwrap_or("")
+        .to_string();
+    Some(Progress { done, total, current })
+}
+
 /// First meaningful sentence of what the agent said, for the narrator. Skips markdown noise.
 pub fn narrator_line(text: &str) -> String {
     let cleaned: String = text
@@ -483,6 +505,19 @@ noise
 test input <b>bold</b> 1 < 2";
         assert_eq!(strip_tag_blocks(t), "test input  1 < 2");
         assert_eq!(strip_tag_blocks("plain"), "plain");
+    }
+
+    #[test]
+    fn todo_write_becomes_progress() {
+        let v = serde_json::json!({"todos": [
+            {"content": "Write parser", "status": "completed", "activeForm": "Writing parser"},
+            {"content": "Add tests", "status": "in_progress", "activeForm": "Adding tests"},
+            {"content": "Ship", "status": "pending", "activeForm": "Shipping"}
+        ]});
+        let p = todo_progress(&v).unwrap();
+        assert_eq!((p.done, p.total), (1, 3));
+        assert_eq!(p.current, "Adding tests");
+        assert!((p.fraction() - 1.0 / 3.0).abs() < 1e-6);
     }
 
     #[test]

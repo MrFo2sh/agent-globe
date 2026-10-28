@@ -51,6 +51,9 @@ pub enum Event {
         /// What the agent said right before this call: the narrator line.
         #[serde(default)]
         note: String,
+        /// Task-list snapshot when the call is a TodoWrite: real progress.
+        #[serde(default)]
+        todos: Option<Progress>,
         #[serde(default)]
         at: Millis,
     },
@@ -129,6 +132,25 @@ pub enum Status {
     Done,
 }
 
+/// Progress from the agent's own task list (TodoWrite): done over total, and the item in progress.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Progress {
+    pub done: u32,
+    pub total: u32,
+    #[serde(default)]
+    pub current: String,
+}
+
+impl Progress {
+    pub fn fraction(&self) -> f32 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.done as f32 / self.total as f32
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -173,6 +195,9 @@ pub struct Agent {
     /// URLs, files, images, commits, PRs, test results this agent produced, oldest first.
     #[serde(default)]
     pub artifacts: Vec<Artifact>,
+    /// Latest task-list snapshot, if the agent keeps one.
+    #[serde(default)]
+    pub progress: Option<Progress>,
     /// Completed turns (root agent: times it handed control back to the user).
     #[serde(default)]
     pub turns: u32,
@@ -340,6 +365,7 @@ impl Session {
             cache_read_tokens: 0,
             cache_write_tokens: 0,
             artifacts: Vec::new(),
+            progress: None,
             turns: 0,
             waiting_for_user: false,
             order,
@@ -446,6 +472,7 @@ impl Session {
                 summary,
                 command,
                 note,
+                todos,
                 at,
                 ..
             } => {
@@ -453,6 +480,9 @@ impl Session {
                 self.call_owner.insert(call_id.clone(), agent_id.clone());
                 let a = self.agent_mut(&agent_id).expect("ensured");
                 a.waiting_for_user = false;
+                if let Some(p) = todos {
+                    a.progress = Some(p);
+                }
                 if !a.calls.iter().any(|c| c.id == call_id) {
                     let call = ToolCall {
                         id: call_id,
@@ -606,6 +636,7 @@ mod tests {
             summary: String::new(),
             command: None,
             note: String::new(),
+            todos: None,
             at,
         }
     }
@@ -656,6 +687,7 @@ mod tests {
             summary: "ls".into(),
             command: Some("ls -la".into()),
             note: "checking the tree".into(),
+            todos: None,
             at: 5,
         };
         let j = serde_json::to_string(&e).unwrap();

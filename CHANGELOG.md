@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-28
+- Progress rings under every unit: the task-list percentage when the agent keeps one (TodoWrite),
+  a spinner while working, plus a hint of the current task or call, or "idle". Toggle in settings.
+- App icon: embedded in the executable, shown in the title bar and the tray (status dot on top).
+- Progress rings under every unit: the task-list percentage when the agent keeps one (TodoWrite),
+  a spinner while working, plus a hint of the current task or call, or "idle". Toggle in settings.
+- Viewer: movable and resizable window; drag to pan and scroll to zoom images; Markdown files are
+  rendered; PDFs show extracted text by page; ◀ ▶ or arrow keys browse the unit's images, docs and
+  PDFs together.
+- Artifact shelf: search box when expanded.
+- Desktop notifications are off by default (the radio is the alert) and never fire for badges
+  that were already there at launch. Windows shows them under PowerShell's identity; that is a
+  platform limitation for unsigned apps.
+
 ## 0.3.3 - 2026-10-28
 - Viewer header shows the file name only; bubbles and badges hide while the viewer is open.
 

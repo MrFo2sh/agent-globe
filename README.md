@@ -89,9 +89,10 @@ curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo"
 ## Artifacts, approvals, alerts
 
 - **Artifacts.** Every served URL, written file, viewed image, commit, pull request and test
-  result an agent produces becomes a chip in its panel and, for 90 seconds, a speech bubble above
-  the unit. Click: browser, VS Code at the file, the image, or the commit on GitHub. A URL chip dims
-  when its port stops answering.
+  result an agent produces becomes a chip in its two-row shelf (expand to see all, with search) and,
+  for 90 seconds, a speech bubble above the unit. Click: browser, VS Code at the file, the commit on
+  GitHub, or the built-in viewer for images, Markdown and PDFs (drag to pan, scroll to zoom, resize,
+  ◀ ▶ to browse). A URL chip dims when its port stops answering.
 - **Approvals from the globe.** Add this hook and tool permission prompts show up as a card with
   Allow / Deny (Y / N) on the second screen. "Ask in VS Code" or a 15-minute timeout falls back to
   the normal prompt. Scope the matcher to the tools you want routed here.
@@ -100,8 +101,8 @@ curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo"
   "PreToolUse": [{ "matcher": "Bash", "hooks": [{ "type": "command", "timeout": 900,
     "command": "curl -s -m 900 -X POST http://127.0.0.1:4711/approvals -H 'content-type: application/json' --data-binary @- || true" }] }]
   ```
-- **Alerts.** Windows notifications when the window is not focused and a unit is waiting, done,
-  failed, or needs authorization. The tray icon colour is the one-glance status; double-click it
+- **Alerts.** The radio is the alert. Windows notifications are an opt-in in settings; when on, they
+  fire only while the window is unfocused and appear under PowerShell's identity (unsigned-app limit). The tray icon colour is the one-glance status; double-click it
   to bring the window back; its menu mutes the radio or quits.
 - **Cost.** Session spend in the HUD from token counts and list prices; per-unit cost in the
   panel; a budget alarm in settings.
@@ -113,6 +114,10 @@ curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo"
   construction complete, stall and loop. Mute and volume in ⚙ settings. Replace any line with your
   own clip at `<config dir>/agent-globe/sounds/<event>.wav` (events: prompt, spawn, done, error,
   complete, stall, loop, ship, blip, alarm, fanfare).
+- **Progress rings.** Under every unit: percentage from the agent's own task list, a spinner while
+  it works, and a one-line hint of what it is doing, or "idle".
+- **Progress rings.** Under every unit: percentage from the agent's own task list, a spinner while
+  it works, and a one-line hint of what it is doing, or "idle".
 - **Narrator.** Under every tool call: the sentence the agent wrote right before it. Turn it off in
   settings.
 - **Alarms.** Same command three times, a call open for two minutes, or context near the model's

@@ -40,6 +40,7 @@ pub fn from_claude_hook(v: &Value) -> Option<Event> {
                 command: input["command"].as_str().map(String::from),
                 tool,
                 note: String::new(),
+                todos: None,
                 at,
             }
         }

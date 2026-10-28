@@ -1,6 +1,6 @@
 [package]
 name = "agent-globe"
-version = "0.3.3"
+version = "0.4.0"
 edition = "2024"
 description = "GPU-rendered 3D globe of coding-agent sessions, subagents and their terminal executions, live."
 license = "MIT"
@@ -28,11 +28,16 @@ clap = { version = "4", features = ["derive"] }
 chrono = "0.4"
 rodio = "0.22"
 regex = "1"
+winit = "0.30"
+pdf-extract = "0.12"
 notify-rust = "4"
 tray-icon = "0.26"
 open = "5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
 
+
+[build-dependencies]
+winresource = "0.1"
 
 [profile.dev]
 opt-level = 1

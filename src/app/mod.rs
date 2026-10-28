@@ -82,6 +82,7 @@ pub fn run(cfg: Config) {
                 sounds::play,
                 settings::persist,
                 maximize_window,
+                window_icon,
             )
                 .chain(),
         )
@@ -98,4 +99,27 @@ fn maximize_window(mut windows: Query<&mut Window, With<PrimaryWindow>>, mut don
     for mut w in &mut windows {
         w.set_maximized(true);
     }
+}
+
+/// Title-bar and taskbar icon for the running window (the exe resource covers Explorer).
+fn window_icon(windows: NonSend<bevy::winit::WinitWindows>, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    let Ok(img) = image::load_from_memory(include_bytes!("../../assets/icon/agent-globe-64.png")) else {
+        *done = true;
+        return;
+    };
+    let rgba = img.to_rgba8();
+    let (w, h) = rgba.dimensions();
+    let Ok(icon) = winit::window::Icon::from_rgba(rgba.into_raw(), w, h) else {
+        *done = true;
+        return;
+    };
+    let mut any = false;
+    for window in windows.windows.values() {
+        window.set_window_icon(Some(icon.clone()));
+        any = true;
+    }
+    *done = any;
 }

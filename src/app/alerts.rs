@@ -16,30 +16,32 @@ pub enum Mood {
     Fire,
 }
 
-/// A 32x32 rounded square with a dark base plate, in the mood's colour.
+/// The app icon at 32 px with a status dot in the corner: green clear, amber waiting, red fire.
 fn icon(mood: Mood) -> Icon {
     let (r, g, b) = match mood {
         Mood::Clear => (120u8, 210u8, 90u8),
         Mood::Waiting => (255, 190, 70),
         Mood::Fire => (240, 80, 60),
     };
-    let size = 32u32;
-    let mut rgba = vec![0u8; (size * size * 4) as usize];
-    for y in 0..size {
-        for x in 0..size {
-            let i = ((y * size + x) * 4) as usize;
-            let dx = x as i32 - 16;
-            let dy = y as i32 - 16;
-            let in_disc = dx * dx + dy * dy <= 13 * 13;
-            let in_body = (6..=25).contains(&x) && (4..=22).contains(&y);
-            if in_body {
+    let base = image::load_from_memory(include_bytes!("../../assets/icon/agent-globe-32.png"))
+        .map(|i| i.to_rgba8())
+        .unwrap_or_else(|_| image::RgbaImage::from_pixel(32, 32, image::Rgba([30, 50, 25, 255])));
+    let (w, h) = base.dimensions();
+    let mut rgba = base.into_raw();
+    // Status dot, bottom-right, 11 px with a dark rim.
+    let (cx, cy, rad) = (w as i32 - 7, h as i32 - 7, 5.5f32);
+    for y in 0..h as i32 {
+        for x in 0..w as i32 {
+            let d = (((x - cx).pow(2) + (y - cy).pow(2)) as f32).sqrt();
+            let i = ((y as u32 * w + x as u32) * 4) as usize;
+            if d <= rad {
                 rgba[i..i + 4].copy_from_slice(&[r, g, b, 255]);
-            } else if in_disc && y >= 20 {
-                rgba[i..i + 4].copy_from_slice(&[40, 70, 35, 255]);
+            } else if d <= rad + 1.5 {
+                rgba[i..i + 4].copy_from_slice(&[10, 14, 8, 255]);
             }
         }
     }
-    Icon::from_rgba(rgba, size, size).expect("tray icon")
+    Icon::from_rgba(rgba, w, h).expect("tray icon")
 }
 
 pub struct Tray {
@@ -133,9 +135,12 @@ pub fn update(
 pub fn notify(
     store: Res<Store>,
     settings: Res<Settings>,
+    time: Res<Time>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut seen: Local<HashSet<String>>,
 ) {
+    // Badges present right after launch are history, not news.
+    let warming_up = time.elapsed_secs() < 8.0;
     let focused = windows.iter().next().is_some_and(|w| w.focused);
     let session = store.current_session();
     for b in &store.badges {
@@ -144,7 +149,7 @@ pub fn notify(
             continue;
         }
         seen.insert(key);
-        if focused || !settings.desktop_notifications {
+        if focused || warming_up || !settings.desktop_notifications {
             continue;
         }
         let name = session
