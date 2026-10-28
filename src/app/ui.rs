@@ -1817,7 +1817,8 @@ fn draw_progress(ctx: &egui::Context, store: &Store, settings: &Settings, now: i
             continue;
         }
         let active = agent.status(now, theme::ACTIVE_WINDOW_MS) == Status::Active;
-        let busy = active && agent.has_open_call();
+        // An open call is work in progress however long ago it started (a long build is still work).
+        let busy = agent.has_open_call();
         let open_call = agent.calls.iter().rev().find(|c| c.ended.is_none());
         // Hint: the in-progress task, else the running call, else idle.
         let hint: String = if busy {

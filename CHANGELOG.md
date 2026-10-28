@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.4.1 - 2026-10-28
+- Progress hint treats any open tool call as work in progress, so long builds no longer read "idle".
+
 ## 0.4.0 - 2026-10-28
 - Progress rings under every unit: the task-list percentage when the agent keeps one (TodoWrite),
   a spinner while working, plus a hint of the current task or call, or "idle". Toggle in settings.
