@@ -1,6 +1,6 @@
 [package]
 name = "agent-globe"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "GPU-rendered 3D globe of coding-agent sessions, subagents and their terminal executions, live."
 license = "MIT"
@@ -14,7 +14,7 @@ name = "agent-globe"
 path = "src/main.rs"
 
 [dependencies]
-bevy = "0.20"
+bevy = { version = "0.20", features = ["wav"] }
 bevy_egui = "0.43"
 bevy_panorbit_camera = { version = "0.36", features = ["bevy_egui"] }
 serde = { version = "1", features = ["derive"] }

@@ -22,6 +22,7 @@ pub fn from_claude_hook(v: &Value) -> Option<Event> {
             text: v["prompt"].as_str().unwrap_or("").to_string(),
             model: String::new(),
             output_tokens: 0,
+            context_tokens: 0,
             at,
         },
         "PreToolUse" => {
@@ -34,6 +35,7 @@ pub fn from_claude_hook(v: &Value) -> Option<Event> {
                 summary: super::claude::summarize_tool(&tool, input),
                 command: input["command"].as_str().map(String::from),
                 tool,
+                note: String::new(),
                 at,
             }
         }

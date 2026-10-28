@@ -1,6 +1,6 @@
 //! HDR orbit camera (MSAA, bloom, distance fog) rendering into the area the UI leaves free,
 //! a separate camera for the UI layer, fly-to-selection, idle cinematic orbit, R to reset,
-//! and user-tunable sensitivity. Disabled while the pointer is over a UI panel.
+//! F for cinematic mode, and user-tunable sensitivity. Disabled while the pointer is over a panel.
 
 use super::scene::NodeWorldPos;
 use super::settings::Settings;
@@ -40,7 +40,7 @@ pub fn setup(mut commands: Commands, settings: Res<Settings>, mut egui_settings:
             ..Bloom::NATURAL
         },
         ChromaticAberration {
-            intensity: 0.012,
+            intensity: 0.005,
             ..default()
         },
         DistanceFog {
@@ -78,18 +78,29 @@ pub fn setup(mut commands: Commands, settings: Res<Settings>, mut egui_settings:
         },
     ));
 
+    // Plastic needs real light: a warm key light and a cool fill from the sky.
     commands.spawn((
         DirectionalLight {
-            illuminance: 500.0,
+            color: Color::srgb(1.0, 0.95, 0.85),
+            illuminance: 2_600.0,
             shadow_maps_enabled: false,
             ..default()
         },
         Transform::from_xyz(8.0, 14.0, 6.0).looking_at(Vec3::ZERO, Vec3::Y),
     ));
+    commands.spawn((
+        DirectionalLight {
+            color: Color::srgb(0.6, 0.75, 1.0),
+            illuminance: 700.0,
+            shadow_maps_enabled: false,
+            ..default()
+        },
+        Transform::from_xyz(-10.0, 6.0, -8.0).looking_at(Vec3::ZERO, Vec3::Y),
+    ));
 
     commands.insert_resource(GlobalAmbientLight {
-        color: Color::srgb(0.55, 0.70, 1.0),
-        brightness: 40.0,
+        color: Color::srgb(0.70, 0.80, 0.65),
+        brightness: 160.0,
         ..default()
     });
 }
@@ -131,13 +142,20 @@ pub fn drive(
     }
     cam.enabled = !store.pointer_over_ui;
 
+    if keys.just_pressed(KeyCode::KeyF) {
+        store.hide_ui = !store.hide_ui;
+    }
     if keys.just_pressed(KeyCode::KeyR) || store.reset_view {
         store.reset_view = false;
         go_home(&mut cam);
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
-        store.selected = None;
+        if store.hide_ui {
+            store.hide_ui = false;
+        } else {
+            store.selected = None;
+        }
     }
 
     if store.selected != state.last_selected {
@@ -154,7 +172,7 @@ pub fn drive(
     }
 
     let idle = now - state.last_input_s > theme::IDLE_ORBIT_AFTER_S;
-    if settings.idle_orbit && idle && store.selected.is_none() && !store.pointer_over_ui {
+    if settings.idle_orbit && (idle || store.hide_ui) && store.selected.is_none() && !store.pointer_over_ui {
         cam.target_yaw += time.delta_secs() * 0.07;
         cam.force_update = true;
     }
@@ -193,33 +211,5 @@ pub fn apply_viewport(
         if !same {
             cam.viewport = Some(wanted);
         }
-    }
-}
-
-/// Logs window size, viewport and where the world origin lands, a few times after start.
-pub fn diagnose(
-    time: Res<Time>,
-    windows: Query<&Window, With<PrimaryWindow>>,
-    cams: Query<(&Camera, &GlobalTransform, &PanOrbitCamera)>,
-    mut next: Local<f32>,
-) {
-    let t = time.elapsed_secs();
-    if t < *next || t > 12.0 {
-        return;
-    }
-    *next = t + 2.0;
-    let Ok(w) = windows.single() else { return };
-    for (cam, gt, orbit) in &cams {
-        let origin = cam.world_to_viewport(gt, Vec3::ZERO).ok();
-        debug!(
-            "diag window {}x{} (scale {:.2}) viewport {:?} origin_on_screen {:?} radius {:?} focus {:?}",
-            w.physical_width(),
-            w.physical_height(),
-            w.scale_factor(),
-            cam.viewport.as_ref().map(|v| (v.physical_position, v.physical_size)),
-            origin,
-            orbit.radius,
-            orbit.focus
-        );
     }
 }

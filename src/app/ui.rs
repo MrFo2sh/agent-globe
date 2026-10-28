@@ -1,32 +1,42 @@
 //! egui layer: HUD (top), sessions (left), selected agent (right), status (bottom), toasts,
-//! settings window. Also reports whether the pointer is over any of these so the camera can
-//! ignore input that belongs to the UI.
+//! hover card, settings and debrief windows. Reports whether the pointer is over any of these so
+//! the camera can ignore input that belongs to the UI.
 
+use super::debrief;
 use super::settings::Settings;
+use super::sounds::{Sfx, Sounds};
 use super::state::{BridgeRes, Store, ToastKind};
 use super::theme;
 use agent_globe::data::claude::SessionRef;
-use agent_globe::data::model::{Agent, Session, Status, now_millis};
+use agent_globe::data::model::{Agent, ROOT_AGENT, Session, Status, now_millis};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
 use bevy_panorbit_camera::PanOrbitCamera;
 use std::collections::HashSet;
 
-const CYAN: egui::Color32 = egui::Color32::from_rgb(110, 255, 150);
-const DIM: egui::Color32 = egui::Color32::from_rgb(60, 140, 85);
-const GREEN: egui::Color32 = egui::Color32::from_rgb(170, 255, 190);
-const RED: egui::Color32 = egui::Color32::from_rgb(255, 95, 80);
-const YELLOW: egui::Color32 = egui::Color32::from_rgb(255, 205, 80);
-const TEXT: egui::Color32 = egui::Color32::from_rgb(150, 235, 170);
-const PANEL: egui::Color32 = egui::Color32::from_rgba_premultiplied(2, 10, 4, 220);
-const SCANLINE: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 70);
+// Army palette.
+const ACCENT: egui::Color32 = egui::Color32::from_rgb(160, 232, 110); // light plastic
+const DIM: egui::Color32 = egui::Color32::from_rgb(120, 140, 95);
+const GREEN: egui::Color32 = egui::Color32::from_rgb(190, 240, 140);
+const RED: egui::Color32 = egui::Color32::from_rgb(255, 100, 80);
+const AMBER: egui::Color32 = egui::Color32::from_rgb(255, 185, 70);
+const SAND: egui::Color32 = egui::Color32::from_rgb(222, 200, 135);
+const TEXT: egui::Color32 = egui::Color32::from_rgb(222, 226, 200);
+const PANEL: egui::Color32 = egui::Color32::from_rgba_premultiplied(8, 14, 5, 228);
+const INK: egui::Color32 = egui::Color32::from_rgb(4, 8, 3);
+const SCANLINE: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 60);
+const MAX_LINES: usize = 10;
 
-fn style_once(ctx: &egui::Context, done: &mut bool) {
+fn stencil(size: f32) -> egui::FontId {
+    egui::FontId::new(size, egui::FontFamily::Name("stencil".into()))
+}
+
+/// Returns true on the frame it installed fonts; egui applies them next frame, so skip drawing then.
+fn style_once(ctx: &egui::Context, done: &mut bool) -> bool {
     if *done {
-        return;
+        return false;
     }
-    // Retro terminal font (VT323, OFL) for everything but code, which stays in egui's monospace.
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
         "vt323".to_owned(),
@@ -34,11 +44,21 @@ fn style_once(ctx: &egui::Context, done: &mut bool) {
             "../../assets/fonts/VT323-Regular.ttf"
         ))),
     );
+    fonts.font_data.insert(
+        "stencil".to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(include_bytes!(
+            "../../assets/fonts/BlackOpsOne-Regular.ttf"
+        ))),
+    );
     fonts
         .families
         .entry(egui::FontFamily::Proportional)
         .or_default()
         .insert(0, "vt323".to_owned());
+    fonts.families.insert(
+        egui::FontFamily::Name("stencil".into()),
+        vec!["stencil".to_owned(), "vt323".to_owned()],
+    );
     ctx.set_fonts(fonts);
     ctx.style_mut_of(egui::Theme::Dark, |style| {
         for font in style.text_styles.values_mut() {
@@ -52,15 +72,16 @@ fn style_once(ctx: &egui::Context, done: &mut bool) {
     v.panel_fill = PANEL;
     v.window_fill = PANEL;
     v.override_text_color = Some(TEXT);
-    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(20, 70, 35));
-    v.widgets.inactive.bg_fill = egui::Color32::from_rgb(4, 24, 10);
-    v.widgets.hovered.bg_fill = egui::Color32::from_rgb(10, 50, 22);
-    v.widgets.active.bg_fill = egui::Color32::from_rgb(14, 70, 30);
-    v.selection.bg_fill = egui::Color32::from_rgb(10, 80, 35);
-    v.selection.stroke = egui::Stroke::new(1.0, CYAN);
-    v.hyperlink_color = CYAN;
+    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_rgb(45, 70, 30));
+    v.widgets.inactive.bg_fill = egui::Color32::from_rgb(20, 34, 14);
+    v.widgets.hovered.bg_fill = egui::Color32::from_rgb(36, 60, 24);
+    v.widgets.active.bg_fill = egui::Color32::from_rgb(50, 84, 32);
+    v.selection.bg_fill = egui::Color32::from_rgb(40, 72, 28);
+    v.selection.stroke = egui::Stroke::new(1.0, ACCENT);
+    v.hyperlink_color = ACCENT;
     ctx.set_visuals(v);
     *done = true;
+    true
 }
 
 fn age(ms: i64) -> String {
@@ -98,6 +119,10 @@ fn short(id: &str) -> &str {
     &id[..id.len().min(8)]
 }
 
+fn tip(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>, help: &str) {
+    ui.label(text).on_hover_text(help);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     mut contexts: EguiContexts,
@@ -106,17 +131,35 @@ pub fn draw(
     bridge: Res<BridgeRes>,
     diagnostics: Res<DiagnosticsStore>,
     cams: Query<&PanOrbitCamera>,
+    sounds: Res<Sounds>,
     mut styled: Local<bool>,
     mut last_scale: Local<f32>,
     mut last_panel: Local<Option<String>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
-    style_once(ctx, &mut styled);
+    if style_once(ctx, &mut styled) {
+        return Ok(());
+    }
     if (*last_scale - settings.ui_scale).abs() > 1e-3 {
         ctx.set_zoom_factor(settings.ui_scale);
         *last_scale = settings.ui_scale;
     }
     let now = now_millis();
+
+    // ---- cinematic mode: scene only ----
+    if store.hide_ui {
+        store.scene_insets = Some((0.0, 0.0, 0.0, 0.0));
+        store.pointer_over_ui = false;
+        egui::Area::new(egui::Id::new("cinematic-hint"))
+            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -12.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("F or Esc: back to the console").small().color(DIM));
+            });
+        draw_toasts(ctx, &store);
+        return Ok(());
+    }
+
     let mut ui_rects: Vec<egui::Rect> = Vec::new();
     let mut root = egui::Ui::new(
         ctx.clone(),
@@ -128,11 +171,14 @@ pub fn draw(
 
     // ---- top: HUD ----
     let mut toggle_settings = false;
+    let mut toggle_debrief = false;
     let mut go_home = false;
+    let mut cinematic = false;
+    let mut toggle_sound = false;
     let hud = egui::Panel::top("hud").show(&mut root, |ui| {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("AGENT GLOBE").color(CYAN).strong().size(18.0));
+            ui.label(egui::RichText::new("AGENT GLOBE").font(stencil(20.0)).color(ACCENT));
             ui.separator();
             match store.current_session() {
                 None => {
@@ -144,25 +190,74 @@ pub fn draw(
                         .iter()
                         .filter(|a| a.status(now, theme::ACTIVE_WINDOW_MS) == Status::Active)
                         .count();
+                    let root = s.agent(ROOT_AGENT);
+                    let ctx_k = root.map(|a| a.context_tokens / 1000).unwrap_or(0);
+                    let limit_k = root.map(|a| theme::context_alarm_tokens(&a.model) / 1000).unwrap_or(160);
+                    let ctx_color = if ctx_k >= limit_k {
+                        RED
+                    } else if ctx_k * 3 >= limit_k * 2 {
+                        AMBER
+                    } else {
+                        TEXT
+                    };
                     ui.label(
                         egui::RichText::new(format!("{}  {}", s.project, short(&s.id)))
-                            .color(YELLOW)
+                            .color(SAND)
                             .monospace(),
                     );
                     ui.separator();
-                    ui.label(egui::RichText::new(format!("⏱ {}", dur(s.last_activity - s.started))).monospace());
-                    ui.label(egui::RichText::new(format!("agents {}", s.agents.len())).monospace());
-                    ui.label(egui::RichText::new(format!("active {active}")).monospace().color(CYAN));
-                    ui.label(egui::RichText::new(format!("calls {}", s.total_calls())).monospace());
-                    ui.label(egui::RichText::new(format!("{}/min", s.calls_since(now - 60_000))).monospace());
+                    tip(
+                        ui,
+                        egui::RichText::new(format!("⏱ {}", dur(s.last_activity - s.started))).monospace(),
+                        "Session length: first event to the latest one.",
+                    );
+                    tip(
+                        ui,
+                        egui::RichText::new(format!("units {}", s.agents.len())).monospace(),
+                        "Agents in this session: the commander (your main agent) plus every subagent it spawned.\nSubagents are separate model runs with their own context, launched through the Agent tool.",
+                    );
+                    tip(
+                        ui,
+                        egui::RichText::new(format!("active {active}")).monospace().color(ACCENT),
+                        "Agents that did something in the last 20 seconds.",
+                    );
+                    tip(
+                        ui,
+                        egui::RichText::new(format!("calls {}", s.total_calls())).monospace(),
+                        "Tool calls: every time an agent used a tool (read a file, ran a command, spawned a unit).\nEach call is one round trip between the model and the harness.",
+                    );
+                    tip(
+                        ui,
+                        egui::RichText::new(format!("{}/min", s.calls_since(now - 60_000))).monospace(),
+                        "Tool calls in the last minute. Zero while the model is thinking or waiting for you.",
+                    );
+                    tip(
+                        ui,
+                        egui::RichText::new(format!("ctx {ctx_k}k")).monospace().color(ctx_color),
+                        "Context size: how many tokens the commander's last request carried (prompt + history + tool results).\nAmber at two thirds of this model's window, red near the limit: that is where the agent starts forgetting early instructions.",
+                    );
                 }
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("⚙ settings").clicked() {
                     toggle_settings = true;
                 }
-                if ui.button("⌂ home").clicked() {
+                if ui.button("⌂ home").on_hover_text("Reset the camera (R)").clicked() {
                     go_home = true;
+                }
+                if ui.button("🎬").on_hover_text("Cinematic mode: hide the console (F)").clicked() {
+                    cinematic = true;
+                }
+                let icon = if settings.sound { "🔊" } else { "🔇" };
+                if ui.button(icon).on_hover_text("Mute / unmute the radio").clicked() {
+                    toggle_sound = true;
+                }
+                if ui
+                    .button(egui::RichText::new("🎖 debrief").color(SAND))
+                    .on_hover_text("After-action report: where the time went and what to do better next prompt.")
+                    .clicked()
+                {
+                    toggle_debrief = true;
                 }
             });
         });
@@ -173,9 +268,21 @@ pub fn draw(
     if toggle_settings {
         store.show_settings = !store.show_settings;
     }
+    if toggle_debrief {
+        store.show_debrief = !store.show_debrief;
+    }
     if go_home {
         store.selected = None;
         store.reset_view = true;
+    }
+    if cinematic {
+        store.hide_ui = true;
+    }
+    if toggle_sound {
+        settings.sound = !settings.sound;
+        if settings.sound {
+            store.play(Sfx::Spawn);
+        }
     }
 
     // ---- left: sessions ----
@@ -212,7 +319,6 @@ pub fn draw(
                     ui.separator();
                 }
                 ui.label(egui::RichText::new("SESSIONS").small().color(DIM));
-                // Group by project, keeping newest-first order of first appearance.
                 let mut projects: Vec<&str> = Vec::new();
                 for s in &store.session_list {
                     if !projects.contains(&s.project.as_str()) {
@@ -224,7 +330,7 @@ pub fn draw(
                         .session_list
                         .iter()
                         .any(|s| s.project == project && store.current.as_deref() == Some(s.id.as_str()));
-                    let header = egui::RichText::new(project).color(YELLOW).small();
+                    let header = egui::RichText::new(project).color(SAND).small();
                     egui::CollapsingHeader::new(header)
                         .id_salt(project)
                         .default_open(has_current)
@@ -236,20 +342,12 @@ pub fn draw(
                                 let text =
                                     format!("{dot} {}  {:>3}  {:>6}k", short(&s.id), age(s.modified), s.size / 1024);
                                 let rt = egui::RichText::new(text).monospace();
-                                let rt = if active { rt.color(CYAN) } else { rt };
+                                let rt = if active { rt.color(ACCENT) } else { rt };
                                 if ui.selectable_label(is_current, rt).clicked() {
                                     open = Some(s.clone());
                                 }
                                 if is_current && let Some(session) = store.sessions.get(&s.id) {
-                                    agent_tree(
-                                        ui,
-                                        session,
-                                        agent_globe::data::model::ROOT_AGENT,
-                                        0,
-                                        now,
-                                        store.selected.as_deref(),
-                                        &mut pick,
-                                    );
+                                    agent_tree(ui, session, ROOT_AGENT, 0, now, store.selected.as_deref(), &mut pick);
                                 }
                             }
                         });
@@ -274,17 +372,13 @@ pub fn draw(
         .and_then(|d| d.smoothed())
         .unwrap_or(0.0);
     let cam_dist = cams.iter().next().and_then(|c| c.radius).unwrap_or(0.0);
-    let cam_focus = cams.iter().next().map(|c| c.focus).unwrap_or(Vec3::ZERO);
     let bottom = egui::Panel::bottom("status").show(&mut root, |ui| {
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new(format!("{fps:5.0} fps")).monospace().color(DIM));
             ui.label(
-                egui::RichText::new(format!(
-                    "cam {cam_dist:4.1} @ {:.1},{:.1},{:.1}",
-                    cam_focus.x, cam_focus.y, cam_focus.z
-                ))
-                .monospace()
-                .color(DIM),
+                egui::RichText::new(format!("cam {cam_dist:4.1}"))
+                    .monospace()
+                    .color(DIM),
             );
             ui.separator();
             ui.label(egui::RichText::new(&store.status).monospace().color(DIM));
@@ -293,7 +387,7 @@ pub fn draw(
             }
             ui.separator();
             ui.label(
-                egui::RichText::new("drag rotate · scroll zoom · right-drag pan · click node · R reset")
+                egui::RichText::new("drag rotate · scroll zoom · right-drag pan · click unit · R home · F cinematic")
                     .small()
                     .color(DIM),
             );
@@ -322,6 +416,8 @@ pub fn draw(
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
     *last_panel = selected.as_ref().map(|a| a.id.clone());
     if let Some(agent) = selected.as_ref() {
+        let narrator = settings.narrator;
+        let stalled = store.stalled.clone();
         let right = egui::Panel::right("agent")
             .resizable(true)
             .default_size(520.0)
@@ -333,7 +429,15 @@ pub fn draw(
                         close = true;
                     }
                 });
-                agent_panel(ui, agent, now, &mut store.expanded_calls, just_opened);
+                agent_panel(
+                    ui,
+                    agent,
+                    now,
+                    &mut store.expanded_calls,
+                    just_opened,
+                    narrator,
+                    &stalled,
+                );
             });
         inset_right = right.response.rect.width();
         ui_rects.push(right.response.rect);
@@ -347,16 +451,16 @@ pub fn draw(
         .filter(|h| selected.as_ref().map(|s| &s.id) != Some(&h.id))
     {
         egui::Area::new(egui::Id::new("hover-card"))
-            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0))
+            .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-16.0, 16.0 + inset_top))
             .interactable(false)
             .show(ctx, |ui| {
                 egui::Frame::NONE
                     .fill(PANEL)
-                    .stroke(egui::Stroke::new(1.0, CYAN))
+                    .stroke(egui::Stroke::new(1.0, ACCENT))
                     .inner_margin(10.0)
                     .corner_radius(6.0)
                     .show(ui, |ui| {
-                        ui.set_max_width(320.0);
+                        ui.set_max_width(340.0);
                         hover_card(ui, agent, now);
                     });
             });
@@ -370,6 +474,40 @@ pub fn draw(
             .resizable(false)
             .default_pos(egui::pos2(260.0, 80.0))
             .show(ctx, |ui| {
+                ui.label(egui::RichText::new("RADIO").small().color(DIM));
+                ui.checkbox(&mut settings.sound, "sound on");
+                ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).text("volume"));
+                ui.checkbox(&mut settings.tool_blips, "blip on every tool call");
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("test:").small().color(DIM));
+                    for s in [
+                        Sfx::Prompt,
+                        Sfx::Spawn,
+                        Sfx::Done,
+                        Sfx::Error,
+                        Sfx::Complete,
+                        Sfx::Stall,
+                        Sfx::Loop,
+                    ] {
+                        if ui.small_button(s.name()).on_hover_text(s.line()).clicked() {
+                            store.play(s);
+                        }
+                    }
+                });
+                let overrides = if sounds.overrides.is_empty() {
+                    "none yet".to_string()
+                } else {
+                    sounds.overrides.join(", ")
+                };
+                ui.label(
+                    egui::RichText::new(format!(
+                        "your own clips go in {}/sounds/<name>.wav (loaded: {overrides})",
+                        super::settings::config_dir().display()
+                    ))
+                    .small()
+                    .color(DIM),
+                );
+                ui.separator();
                 ui.label(egui::RichText::new("CAMERA").small().color(DIM));
                 ui.add(egui::Slider::new(&mut settings.orbit_sensitivity, 0.05..=2.0).text("orbit speed"));
                 ui.add(egui::Slider::new(&mut settings.zoom_sensitivity, 0.05..=2.0).text("zoom speed"));
@@ -381,6 +519,7 @@ pub fn draw(
                 ui.add(egui::Slider::new(&mut settings.bloom, 0.0..=0.6).text("bloom"));
                 ui.add(egui::Slider::new(&mut settings.ui_scale, 0.6..=1.8).text("ui scale"));
                 ui.checkbox(&mut settings.scanlines, "CRT scanlines");
+                ui.checkbox(&mut settings.narrator, "narrator line under each call");
                 ui.separator();
                 ui.horizontal(|ui| {
                     if ui.button("reset defaults").clicked() {
@@ -401,35 +540,68 @@ pub fn draw(
         }
     }
 
-    // ---- toasts ----
-    if !store.toasts.is_empty() {
-        egui::Area::new(egui::Id::new("toasts"))
-            .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -40.0))
-            .show(ctx, |ui| {
-                for t in store.toasts.iter().rev() {
-                    let alpha = (1.0 - t.born.elapsed().as_secs_f32() / 7.0).clamp(0.0, 1.0);
-                    let color = match t.kind {
-                        ToastKind::Spawn => CYAN,
-                        ToastKind::Done => GREEN,
-                        ToastKind::Error => RED,
-                        ToastKind::Info => DIM,
-                    };
-                    egui::Frame::NONE
-                        .fill(PANEL.gamma_multiply(alpha))
-                        .stroke(egui::Stroke::new(1.0, color.gamma_multiply(alpha)))
-                        .inner_margin(8.0)
-                        .corner_radius(6.0)
-                        .show(ui, |ui| {
-                            ui.label(
-                                egui::RichText::new(&t.text)
-                                    .color(color.gamma_multiply(alpha))
-                                    .monospace(),
-                            );
-                        });
+    // ---- debrief window ----
+    if store.show_debrief {
+        let mut open = true;
+        let report = store.current_session().map(debrief::report);
+        let win = egui::Window::new("🎖 debrief")
+            .open(&mut open)
+            .resizable(true)
+            .default_width(520.0)
+            .default_pos(egui::pos2(300.0, 90.0))
+            .show(ctx, |ui| match report {
+                None => {
+                    ui.label(egui::RichText::new("no session open").color(DIM));
+                }
+                Some(r) => {
+                    ui.label(
+                        egui::RichText::new("AFTER-ACTION REPORT")
+                            .font(stencil(16.0))
+                            .color(SAND),
+                    );
                     ui.add_space(4.0);
+                    egui::Grid::new("debrief-rows")
+                        .num_columns(2)
+                        .spacing([18.0, 2.0])
+                        .show(ui, |ui| {
+                            for (k, v) in &r.rows {
+                                ui.label(egui::RichText::new(k).color(DIM));
+                                ui.label(egui::RichText::new(v).monospace());
+                                ui.end_row();
+                            }
+                        });
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("WHERE THE TIME WENT").small().color(DIM));
+                    for (cat, share, n) in &r.shares {
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::ProgressBar::new(*share)
+                                    .desired_width(180.0)
+                                    .fill(egui::Color32::from_rgb(60, 110, 40))
+                                    .text(egui::RichText::new(format!("{:.0}%", share * 100.0)).small()),
+                            );
+                            ui.label(egui::RichText::new(format!("{}  ({n} calls)", cat.label())).small());
+                        });
+                    }
+                    ui.add_space(6.0);
+                    ui.label(egui::RichText::new("COACH").small().color(DIM));
+                    for t in &r.tips {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.label(egui::RichText::new("▸").color(SAND));
+                            ui.label(egui::RichText::new(t).color(TEXT));
+                        });
+                    }
                 }
             });
+        if let Some(w) = win {
+            ui_rects.push(w.response.rect);
+        }
+        if !open {
+            store.show_debrief = false;
+        }
     }
+
+    draw_toasts(ctx, &store);
 
     store.scene_insets = Some((inset_left, inset_top, inset_right, inset_bottom));
     if settings.scanlines {
@@ -453,7 +625,40 @@ pub fn draw(
     Ok(())
 }
 
-const MAX_LINES: usize = 10;
+fn draw_toasts(ctx: &egui::Context, store: &Store) {
+    if store.toasts.is_empty() {
+        return;
+    }
+    egui::Area::new(egui::Id::new("toasts"))
+        .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -40.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            for t in store.toasts.iter().rev() {
+                let alpha = (1.0 - t.born.elapsed().as_secs_f32() / 7.0).clamp(0.0, 1.0);
+                let color = match t.kind {
+                    ToastKind::Spawn => ACCENT,
+                    ToastKind::Done => GREEN,
+                    ToastKind::Error => RED,
+                    ToastKind::Warn => AMBER,
+                    ToastKind::Info => DIM,
+                };
+                egui::Frame::NONE
+                    .fill(PANEL.gamma_multiply(alpha))
+                    .stroke(egui::Stroke::new(1.0, color.gamma_multiply(alpha)))
+                    .inner_margin(8.0)
+                    .corner_radius(6.0)
+                    .show(ui, |ui| {
+                        ui.set_max_width(420.0);
+                        ui.label(
+                            egui::RichText::new(&t.text)
+                                .color(color.gamma_multiply(alpha))
+                                .monospace(),
+                        );
+                    });
+                ui.add_space(4.0);
+            }
+        });
+}
 
 /// Monospace block capped at `MAX_LINES` with a per-block expand toggle, to keep the panel quiet.
 fn code_block(ui: &mut egui::Ui, key: &str, text: &str, color: egui::Color32, expanded: &mut HashSet<String>) {
@@ -485,31 +690,54 @@ fn code_block(ui: &mut egui::Ui, key: &str, text: &str, color: egui::Color32, ex
     }
 }
 
-fn agent_panel(ui: &mut egui::Ui, a: &Agent, now: i64, expanded: &mut HashSet<String>, jump_to_end: bool) {
-    let status = a.status(now, theme::ACTIVE_WINDOW_MS);
-    let (label, color) = match status {
-        Status::Active => ("ACTIVE", CYAN),
+fn status_label(a: &Agent, now: i64, stalled: &HashSet<String>) -> (&'static str, egui::Color32) {
+    if a.calls.iter().any(|c| c.ended.is_none() && stalled.contains(&c.id)) {
+        return ("STALLED", AMBER);
+    }
+    match a.status(now, theme::ACTIVE_WINDOW_MS) {
+        Status::Active => ("ACTIVE", ACCENT),
         Status::Idle => ("IDLE", DIM),
         Status::Done => ("DONE", GREEN),
-    };
-    let title = if a.depth == 0 {
-        "core · root session".to_string()
+    }
+}
+
+fn agent_title(a: &Agent) -> String {
+    if a.depth == 0 {
+        "commander · root session".to_string()
     } else if a.name.is_empty() {
-        format!("agent {}", short(&a.id))
+        format!("unit {}", short(&a.id))
     } else {
         a.name.clone()
-    };
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn agent_panel(
+    ui: &mut egui::Ui,
+    a: &Agent,
+    now: i64,
+    expanded: &mut HashSet<String>,
+    jump_to_end: bool,
+    narrator: bool,
+    stalled: &HashSet<String>,
+) {
+    let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
-        ui.heading(egui::RichText::new(title).color(CYAN));
+        ui.label(egui::RichText::new(agent_title(a)).font(stencil(18.0)).color(ACCENT));
         ui.label(egui::RichText::new(label).color(color).strong());
     });
     ui.horizontal_wrapped(|ui| {
-        let meta = |ui: &mut egui::Ui, k: &str, v: String| {
-            ui.label(egui::RichText::new(k).small().color(DIM));
+        let meta = |ui: &mut egui::Ui, k: &str, v: String, help: &str| {
+            ui.label(egui::RichText::new(k).small().color(DIM)).on_hover_text(help);
             ui.label(egui::RichText::new(v).small().monospace());
         };
-        meta(ui, "id", short(&a.id).to_string());
-        meta(ui, "kind", if a.kind.is_empty() { "-".into() } else { a.kind.clone() });
+        meta(ui, "id", short(&a.id).to_string(), "Agent id from the transcript.");
+        meta(
+            ui,
+            "kind",
+            if a.kind.is_empty() { "-".into() } else { a.kind.clone() },
+            "fork: a copy of the commander's context.\nExplore / general-purpose: a fresh agent with only its brief.",
+        );
         meta(
             ui,
             "model",
@@ -518,12 +746,36 @@ fn agent_panel(ui: &mut egui::Ui, a: &Agent, now: i64, expanded: &mut HashSet<St
             } else {
                 a.model.clone()
             },
+            "Model that answered.",
         );
-        meta(ui, "depth", a.depth.to_string());
+        meta(
+            ui,
+            "depth",
+            a.depth.to_string(),
+            "0 is the commander; each ring out is one more level of delegation.",
+        );
         let end = a.ended.unwrap_or(a.last_activity);
-        meta(ui, "duration", dur(end - a.started));
-        meta(ui, "calls", a.calls.len().to_string());
-        meta(ui, "tokens out", a.output_tokens.to_string());
+        meta(
+            ui,
+            "duration",
+            dur(end - a.started),
+            "First to last event of this agent.",
+        );
+        meta(ui, "calls", a.calls.len().to_string(), "Tool calls this agent made.");
+        meta(
+            ui,
+            "tokens out",
+            a.output_tokens.to_string(),
+            "Tokens the model generated (what you pay most for).",
+        );
+        if a.context_tokens > 0 {
+            meta(
+                ui,
+                "ctx",
+                format!("{}k", a.context_tokens / 1000),
+                "Size of the last request this agent sent: everything it currently remembers.",
+            );
+        }
     });
     let open_calls = a.calls.iter().filter(|c| c.ended.is_none()).count();
     let done_frac = if a.calls.is_empty() {
@@ -532,9 +784,9 @@ fn agent_panel(ui: &mut egui::Ui, a: &Agent, now: i64, expanded: &mut HashSet<St
         1.0 - open_calls as f32 / a.calls.len() as f32
     };
     let fill = if open_calls > 0 {
-        egui::Color32::from_rgb(30, 150, 70)
+        egui::Color32::from_rgb(70, 130, 45)
     } else {
-        egui::Color32::from_rgb(18, 70, 36)
+        egui::Color32::from_rgb(40, 80, 30)
     };
     ui.add(
         egui::ProgressBar::new(done_frac)
@@ -548,7 +800,7 @@ fn agent_panel(ui: &mut egui::Ui, a: &Agent, now: i64, expanded: &mut HashSet<St
         .stick_to_bottom(true)
         .show(ui, |ui| {
             if !a.prompt.is_empty() {
-                ui.collapsing(egui::RichText::new("prompt").color(YELLOW), |ui| {
+                ui.collapsing(egui::RichText::new("orders (prompt)").color(SAND), |ui| {
                     code_block(ui, &format!("{}:prompt", a.id), &a.prompt, TEXT, expanded);
                 });
             }
@@ -557,8 +809,10 @@ fn agent_panel(ui: &mut egui::Ui, a: &Agent, now: i64, expanded: &mut HashSet<St
                 let open = c.ended.is_none();
                 let mark = if c.is_error {
                     egui::RichText::new("✖").color(RED)
+                } else if open && stalled.contains(&c.id) {
+                    egui::RichText::new("⏳").color(AMBER)
                 } else if open {
-                    egui::RichText::new("●").color(CYAN)
+                    egui::RichText::new("●").color(ACCENT)
                 } else {
                     egui::RichText::new("✔").color(GREEN)
                 };
@@ -570,13 +824,27 @@ fn agent_panel(ui: &mut egui::Ui, a: &Agent, now: i64, expanded: &mut HashSet<St
                     ui.add(egui::Label::new(egui::RichText::new(header).monospace()).truncate());
                     ui.label(egui::RichText::new(took).small().color(DIM));
                 });
+                if narrator && !c.note.is_empty() {
+                    ui.horizontal(|ui| {
+                        ui.add_space(26.0);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("“{}”", c.note))
+                                    .italics()
+                                    .small()
+                                    .color(SAND),
+                            )
+                            .wrap(),
+                        );
+                    });
+                }
                 if let Some(cmd) = &c.command {
                     egui::Frame::NONE
-                        .fill(egui::Color32::from_rgb(1, 8, 3))
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(20, 90, 40)))
+                        .fill(INK)
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 90, 35)))
                         .inner_margin(6.0)
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(format!("$ {cmd}")).monospace().color(CYAN));
+                            ui.label(egui::RichText::new(format!("$ {cmd}")).monospace().color(ACCENT));
                             if !c.stdout.is_empty() {
                                 code_block(ui, &c.id, &c.stdout, TEXT, expanded);
                             }
@@ -585,12 +853,9 @@ fn agent_panel(ui: &mut egui::Ui, a: &Agent, now: i64, expanded: &mut HashSet<St
                             }
                         });
                 } else if !c.stdout.is_empty() {
-                    egui::Frame::NONE
-                        .fill(egui::Color32::from_rgb(1, 8, 3))
-                        .inner_margin(6.0)
-                        .show(ui, |ui| {
-                            code_block(ui, &c.id, &c.stdout, DIM, expanded);
-                        });
+                    egui::Frame::NONE.fill(INK).inner_margin(6.0).show(ui, |ui| {
+                        code_block(ui, &c.id, &c.stdout, DIM, expanded);
+                    });
                 }
                 ui.add_space(4.0);
             }
@@ -604,21 +869,13 @@ fn agent_panel(ui: &mut egui::Ui, a: &Agent, now: i64, expanded: &mut HashSet<St
 }
 
 fn hover_card(ui: &mut egui::Ui, a: &Agent, now: i64) {
-    let status = a.status(now, theme::ACTIVE_WINDOW_MS);
-    let (label, color) = match status {
-        Status::Active => ("ACTIVE", CYAN),
+    let (label, color) = match a.status(now, theme::ACTIVE_WINDOW_MS) {
+        Status::Active => ("ACTIVE", ACCENT),
         Status::Idle => ("IDLE", DIM),
         Status::Done => ("DONE", GREEN),
     };
-    let title = if a.depth == 0 {
-        "core · root session".to_string()
-    } else if a.name.is_empty() {
-        format!("agent {}", short(&a.id))
-    } else {
-        a.name.clone()
-    };
     ui.horizontal(|ui| {
-        ui.label(egui::RichText::new(title).color(CYAN).strong());
+        ui.label(egui::RichText::new(agent_title(a)).font(stencil(15.0)).color(ACCENT));
         ui.label(egui::RichText::new(label).color(color).small());
     });
     let end = a.ended.unwrap_or(a.last_activity);
@@ -640,6 +897,17 @@ fn hover_card(ui: &mut egui::Ui, a: &Agent, now: i64) {
                 .small()
                 .color(DIM),
         );
+        if !c.note.is_empty() {
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("“{}”", c.note))
+                        .italics()
+                        .small()
+                        .color(SAND),
+                )
+                .wrap(),
+            );
+        }
     }
     ui.label(egui::RichText::new("click to open").small().color(DIM));
 }
@@ -659,12 +927,12 @@ fn agent_tree(
     let root = if depth == 0 { session.agent(parent) } else { None };
     for a in root.into_iter().chain(children) {
         let (dot, color) = match a.status(now, theme::ACTIVE_WINDOW_MS) {
-            Status::Active => ("●", CYAN),
+            Status::Active => ("●", ACCENT),
             Status::Idle => ("○", DIM),
             Status::Done => ("✔", GREEN),
         };
         let name = if a.depth == 0 {
-            "core".to_string()
+            "commander".to_string()
         } else if a.name.is_empty() {
             short(&a.id).to_string()
         } else {

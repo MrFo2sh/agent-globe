@@ -6,8 +6,8 @@ are light beams with comets travelling along them while a tool call runs. Nodes 
 dim when done, turn red on errors. Click a node and the camera flies to it; its panel shows the
 prompt, every tool call in order, and each Bash command with real stdout and stderr.
 
-Rust, Bevy (wgpu, Vulkan/DX12/Metal), egui. HDR bloom, MSAA, fog. Retro phosphor-green theme
-with voxel nodes, scanlines and the VT323 terminal font. No web view, no Electron.
+Rust, Bevy (wgpu, Vulkan/DX12/Metal), egui. HDR bloom, MSAA, fog. Army Men theme: green plastic
+soldiers on sand rings, a radio commander voice, stencil headings. No web view, no Electron.
 
 Put VS Code with your agent on one screen and this on the other.
 
@@ -86,10 +86,19 @@ The root agent of every session has id `root`.
 curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo","agent_id":"x1","parent_id":"root","name":"hello"}'
 ```
 
-## Gamification
+## Radio, narrator, alarms, debrief
 
-The HUD shows a level and XP bar computed from real work: tool calls, output tokens, and agents
-spawned. Toasts announce spawned agents, finished agents, and failed tools as they happen.
+- **Radio.** Voice lines on prompt received, unit deployed, mission accomplished, taking fire,
+  construction complete, stall and loop. Mute and volume in ⚙ settings. Replace any line with your
+  own clip at `<config dir>/agent-globe/sounds/<event>.wav` (events: prompt, spawn, done, error,
+  complete, stall, loop, ship, blip, alarm, fanfare).
+- **Narrator.** Under every tool call: the sentence the agent wrote right before it. Turn it off in
+  settings.
+- **Alarms.** Same command three times, a call open for two minutes, or context near the model's
+  limit: toast, sound, and the unit turns amber.
+- **Debrief (🎖).** Where the session's time went, what failed, and coaching lines based on the
+  evidence: reads before the first edit, retried commands, context peaks, missing delegation.
+- **Glossary.** Hover any counter for what it means.
 
 ## Layout
 

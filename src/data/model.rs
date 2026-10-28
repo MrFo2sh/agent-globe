@@ -47,6 +47,9 @@ pub enum Event {
         summary: String,
         #[serde(default)]
         command: Option<String>,
+        /// What the agent said right before this call: the narrator line.
+        #[serde(default)]
+        note: String,
         #[serde(default)]
         at: Millis,
     },
@@ -72,12 +75,24 @@ pub enum Event {
         model: String,
         #[serde(default)]
         output_tokens: u64,
+        /// Prompt size the model saw for this message (input + cache read + cache write).
+        #[serde(default)]
+        context_tokens: u64,
         #[serde(default)]
         at: Millis,
     },
     AgentEnd {
         session_id: String,
         agent_id: String,
+        #[serde(default)]
+        at: Millis,
+    },
+    /// The agent finished a turn and is waiting for the user.
+    TurnEnd {
+        session_id: String,
+        agent_id: String,
+        #[serde(default)]
+        duration_ms: u64,
         #[serde(default)]
         at: Millis,
     },
@@ -91,7 +106,8 @@ impl Event {
             | Event::ToolStart { session_id, .. }
             | Event::ToolEnd { session_id, .. }
             | Event::Message { session_id, .. }
-            | Event::AgentEnd { session_id, .. } => session_id,
+            | Event::AgentEnd { session_id, .. }
+            | Event::TurnEnd { session_id, .. } => session_id,
         }
     }
 }
@@ -109,6 +125,9 @@ pub struct ToolCall {
     pub tool: String,
     pub summary: String,
     pub command: Option<String>,
+    /// Narrator line: what the agent said right before the call.
+    #[serde(default)]
+    pub note: String,
     pub stdout: String,
     pub stderr: String,
     pub is_error: bool,
@@ -132,6 +151,12 @@ pub struct Agent {
     pub calls: Vec<ToolCall>,
     pub messages: u32,
     pub output_tokens: u64,
+    /// Latest prompt size the model saw, in tokens (0 if unknown).
+    #[serde(default)]
+    pub context_tokens: u64,
+    /// Completed turns (root agent: times it handed control back to the user).
+    #[serde(default)]
+    pub turns: u32,
     /// Order in which this agent was spawned within the session (0 = root).
     pub order: u32,
 }
@@ -263,6 +288,8 @@ impl Session {
             calls: Vec::new(),
             messages: 0,
             output_tokens: 0,
+            context_tokens: 0,
+            turns: 0,
             order,
         });
         let i = self.agents.len() - 1;
@@ -366,6 +393,7 @@ impl Session {
                 tool,
                 summary,
                 command,
+                note,
                 at,
                 ..
             } => {
@@ -378,6 +406,7 @@ impl Session {
                         tool,
                         summary,
                         command,
+                        note,
                         stdout: String::new(),
                         stderr: String::new(),
                         is_error: false,
@@ -427,6 +456,7 @@ impl Session {
                 text,
                 model,
                 output_tokens,
+                context_tokens,
                 at,
                 ..
             } => {
@@ -434,6 +464,9 @@ impl Session {
                 let a = self.agent_mut(&agent_id).expect("ensured");
                 a.messages += 1;
                 a.output_tokens += output_tokens;
+                if context_tokens > 0 {
+                    a.context_tokens = context_tokens;
+                }
                 if a.prompt.is_empty() && role == "user" && !text.trim().is_empty() {
                     a.prompt = text;
                 }
@@ -444,6 +477,13 @@ impl Session {
                     && a.ended.is_none()
                 {
                     a.ended = Some(if at > 0 { at } else { a.last_activity });
+                }
+                self.touch(&agent_id, at);
+            }
+            Event::TurnEnd { agent_id, at, .. } => {
+                self.ensure_agent(&agent_id, None, None, "", "", "", "", at);
+                if let Some(a) = self.agent_mut(&agent_id) {
+                    a.turns += 1;
                 }
                 self.touch(&agent_id, at);
             }
@@ -494,6 +534,7 @@ mod tests {
             tool: "Agent".into(),
             summary: String::new(),
             command: None,
+            note: String::new(),
             at,
         }
     }
@@ -543,6 +584,7 @@ mod tests {
             tool: "Bash".into(),
             summary: "ls".into(),
             command: Some("ls -la".into()),
+            note: "checking the tree".into(),
             at: 5,
         };
         let j = serde_json::to_string(&e).unwrap();

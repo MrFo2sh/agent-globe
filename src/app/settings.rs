@@ -1,4 +1,4 @@
-//! User settings: camera feel, motion, look. Persisted as JSON in the OS config dir.
+//! User settings: camera feel, motion, look, sound. Persisted as JSON in the OS config dir.
 
 use bevy::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -15,6 +15,14 @@ pub struct Settings {
     pub bloom: f32,
     pub ui_scale: f32,
     pub scanlines: bool,
+    /// Master switch for all audio.
+    pub sound: bool,
+    /// 0.0 .. 1.0
+    pub volume: f32,
+    /// A short blip on every tool call (busy sessions make this chatty).
+    pub tool_blips: bool,
+    /// Narrator line under each tool call.
+    pub narrator: bool,
 }
 
 impl Default for Settings {
@@ -25,18 +33,26 @@ impl Default for Settings {
             pan_sensitivity: 0.6,
             idle_orbit: true,
             drift_speed: 1.0,
-            bloom: 0.15,
+            bloom: 0.12,
             ui_scale: 1.0,
-            scanlines: true,
+            scanlines: false,
+            sound: true,
+            volume: 0.7,
+            tool_blips: false,
+            narrator: true,
         }
     }
 }
 
 pub fn path() -> PathBuf {
+    config_dir().join("settings.json")
+}
+
+/// `<OS config dir>/agent-globe`, also where user sound overrides live (`sounds/<event>.wav`).
+pub fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("agent-globe")
-        .join("settings.json")
 }
 
 pub fn load() -> Settings {

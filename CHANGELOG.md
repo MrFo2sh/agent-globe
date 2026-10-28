@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+## 0.2.0 - 2026-10-28 — Army Men edition
+- Green plastic soldiers: capsule units with helmets on oval bases, a commander with twin halos,
+  sand orbit rings, tracer rounds along busy beams, warm key light. Stencil headings (Black Ops One).
+- Radio: synthesized commander voice lines and cues for prompt received, unit deployed, mission
+  accomplished, taking fire, construction complete, stall, loop, ship. Mute, volume, test buttons,
+  optional blip per tool call. Drop your own clips in `<config>/agent-globe/sounds/<event>.wav`.
+- Narrator: the sentence the agent wrote right before each tool call, under the call.
+- Alarms that teach: loop detection (same command 3x), stall detection (call open > 2 min, unit
+  turns amber), context bloat (per-model limit; HUD gauge turns amber then red).
+- Debrief window: duration, turns, calls, failures, subagents, tokens, context peak, reads before
+  first edit, retried commands, longest call, time share per category, and coaching lines.
+- Glossary tooltips on every HUD counter and panel field. Cinematic mode (F) hides the console.
+- Turn-end detection from transcripts; context size parsed from usage.
+
 - Retro phosphor theme: green CRT palette, VT323 terminal font (OFL, in assets/fonts), voxel
   cubes for nodes, core, stars and dust, tumbling nodes, scanline overlay (toggle in settings),
   slight chromatic aberration. Still fully 3D at 230+ fps on the RTX 3090.

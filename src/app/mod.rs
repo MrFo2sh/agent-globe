@@ -1,8 +1,10 @@
 //! Bevy application. One file per concern; none of them parse files.
 
 mod camera;
+mod debrief;
 mod scene;
 mod settings;
+mod sounds;
 mod state;
 mod theme;
 mod ui;
@@ -54,12 +56,14 @@ pub fn run(cfg: Config) {
         .init_resource::<scene::CurrentLayout>()
         .init_resource::<scene::NodeWorldPos>()
         .init_resource::<camera::CameraState>()
-        .add_systems(Startup, (camera::setup, scene::setup))
+        .add_systems(Startup, (camera::setup, scene::setup, sounds::setup))
         .add_systems(
             Update,
             (
                 state::drain_bridge,
+                state::watch_stalls,
                 scene::sync_nodes,
+                scene::sync_helmets,
                 scene::dress_rings,
                 scene::animate_nodes,
                 scene::update_halos,
@@ -67,9 +71,9 @@ pub fn run(cfg: Config) {
                 scene::draw_links,
                 camera::drive,
                 camera::apply_viewport,
+                sounds::play,
                 settings::persist,
                 maximize_window,
-                camera::diagnose,
             )
                 .chain(),
         )

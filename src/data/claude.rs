@@ -271,37 +271,45 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
         Some("assistant") => {
             let msg = &v["message"];
             let model = msg["model"].as_str().unwrap_or("").to_string();
-            let output_tokens = msg["usage"]["output_tokens"].as_u64().unwrap_or(0);
+            let usage = &msg["usage"];
+            let output_tokens = usage["output_tokens"].as_u64().unwrap_or(0);
+            let context_tokens = usage["input_tokens"].as_u64().unwrap_or(0)
+                + usage["cache_read_input_tokens"].as_u64().unwrap_or(0)
+                + usage["cache_creation_input_tokens"].as_u64().unwrap_or(0);
+            // Text first: it is the narrator line for every tool call in the same message.
             let mut text = String::new();
             if let Some(blocks) = msg["content"].as_array() {
                 for b in blocks {
-                    match b["type"].as_str() {
-                        Some("tool_use") => {
-                            let name = b["name"].as_str().unwrap_or("tool").to_string();
-                            let input = &b["input"];
-                            let command = match name.as_str() {
-                                "Bash" | "PowerShell" => input["command"].as_str().map(String::from),
-                                _ => None,
-                            };
-                            events.push(Event::ToolStart {
-                                session_id: session_id.to_string(),
-                                agent_id: agent.to_string(),
-                                call_id: b["id"].as_str().unwrap_or("").to_string(),
-                                tool: name.clone(),
-                                summary: summarize_tool(&name, input),
-                                command,
-                                at,
-                            });
+                    if b["type"].as_str() == Some("text")
+                        && let Some(t) = b["text"].as_str()
+                    {
+                        if !text.is_empty() {
+                            text.push('\n');
                         }
-                        Some("text") => {
-                            if let Some(t) = b["text"].as_str() {
-                                if !text.is_empty() {
-                                    text.push('\n');
-                                }
-                                text.push_str(t);
-                            }
-                        }
-                        _ => {}
+                        text.push_str(t);
+                    }
+                }
+            }
+            let note = narrator_line(&text);
+            if let Some(blocks) = msg["content"].as_array() {
+                for b in blocks {
+                    if b["type"].as_str() == Some("tool_use") {
+                        let name = b["name"].as_str().unwrap_or("tool").to_string();
+                        let input = &b["input"];
+                        let command = match name.as_str() {
+                            "Bash" | "PowerShell" => input["command"].as_str().map(String::from),
+                            _ => None,
+                        };
+                        events.push(Event::ToolStart {
+                            session_id: session_id.to_string(),
+                            agent_id: agent.to_string(),
+                            call_id: b["id"].as_str().unwrap_or("").to_string(),
+                            tool: name.clone(),
+                            summary: summarize_tool(&name, input),
+                            command,
+                            note: note.clone(),
+                            at,
+                        });
                     }
                 }
             }
@@ -312,8 +320,19 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
                 text: truncate(&text, TEXT_CAP),
                 model,
                 output_tokens,
+                context_tokens,
                 at,
             });
+        }
+        Some("system") => {
+            if v["subtype"].as_str() == Some("turn_duration") {
+                events.push(Event::TurnEnd {
+                    session_id: session_id.to_string(),
+                    agent_id: agent.to_string(),
+                    duration_ms: v["durationMs"].as_u64().unwrap_or(0),
+                    at,
+                });
+            }
         }
         Some("user") => {
             let content = &v["message"]["content"];
@@ -372,6 +391,23 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
     }
 }
 
+/// First meaningful sentence of what the agent said, for the narrator. Skips markdown noise.
+pub fn narrator_line(text: &str) -> String {
+    let cleaned: String = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("```") && !l.starts_with('|'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cleaned = cleaned.replace("**", "").replace('`', "");
+    let end = cleaned
+        .char_indices()
+        .find(|(i, c)| matches!(c, '.' | '!' | '?') && *i > 20)
+        .map(|(i, _)| i + 1)
+        .unwrap_or(cleaned.len());
+    truncate(cleaned[..end].trim(), 180)
+}
+
 fn user_message(session_id: &str, agent: &str, text: &str, at: Millis) -> Event {
     Event::Message {
         session_id: session_id.to_string(),
@@ -380,6 +416,7 @@ fn user_message(session_id: &str, agent: &str, text: &str, at: Millis) -> Event 
         text: truncate(text, TEXT_CAP),
         model: String::new(),
         output_tokens: 0,
+        context_tokens: 0,
         at,
     }
 }
