@@ -627,10 +627,50 @@ pub fn draw_links(mut gizmos: Gizmos, time: Res<Time>, store: Res<Store>, world_
     }
 }
 
+/// Project each unit's "above the head" point to window coordinates and decide its badge.
+pub fn project_badges(
+    mut store: ResMut<Store>,
+    settings: Res<Settings>,
+    cams: Query<(&Camera, &GlobalTransform), With<bevy_panorbit_camera::PanOrbitCamera>>,
+    nodes: Query<(&NodeAgent, &GlobalTransform)>,
+) {
+    let Ok((cam, cam_tf)) = cams.single() else { return };
+    let (left, top) = store.scene_insets.map(|(l, t, _, _)| (l, t)).unwrap_or((0.0, 0.0));
+    let zoom = settings.ui_scale.max(0.1);
+    let mut badges = Vec::new();
+    if let Some(session) = store.current_session() {
+        for (node, tf) in &nodes {
+            let Some(agent) = session.agent(&node.id) else { continue };
+            let kind = if agent.calls.iter().any(|c| c.is_error) && !store.acked.contains(&format!("err:{}", agent.id))
+            {
+                Some(super::state::BadgeKind::Error)
+            } else if agent.depth == 0 && agent.waiting_for_user {
+                Some(super::state::BadgeKind::Waiting)
+            } else if agent.depth > 0 && agent.ended.is_some() && !store.acked.contains(&format!("done:{}", agent.id)) {
+                Some(super::state::BadgeKind::Done)
+            } else {
+                None
+            };
+            let Some(kind) = kind else { continue };
+            let head = tf.translation() + Vec3::Y * if agent.depth == 0 { 1.05 } else { 0.62 };
+            if let Ok(p) = cam.world_to_viewport(cam_tf, head) {
+                badges.push(super::state::Badge {
+                    kind,
+                    x: (p.x + left) / zoom,
+                    y: (p.y + top) / zoom,
+                });
+            }
+        }
+    }
+    store.badges = badges;
+}
+
 fn on_click(ev: On<PointerClick>, nodes: Query<&NodeAgent>, mut store: ResMut<Store>) {
     if let Ok(n) = nodes.get(ev.entity) {
         debug!("click node {}", n.id);
         store.selected = Some(n.id.clone());
+        store.acked.insert(format!("done:{}", n.id));
+        store.acked.insert(format!("err:{}", n.id));
     }
 }
 

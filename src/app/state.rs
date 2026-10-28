@@ -30,6 +30,24 @@ pub struct Toast {
     pub born: Instant,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BadgeKind {
+    /// A unit finished its mission (glowing lamp) until acknowledged.
+    Done,
+    /// The commander is waiting for the human.
+    Waiting,
+    /// A tool call failed, until acknowledged.
+    Error,
+}
+
+#[derive(Clone, Debug)]
+pub struct Badge {
+    pub kind: BadgeKind,
+    /// Window logical position of the point above the unit.
+    pub x: f32,
+    pub y: f32,
+}
+
 #[derive(Resource)]
 pub struct Store {
     pub claude_dir: PathBuf,
@@ -62,6 +80,10 @@ pub struct Store {
     pub stalled: HashSet<String>,
     /// One-shot alarm keys already raised (loops, context), so they fire once.
     alarmed: HashSet<String>,
+    /// Badges the user has dismissed by clicking the unit: "done:<agent>", "err:<agent>".
+    pub acked: HashSet<String>,
+    /// Badges to draw this frame, in window logical coordinates.
+    pub badges: Vec<Badge>,
     preferred: Option<String>,
     opened_once: bool,
     /// When the current session was opened; batches in the first moments are history, not news.
@@ -95,6 +117,8 @@ impl Store {
             sfx: Vec::new(),
             stalled: HashSet::new(),
             alarmed: HashSet::new(),
+            acked: HashSet::new(),
+            badges: Vec::new(),
             preferred,
             opened_once: false,
             opened_at: Instant::now(),
@@ -116,6 +140,7 @@ impl Store {
         self.toasts.clear();
         self.stalled.clear();
         self.alarmed.clear();
+        self.acked.clear();
         let _ = bridge.to_worker.send(ToWorker::Open(r.clone()));
     }
 
@@ -205,9 +230,21 @@ fn react(store: &Store, ev: &Event) -> (Option<(ToastKind, String)>, Option<Sfx>
             (Some((ToastKind::Error, format!("✖ {tool} failed"))), Some(Sfx::Error))
         }
         Event::TurnEnd { agent_id, .. } if agent_id == ROOT_AGENT => (
-            Some((ToastKind::Done, "✔ turn complete: waiting for you".into())),
-            Some(Sfx::Complete),
+            Some((ToastKind::Done, "💬 turn complete: waiting for your orders".into())),
+            Some(Sfx::Waiting),
         ),
+        Event::ToolEnd {
+            call_id,
+            is_error: false,
+            ..
+        } if session
+            .agents
+            .iter()
+            .flat_map(|a| a.calls.iter())
+            .any(|c| &c.id == call_id && c.command.as_deref().is_some_and(|cmd| cmd.contains("factory.mjs ship"))) =>
+        {
+            (Some((ToastKind::Done, "🏁 shipped".into())), Some(Sfx::Complete))
+        }
         Event::ToolStart { .. } => (None, Some(Sfx::Blip)),
         _ => (None, None),
     }

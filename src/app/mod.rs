@@ -71,6 +71,7 @@ pub fn run(cfg: Config) {
                 scene::draw_links,
                 camera::drive,
                 camera::apply_viewport,
+                scene::project_badges,
                 sounds::play,
                 settings::persist,
                 maximize_window,

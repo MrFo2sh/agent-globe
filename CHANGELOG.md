@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.2 - 2026-10-28
+- Notification badges above units: glowing "!" lamp when a unit finishes, chat bubble over the
+  commander while it waits for your orders, red warning when a call failed. Click the unit to dismiss.
+- New radio line on turn end: "Waiting for commands, sir." A successful `factory ship` plays
+  "Construction complete."
+
 ## 0.2.1 - 2026-10-28
 - Radio plays through its own audio sink with an output-device picker in settings. Bevy's audio
   only ever used the Windows default device, which on multi-device machines can be a monitor.

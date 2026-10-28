@@ -157,6 +157,9 @@ pub struct Agent {
     /// Completed turns (root agent: times it handed control back to the user).
     #[serde(default)]
     pub turns: u32,
+    /// True from a turn end until the agent does anything else: it is waiting for the human.
+    #[serde(default)]
+    pub waiting_for_user: bool,
     /// Order in which this agent was spawned within the session (0 = root).
     pub order: u32,
 }
@@ -290,6 +293,7 @@ impl Session {
             output_tokens: 0,
             context_tokens: 0,
             turns: 0,
+            waiting_for_user: false,
             order,
         });
         let i = self.agents.len() - 1;
@@ -400,6 +404,7 @@ impl Session {
                 self.ensure_agent(&agent_id, None, None, "", "", "", "", at);
                 self.call_owner.insert(call_id.clone(), agent_id.clone());
                 let a = self.agent_mut(&agent_id).expect("ensured");
+                a.waiting_for_user = false;
                 if !a.calls.iter().any(|c| c.id == call_id) {
                     a.calls.push(ToolCall {
                         id: call_id,
@@ -462,6 +467,7 @@ impl Session {
             } => {
                 self.ensure_agent(&agent_id, None, None, "", "", &model, "", at);
                 let a = self.agent_mut(&agent_id).expect("ensured");
+                a.waiting_for_user = false;
                 a.messages += 1;
                 a.output_tokens += output_tokens;
                 if context_tokens > 0 {
@@ -484,6 +490,7 @@ impl Session {
                 self.ensure_agent(&agent_id, None, None, "", "", "", "", at);
                 if let Some(a) = self.agent_mut(&agent_id) {
                     a.turns += 1;
+                    a.waiting_for_user = true;
                 }
                 self.touch(&agent_id, at);
             }

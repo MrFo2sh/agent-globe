@@ -29,10 +29,11 @@ pub enum Sfx {
     Blip,
     Alarm,
     Fanfare,
+    Waiting,
 }
 
 impl Sfx {
-    pub const ALL: [Sfx; 11] = [
+    pub const ALL: [Sfx; 12] = [
         Sfx::Prompt,
         Sfx::Spawn,
         Sfx::Done,
@@ -44,6 +45,7 @@ impl Sfx {
         Sfx::Blip,
         Sfx::Alarm,
         Sfx::Fanfare,
+        Sfx::Waiting,
     ];
 
     pub fn name(self) -> &'static str {
@@ -59,6 +61,7 @@ impl Sfx {
             Sfx::Blip => "blip",
             Sfx::Alarm => "alarm",
             Sfx::Fanfare => "fanfare",
+            Sfx::Waiting => "waiting",
         }
     }
 
@@ -76,6 +79,7 @@ impl Sfx {
             Sfx::Blip => "(tool blip)",
             Sfx::Alarm => "(siren)",
             Sfx::Fanfare => "(fanfare)",
+            Sfx::Waiting => "Waiting for commands, sir.",
         }
     }
 
@@ -92,6 +96,7 @@ impl Sfx {
             Sfx::Blip => include_bytes!("../../assets/sounds/blip.wav"),
             Sfx::Alarm => include_bytes!("../../assets/sounds/alarm.wav"),
             Sfx::Fanfare => include_bytes!("../../assets/sounds/fanfare.wav"),
+            Sfx::Waiting => include_bytes!("../../assets/sounds/waiting.wav"),
         }
     }
 
@@ -99,7 +104,7 @@ impl Sfx {
     fn cooldown(self) -> f32 {
         match self {
             Sfx::Blip => 0.15,
-            Sfx::Prompt | Sfx::Complete => 4.0,
+            Sfx::Prompt | Sfx::Complete | Sfx::Waiting => 4.0,
             _ => 2.5,
         }
     }

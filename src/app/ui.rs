@@ -5,7 +5,7 @@
 use super::debrief;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
-use super::state::{BridgeRes, Store, ToastKind};
+use super::state::{BadgeKind, BridgeRes, Store, ToastKind};
 use super::theme;
 use agent_globe::data::claude::SessionRef;
 use agent_globe::data::model::{Agent, ROOT_AGENT, Session, Status, now_millis};
@@ -156,6 +156,7 @@ pub fn draw(
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new("F or Esc: back to the console").small().color(DIM));
             });
+        draw_badges(ctx, &store);
         draw_toasts(ctx, &store);
         return Ok(());
     }
@@ -622,6 +623,7 @@ pub fn draw(
         }
     }
 
+    draw_badges(ctx, &store);
     draw_toasts(ctx, &store);
 
     store.scene_insets = Some((inset_left, inset_top, inset_right, inset_bottom));
@@ -644,6 +646,43 @@ pub fn draw(
         .map(|p| ui_rects.iter().any(|r| r.contains(p)))
         .unwrap_or(false);
     Ok(())
+}
+
+/// Notification badges floating above units: lamp for done, chat bubble for waiting, red for error.
+fn draw_badges(ctx: &egui::Context, store: &Store) {
+    if store.badges.is_empty() {
+        return;
+    }
+    let t = ctx.input(|i| i.time) as f32;
+    let pulse = 0.55 + 0.45 * (t * 3.0).sin().abs();
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("badges")));
+    for b in &store.badges {
+        let (glyph, color, label) = match b.kind {
+            BadgeKind::Done => ("!", egui::Color32::from_rgb(255, 215, 90), "done"),
+            BadgeKind::Waiting => ("💬", ACCENT, "awaiting your orders"),
+            BadgeKind::Error => ("⚠", RED, "failed call"),
+        };
+        let center = egui::pos2(b.x, b.y - 10.0 - 4.0 * (t * 2.0).sin());
+        let glow = color.gamma_multiply(0.25 * pulse);
+        painter.circle_filled(center, 22.0, glow);
+        painter.circle_filled(center, 14.0, PANEL);
+        painter.circle_stroke(center, 14.0, egui::Stroke::new(1.5, color.gamma_multiply(pulse)));
+        painter.text(
+            center,
+            egui::Align2::CENTER_CENTER,
+            glyph,
+            egui::FontId::proportional(17.0),
+            color,
+        );
+        painter.text(
+            center + egui::vec2(0.0, 24.0),
+            egui::Align2::CENTER_TOP,
+            label,
+            egui::FontId::proportional(12.0),
+            color.gamma_multiply(0.9),
+        );
+    }
+    ctx.request_repaint();
 }
 
 fn draw_toasts(ctx: &egui::Context, store: &Store) {
