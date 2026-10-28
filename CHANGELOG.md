@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.7.0 - 2026-10-28
+- The question in the bubble: when a commander waits for you, its badge, the Needs-You row, the hover card and the satellite card show what it actually said or asked, not just "awaiting your orders".
+- Fuel gauge for Pro / Max plans: Claude Code's rate-limit refusals in the transcripts (status, reset time) become Throttle events. The app learns what a five-hour window holds from the spend at the moment of each throttle, then shows "⛽ 62% · empty ~16:40" from the current window's spend and the pace of the last half hour. While throttled it shows the reset time in red. A throttle raises a toast and the alarm, for any watched session. Settings show the learned size with a "forget" button.
+- Global approval hotkeys: Ctrl+Alt+Y allows and Ctrl+Alt+N denies the oldest pending request from any window, with a toast confirming what was decided.
+- File constellation: an outer ring with the session's 24 hottest files (edits weigh three reads), sized by heat and glowing for 20 s after an edit, with beams from the units that touched them in the last 45 s (bright for edits, faint for reads, fading with age). Labels under the nodes; click one to open the file in VS Code. Toggle in settings.
+- The F shortcut for cinematic mode is gone; the 🎬 button remains and Esc brings the console back.
+
 ## 0.6.1 - 2026-10-28
 - HUD: the session-length counter is gone (it is in the unit panel), so the cost and five-hour figures no longer run under the buttons.
 

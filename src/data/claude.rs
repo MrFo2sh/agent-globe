@@ -268,6 +268,16 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
     let at = parse_millis(v["timestamp"].as_str());
     let agent = v["agentId"].as_str().unwrap_or(agent_id);
     match v["type"].as_str() {
+        Some("assistant") if throttle_info(v).is_some() => {
+            let (resets_at, kind) = throttle_info(v).unwrap_or((0, String::new()));
+            events.push(Event::Throttle {
+                session_id: session_id.to_string(),
+                agent_id: agent.to_string(),
+                resets_at,
+                kind,
+                at,
+            });
+        }
         Some("assistant") => {
             let msg = &v["message"];
             let model = msg["model"].as_str().unwrap_or("").to_string();
@@ -405,6 +415,23 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
     }
 }
 
+/// A rate-limit refusal in an assistant record: when the window reopens and which limit it was.
+pub fn throttle_info(v: &Value) -> Option<(Millis, String)> {
+    let q = v["quotaLimits"]
+        .as_object()
+        .or_else(|| v["apiErrorParams"]["rate_limit_info"].as_object())?;
+    if q.get("status").and_then(Value::as_str) != Some("rejected") {
+        return None;
+    }
+    let resets_at = q.get("resetsAt").and_then(Value::as_i64).unwrap_or(0) * 1000;
+    let kind = q
+        .get("rateLimitType")
+        .and_then(Value::as_str)
+        .unwrap_or("five_hour")
+        .to_string();
+    Some((resets_at, kind))
+}
+
 /// Done / total and the in-progress item from a TodoWrite input.
 pub fn todo_progress(input: &Value) -> Option<Progress> {
     let todos = input["todos"].as_array()?;
@@ -505,6 +532,18 @@ noise
 test input <b>bold</b> 1 < 2";
         assert_eq!(strip_tag_blocks(t), "test input  1 < 2");
         assert_eq!(strip_tag_blocks("plain"), "plain");
+    }
+
+    #[test]
+    fn throttle_records_are_recognised() {
+        let v = serde_json::json!({"type":"assistant","apiError":"usage_limit_reached",
+            "quotaLimits":{"status":"rejected","resetsAt":1793155200,"rateLimitType":"five_hour"},
+            "message":{"role":"assistant","content":[{"type":"text","text":"You've hit your session limit"}]}});
+        assert_eq!(throttle_info(&v), Some((1_793_155_200_000, "five_hour".to_string())));
+        let ok = serde_json::json!({"type":"assistant","message":{"role":"assistant","content":[]}});
+        assert_eq!(throttle_info(&ok), None);
+        let allowed = serde_json::json!({"quotaLimits":{"status":"allowed"}});
+        assert_eq!(throttle_info(&allowed), None);
     }
 
     #[test]

@@ -3,6 +3,7 @@
 pub mod artifacts;
 pub mod claude;
 pub mod cost;
+pub mod files;
 pub mod hooks;
 pub mod layout;
 pub mod model;

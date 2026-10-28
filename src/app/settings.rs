@@ -29,10 +29,14 @@ pub struct Settings {
     pub progress_rings: bool,
     /// Other active sessions as small constellations around the current one.
     pub satellites: bool,
+    /// Outer ring of the session's hottest files, with beams from the units touching them.
+    pub files_ring: bool,
     /// "api" bills per token; "subscription" (Pro / Max) shows API-equivalent values marked with ≈.
     pub plan: String,
     /// Force the compact layout (it also turns on by itself under 1100 px of width).
     pub compact: bool,
+    /// API-equivalent value of a five-hour window, learned from the spend at the moment of past throttles.
+    pub learned_capacity_usd: f32,
     /// Per-session spend alarm in USD; 0 disables it.
     pub budget_usd: f32,
     /// Windows notifications when the window is not focused (off by default: the radio is the alert).
@@ -57,8 +61,10 @@ impl Default for Settings {
             audio_device: String::new(),
             progress_rings: true,
             satellites: true,
+            files_ring: true,
             plan: "subscription".into(),
             compact: false,
+            learned_capacity_usd: 0.0,
             budget_usd: 0.0,
             desktop_notifications: false,
         }

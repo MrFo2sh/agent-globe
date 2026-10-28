@@ -7,14 +7,14 @@ use super::gitinfo::{self, FileChange, GitInfo, GitWatch};
 use super::probe::Probe;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
-use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer};
+use super::state::{BadgeKind, BridgeRes, FIVE_HOURS_MS, Store, ToastKind, Viewer, clock_hm};
 use super::theme;
 use super::winjump;
 use agent_globe::bridge::Bridge;
 use agent_globe::data::artifacts::{Artifact, ArtifactKind};
 use agent_globe::data::claude::SessionRef;
 use agent_globe::data::cost;
-use agent_globe::data::model::{Agent, ROOT_AGENT, Session, Status, now_millis};
+use agent_globe::data::model::{Agent, ROOT_AGENT, Session, Status, now_millis, snippet};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -179,11 +179,12 @@ pub fn draw(
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -12.0))
             .interactable(false)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("F or Esc: back to the console").small().color(DIM));
+                ui.label(egui::RichText::new("Esc: back to the console").small().color(DIM));
             });
         draw_badges(ctx, &store);
         draw_progress(ctx, &store, &settings, now);
         draw_satellites(ctx, &mut store, now);
+        draw_files(ctx, &mut store);
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
         draw_viewer(ctx, &mut store, &mut images, &mut docs);
         draw_toasts(ctx, &store);
@@ -278,12 +279,45 @@ pub fn draw(
                         },
                     );
                     if !plan_api {
-                        let five_h = store.spent_since(now, 5 * 3_600_000);
-                        tip(
-                            ui,
-                            egui::RichText::new(format!("5h {}", money(five_h, false))).monospace().color(DIM),
-                            "API-equivalent value of everything your watched sessions did in the last five hours: the window Pro and Max limits are measured on.",
-                        );
+                        // Fuel gauge: what this five-hour window has absorbed against what a window
+                        // holds (learned from past throttles), and when it runs out at this pace.
+                        let window = store.spent_since(now, FIVE_HOURS_MS);
+                        let cap = settings.learned_capacity_usd as f64;
+                        match (store.throttled_until(now), cap > 0.0) {
+                            (Some(until), _) => {
+                                tip(
+                                    ui,
+                                    egui::RichText::new(format!("⛔ limit · resets {}", clock_hm(until))).monospace().color(RED),
+                                    "Claude Code reported the five-hour limit. Nothing runs until the reset time.",
+                                );
+                            }
+                            (None, true) => {
+                                let frac = (window / cap).clamp(0.0, 1.5);
+                                let color = if frac >= 0.9 { RED } else if frac >= 0.7 { AMBER } else { ACCENT };
+                                let pace = store.pace_per_ms(now);
+                                let eta = if pace > 0.0 && window < cap {
+                                    format!(" · empty ~{}", clock_hm(now + ((cap - window) / pace) as i64))
+                                } else {
+                                    String::new()
+                                };
+                                tip(
+                                    ui,
+                                    egui::RichText::new(format!("⛽ {:.0}%{eta}", frac * 100.0)).monospace().color(color),
+                                    &format!(
+                                        "Five-hour window: {} used of {} it holds (learned from past throttles).\nThe estimate: at the pace of the last half hour it runs out around the time shown.",
+                                        money(window, false),
+                                        money(cap, false)
+                                    ),
+                                );
+                            }
+                            (None, false) => {
+                                tip(
+                                    ui,
+                                    egui::RichText::new(format!("5h {}", money(window, false))).monospace().color(DIM),
+                                    "API-equivalent value of everything your watched sessions did in the last five hours. The window's size is not known yet: the gauge calibrates itself the first time Claude Code reports the limit.",
+                                );
+                            }
+                        }
                     }
                     if !compact && let Some(g) = git.as_ref() {
                         tip(
@@ -564,7 +598,7 @@ pub fn draw(
                 egui::RichText::new(if compact {
                     "drag · scroll · R home · F"
                 } else {
-                    "drag rotate · scroll zoom · right-drag pan · click unit · R home · F cinematic"
+                    "drag rotate · scroll zoom · right-drag pan · click unit or file · R home"
                 })
                 .small()
                 .color(DIM),
@@ -808,6 +842,7 @@ pub fn draw(
                     "other active sessions as satellites around this one",
                 );
                 ui.checkbox(&mut settings.compact, "compact layout (also automatic under 1100 px wide)");
+                ui.checkbox(&mut settings.files_ring, "file ring: the session's hottest files with beams from the units touching them");
                 ui.separator();
                 ui.label(egui::RichText::new("BILLING").small().color(DIM));
                 ui.horizontal(|ui| {
@@ -816,6 +851,23 @@ pub fn draw(
                     ui.selectable_value(&mut settings.plan, "api".to_string(), "API, pay per token")
                         .on_hover_text("Dollar figures are what you will be billed at list prices.");
                 });
+                ui.horizontal(|ui| {
+                    let cap = settings.learned_capacity_usd;
+                    let text = if cap > 0.0 {
+                        format!("a five-hour window holds ≈{} (learned from past throttles)", cost::fmt_usd(cap as f64))
+                    } else {
+                        "five-hour window size: not learned yet, the gauge calibrates on the first throttle".to_string()
+                    };
+                    ui.label(egui::RichText::new(text).small().color(DIM));
+                    if cap > 0.0 && ui.small_button("forget").on_hover_text("Start learning again").clicked() {
+                        settings.learned_capacity_usd = 0.0;
+                    }
+                });
+                ui.label(
+                    egui::RichText::new("approvals from any window: Ctrl+Alt+Y allows, Ctrl+Alt+N denies the oldest pending request")
+                        .small()
+                        .color(DIM),
+                );
                 ui.separator();
                 ui.label(egui::RichText::new("ALERTS").small().color(DIM));
                 ui.add(
@@ -915,7 +967,11 @@ pub fn draw(
     draw_badges(ctx, &store);
     draw_progress(ctx, &store, &settings, now);
     draw_satellites(ctx, &mut store, now);
+    draw_files(ctx, &mut store);
     draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
+    if let Some(path) = store.pending_open_file.take() {
+        open_in_editor("", &path);
+    }
     if let Some(rect) = draw_viewer(ctx, &mut store, &mut images, &mut docs) {
         ui_rects.push(rect);
     }
@@ -1023,6 +1079,45 @@ fn draw_satellites(ctx: &egui::Context, store: &mut Store, now: i64) {
     }
 }
 
+/// Labels under the file nodes: name, counts on hover, click to open in the editor.
+fn draw_files(ctx: &egui::Context, store: &mut Store) {
+    if store.viewer.is_some() || store.file_screen.is_empty() {
+        return;
+    }
+    let vr = ctx.viewport_rect();
+    let (l, t, r, b) = store.scene_insets.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let scene = egui::Rect::from_min_max(
+        egui::pos2(vr.min.x + l, vr.min.y + t),
+        egui::pos2(vr.max.x - r, vr.max.y - b),
+    );
+    let mut open: Option<String> = None;
+    for (path, label, x, y, reads, edits) in store.file_screen.clone() {
+        let pos = egui::pos2(x, y + 10.0);
+        if !scene.contains(pos) {
+            continue;
+        }
+        egui::Area::new(egui::Id::new(("file", &path)))
+            .fixed_pos(pos)
+            .pivot(egui::Align2::CENTER_TOP)
+            .order(egui::Order::Foreground)
+            .show(ctx, |ui| {
+                let color = if edits > 0 { SAND } else { DIM };
+                if ui
+                    .add(egui::Button::new(egui::RichText::new(&label).small().color(color)).frame(false))
+                    .on_hover_text(format!(
+                        "{path}\n{reads} reads · {edits} edits · click to open in VS Code"
+                    ))
+                    .clicked()
+                {
+                    open = Some(path.clone());
+                }
+            });
+    }
+    if open.is_some() {
+        store.pending_open_file = open;
+    }
+}
+
 /// Hover card for a satellite: what that session is and whether it needs you.
 fn session_card(ui: &mut egui::Ui, s: &Session, now: i64) {
     ui.horizontal(|ui| {
@@ -1047,11 +1142,12 @@ fn session_card(ui: &mut egui::Ui, s: &Session, now: i64) {
     );
     let root = s.root();
     if root.waiting_for_user {
-        ui.label(
-            egui::RichText::new("💬 commander is waiting for your orders")
-                .small()
-                .color(ACCENT),
-        );
+        let what = if root.last_said.trim().is_empty() {
+            "commander is waiting for your orders".to_string()
+        } else {
+            snippet(&root.last_said, 140)
+        };
+        ui.add(egui::Label::new(egui::RichText::new(format!("💬 {what}")).small().color(ACCENT)).wrap());
     } else if let Some(c) = root
         .calls
         .iter()
@@ -1088,6 +1184,17 @@ fn draw_badges(ctx: &egui::Context, store: &Store) {
             continue;
         }
         let (glyph, color, label) = badge_style(b.kind);
+        let question = if b.kind == BadgeKind::Waiting {
+            store
+                .sessions
+                .get(&b.session_id)
+                .and_then(|s| s.agent(&b.agent_id))
+                .map(|a| snippet(&a.last_said, 70))
+                .filter(|q| !q.is_empty())
+        } else {
+            None
+        };
+        let label: &str = question.as_deref().unwrap_or(label);
         let center = egui::pos2(b.x, b.y - 10.0 - 4.0 * (t * 2.0).sin());
         let glow = color.gamma_multiply(0.25 * pulse);
         painter.circle_filled(center, 22.0, glow);
@@ -1695,6 +1802,16 @@ fn hover_card(ui: &mut egui::Ui, a: &Agent, now: i64) {
                 .wrap(),
             );
         }
+    }
+    if a.waiting_for_user && !a.last_said.trim().is_empty() {
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(format!("💬 {}", snippet(&a.last_said, 160)))
+                    .small()
+                    .color(ACCENT),
+            )
+            .wrap(),
+        );
     }
     ui.label(egui::RichText::new("click to open").small().color(DIM));
 }

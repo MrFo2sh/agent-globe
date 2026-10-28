@@ -4,6 +4,7 @@
 use super::settings::Settings;
 use super::state::Store;
 use super::theme;
+use agent_globe::data::files::{self, FileStat};
 use agent_globe::data::layout::{self, Layout};
 use agent_globe::data::model::{Status, now_millis};
 use bevy::picking::events::{PointerClick, PointerOut, PointerOver};
@@ -33,6 +34,30 @@ pub struct Halo {
     pub speed: f32,
     pub is_core: bool,
 }
+
+/// One of the session's hottest files, on the ring outside the deepest orbit.
+#[derive(Component)]
+pub struct FileNode {
+    pub path: String,
+    pub angle: f32,
+}
+
+#[derive(Resource, Default)]
+pub struct FileEntities(pub HashMap<String, Entity>);
+
+/// The hot-file list of the current session, rebuilt once a second, and where each node is.
+#[derive(Resource, Default)]
+pub struct FileScene {
+    pub files: Vec<FileStat>,
+    pub depth: u32,
+    pub positions: HashMap<String, Vec3>,
+    next_rebuild: f32,
+}
+
+/// How many files the ring shows, how long a touch keeps its beam, how long a node glows after an edit.
+pub const FILE_RING_MAX: usize = 24;
+pub const BEAM_MS: i64 = 45_000;
+pub const FILE_GLOW_MS: i64 = 20_000;
 
 #[derive(Component)]
 pub struct OrbitRing {
@@ -121,6 +146,9 @@ pub struct SceneAssets {
     halos: HashMap<HaloKey, Handle<StandardMaterial>>,
     base_material: Handle<StandardMaterial>,
     ring_material: Handle<StandardMaterial>,
+    file_mesh: Handle<Mesh>,
+    file_material: Handle<StandardMaterial>,
+    file_hot_material: Handle<StandardMaterial>,
 }
 
 /// Toy plastic: glossy, lit, with an emissive push for the glowing states.
@@ -220,6 +248,9 @@ pub fn setup(
     });
 
     // Night sky: small faint cubes far away.
+    let file_mesh = meshes.add(Cuboid::new(0.22, 0.22, 0.22));
+    let file_material = materials.add(plastic(theme::KHAKI, 6.0));
+    let file_hot_material = materials.add(plastic(theme::PLASTIC_LIGHT, 60.0));
     let star_mesh = meshes.add(Cuboid::new(0.14, 0.14, 0.14));
     let star_mat = materials.add(light(theme::STAR, 28.0));
     let mut rng = XorShift(0x9E37_79B9);
@@ -273,7 +304,169 @@ pub fn setup(
         halos,
         base_material,
         ring_material,
+        file_mesh,
+        file_material,
+        file_hot_material,
     });
+}
+
+/// Keep the file ring in step with what the current session's agents are touching.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
+pub fn sync_files(
+    mut commands: Commands,
+    time: Res<Time>,
+    store: Res<Store>,
+    settings: Res<Settings>,
+    assets: Res<SceneAssets>,
+    scene: Res<SceneLayout>,
+    mut fscene: ResMut<FileScene>,
+    mut fents: ResMut<FileEntities>,
+    mut nodes: Query<(&mut FileNode, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
+) {
+    let t = time.elapsed_secs();
+    let dt = time.delta_secs();
+    let now = now_millis();
+    let session = if settings.files_ring {
+        store.current_session()
+    } else {
+        None
+    };
+    let Some(session) = session else {
+        for (_, e) in fents.0.drain() {
+            commands.entity(e).despawn();
+        }
+        fscene.files.clear();
+        fscene.positions.clear();
+        return;
+    };
+    if t >= fscene.next_rebuild {
+        fscene.next_rebuild = t + 1.0;
+        fscene.files = files::hot_files(session, FILE_RING_MAX, now, BEAM_MS);
+        let max_depth = scene.per.get(&session.id).map(|e| e.layout.max_depth).unwrap_or(0);
+        fscene.depth = max_depth + 1;
+        let keep: std::collections::HashSet<&str> = fscene.files.iter().map(|f| f.path.as_str()).collect();
+        fents.0.retain(|path, e| {
+            let k = keep.contains(path.as_str());
+            if !k {
+                commands.entity(*e).despawn();
+            }
+            k
+        });
+        // Angles follow the alphabetical order of the chosen set, so nodes do not jump as heat shifts.
+        let mut order: Vec<&str> = fscene.files.iter().map(|f| f.path.as_str()).collect();
+        order.sort_unstable();
+        let n = order.len().max(1) as f32;
+        for (i, path) in order.iter().enumerate() {
+            let angle = TAU * i as f32 / n;
+            match fents.0.get(*path) {
+                Some(&e) => {
+                    if let Ok((mut node, _, _)) = nodes.get_mut(e) {
+                        node.angle = angle;
+                    }
+                }
+                None => {
+                    let mut ec = commands.spawn((
+                        Mesh3d(assets.file_mesh.clone()),
+                        MeshMaterial3d(assets.file_material.clone()),
+                        Transform::from_translation(Vec3::ZERO).with_scale(Vec3::splat(0.01)),
+                        FileNode {
+                            path: path.to_string(),
+                            angle,
+                        },
+                    ));
+                    ec.observe(on_file_click);
+                    fents.0.insert(path.to_string(), ec.id());
+                }
+            }
+        }
+    }
+    let depth = fscene.depth;
+    let heat_of: HashMap<&str, (u32, i64)> = fscene
+        .files
+        .iter()
+        .map(|f| (f.path.as_str(), (f.heat(), f.last_at)))
+        .collect();
+    let mut positions = HashMap::new();
+    for (node, mut tf, mut mat) in nodes.iter_mut() {
+        let (heat, last_at) = heat_of.get(node.path.as_str()).copied().unwrap_or((1, 0));
+        let angle = orbit_angle(node.angle, depth, t, settings.drift_speed);
+        let target = Vec3::from(layout::orbit_point(depth, angle));
+        tf.translation = tf.translation.lerp(target, (dt * 4.0).min(1.0));
+        let want = 0.7 + (heat.min(24) as f32 / 24.0) * 0.9;
+        let sc = tf.scale.x + (want - tf.scale.x) * (dt * 4.0).min(1.0);
+        tf.scale = Vec3::splat(sc);
+        tf.rotation = Quat::from_rotation_y(t * 0.4 + node.angle) * Quat::from_rotation_x(0.6);
+        let hot = now - last_at <= FILE_GLOW_MS;
+        let handle = if hot {
+            &assets.file_hot_material
+        } else {
+            &assets.file_material
+        };
+        if mat.0 != *handle {
+            mat.0 = handle.clone();
+        }
+        positions.insert(node.path.clone(), tf.translation);
+    }
+    fscene.positions = positions;
+}
+
+/// Beams from units to the files they touched in the last `BEAM_MS`: bright for edits, faint for reads, fading with age.
+pub fn draw_file_beams(mut gizmos: Gizmos, store: Res<Store>, fscene: Res<FileScene>, world_pos: Res<NodeWorldPos>) {
+    let Some(current) = store.current.clone() else { return };
+    let now = now_millis();
+    for f in &fscene.files {
+        let Some(&to) = fscene.positions.get(&f.path) else {
+            continue;
+        };
+        for touch in &f.touches {
+            let Some(&from) = world_pos.0.get(&(current.clone(), touch.agent_id.clone())) else {
+                continue;
+            };
+            let age = ((now - touch.at) as f32 / BEAM_MS as f32).clamp(0.0, 1.0);
+            let alpha = (1.0 - age) * if touch.edit { 0.9 } else { 0.35 };
+            let base = if touch.edit { theme::LINK_ACTIVE } else { theme::LINK };
+            let c = base.to_srgba();
+            let color = Color::srgba(c.red, c.green, c.blue, alpha);
+            let pts = layout::curve(from.into(), to.into(), 0.8, 20);
+            let v: Vec<Vec3> = pts.iter().map(|p| Vec3::from(*p)).collect();
+            gizmos.linestrip(v, color);
+        }
+    }
+}
+
+/// Screen positions of the file nodes, for their labels.
+pub fn project_files(
+    mut store: ResMut<Store>,
+    settings: Res<Settings>,
+    fscene: Res<FileScene>,
+    cams: Query<(&Camera, &GlobalTransform), With<bevy_panorbit_camera::PanOrbitCamera>>,
+    nodes: Query<(&FileNode, &GlobalTransform)>,
+) {
+    let Ok((cam, cam_tf)) = cams.single() else { return };
+    let zoom = settings.ui_scale.max(0.1);
+    let mut out = Vec::new();
+    for (node, tf) in &nodes {
+        let Some(f) = fscene.files.iter().find(|f| f.path == node.path) else {
+            continue;
+        };
+        if let Ok(p) = cam.world_to_viewport(cam_tf, tf.translation() - Vec3::Y * 0.2) {
+            out.push((
+                f.path.clone(),
+                f.label.clone(),
+                p.x / zoom,
+                p.y / zoom,
+                f.reads,
+                f.edits,
+            ));
+        }
+    }
+    store.file_screen = out;
+}
+
+fn on_file_click(ev: On<PointerClick>, nodes: Query<&FileNode>, mut store: ResMut<Store>) {
+    if let Ok(n) = nodes.get(ev.entity) {
+        store.pending_open_file = Some(n.path.clone());
+    }
 }
 
 fn is_stalled(store: &Store, agent: &agent_globe::data::model::Agent) -> bool {

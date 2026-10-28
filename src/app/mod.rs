@@ -4,6 +4,7 @@ mod alerts;
 mod camera;
 mod debrief;
 mod gitinfo;
+mod hotkeys;
 mod probe;
 mod scene;
 mod settings;
@@ -58,32 +59,46 @@ pub fn run(cfg: Config) {
         .init_resource::<scene::NodeEntities>()
         .init_resource::<scene::RingEntities>()
         .init_resource::<scene::SceneLayout>()
+        .init_resource::<scene::FileEntities>()
+        .init_resource::<scene::FileScene>()
         .init_resource::<scene::NodeWorldPos>()
         .init_resource::<camera::CameraState>()
         .init_resource::<probe::Probe>()
         .init_resource::<gitinfo::GitWatch>()
+        .insert_resource(hotkeys::start())
         .add_systems(Startup, (camera::setup, scene::setup, sounds::setup, alerts::setup))
         .add_systems(
             Update,
+            // Bevy system tuples hold 20 at most: two chained halves keep the original order.
             (
-                state::drain_bridge,
-                state::watch_stalls,
-                scene::sync_nodes,
-                scene::sync_helmets,
-                scene::dress_rings,
-                scene::animate_nodes,
-                scene::update_halos,
-                scene::animate_dust,
-                scene::draw_links,
-                camera::drive,
-                camera::apply_viewport,
-                scene::project_badges,
-                alerts::update,
-                alerts::notify,
-                sounds::play,
-                settings::persist,
-                maximize_window,
-                window_icon,
+                (
+                    state::drain_bridge,
+                    hotkeys::poll,
+                    state::watch_stalls,
+                    scene::sync_nodes,
+                    scene::sync_helmets,
+                    scene::dress_rings,
+                    scene::animate_nodes,
+                    scene::update_halos,
+                    scene::animate_dust,
+                    scene::sync_files,
+                    scene::draw_links,
+                )
+                    .chain(),
+                (
+                    scene::draw_file_beams,
+                    camera::drive,
+                    camera::apply_viewport,
+                    scene::project_badges,
+                    scene::project_files,
+                    alerts::update,
+                    alerts::notify,
+                    sounds::play,
+                    settings::persist,
+                    maximize_window,
+                    window_icon,
+                )
+                    .chain(),
             )
                 .chain(),
         )

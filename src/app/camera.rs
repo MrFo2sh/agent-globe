@@ -144,9 +144,6 @@ pub fn drive(
     }
     cam.enabled = !store.pointer_over_ui;
 
-    if keys.just_pressed(KeyCode::KeyF) {
-        store.hide_ui = !store.hide_ui;
-    }
     if keys.just_pressed(KeyCode::KeyR) || store.reset_view {
         store.reset_view = false;
         go_home(&mut cam);

@@ -7,7 +7,7 @@ use super::theme;
 use agent_globe::bridge::{ApprovalRequest, Bridge, ToApp, ToWorker};
 use agent_globe::data::claude::SessionRef;
 use agent_globe::data::cost;
-use agent_globe::data::model::{Event, ROOT_AGENT, Session, now_millis};
+use agent_globe::data::model::{Event, ROOT_AGENT, Session, now_millis, snippet};
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -62,6 +62,28 @@ pub struct Satellite {
     pub session_id: String,
     pub x: f32,
     pub y: f32,
+}
+
+pub const FIVE_HOURS_MS: i64 = 5 * 3_600_000;
+
+/// API-equivalent value of the turns that started in `[from, to]`.
+pub fn spent_between<'a>(sessions: impl Iterator<Item = &'a Session>, from: i64, to: i64) -> f64 {
+    sessions
+        .flat_map(|s| s.agents.iter())
+        .flat_map(|a| {
+            a.turn_log
+                .iter()
+                .filter(move |t| t.started >= from && t.started <= to)
+                .map(move |t| a.turn_cost_usd(t))
+        })
+        .sum()
+}
+
+/// `hh:mm` local time of a unix-millisecond timestamp.
+pub fn clock_hm(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .map(|d| d.with_timezone(&chrono::Local).format("%H:%M").to_string())
+        .unwrap_or_else(|| "?".into())
 }
 
 /// Which sessions to tail: the current one plus the most recently modified ones still moving.
@@ -124,6 +146,10 @@ pub struct Store {
     pub pending_select: Option<String>,
     /// Commanders of other shown sessions, in window logical coordinates.
     pub satellites: Vec<Satellite>,
+    /// File nodes of the current session on screen: (path, label, x, y, reads, edits).
+    pub file_screen: Vec<(String, String, f32, f32, u32, u32)>,
+    /// A file node was clicked: open it in the editor on the next frame.
+    pub pending_open_file: Option<String>,
     pub status: String,
     pub errors: Vec<String>,
     pub toasts: Vec<Toast>,
@@ -188,6 +214,8 @@ impl Store {
             pending_open: None,
             pending_select: None,
             satellites: Vec::new(),
+            file_screen: Vec::new(),
+            pending_open_file: None,
             status: "starting".into(),
             errors: Vec::new(),
             toasts: Vec::new(),
@@ -221,16 +249,36 @@ impl Store {
     /// API-equivalent value of every turn that started in the last `window_ms`, across all
     /// watched sessions: a proxy for how much of a subscription's allowance was used.
     pub fn spent_since(&self, now: i64, window_ms: i64) -> f64 {
+        self.spent_between(now - window_ms, now)
+    }
+
+    /// API-equivalent value of the turns that started in `[from, to]`, across all watched sessions.
+    pub fn spent_between(&self, from: i64, to: i64) -> f64 {
+        spent_between(self.sessions.values(), from, to)
+    }
+
+    /// What a five-hour window holds, measured at a throttle: everything spent from the start of
+    /// that window (its reset time minus five hours) up to the refusal.
+    pub fn capacity_at(&self, throttled_at: i64, resets_at: i64) -> f64 {
+        if resets_at <= 0 || throttled_at <= 0 {
+            return 0.0;
+        }
+        self.spent_between(resets_at - FIVE_HOURS_MS, throttled_at)
+    }
+
+    /// The latest throttle whose reset time is still ahead, if any.
+    pub fn throttled_until(&self, now: i64) -> Option<i64> {
         self.sessions
             .values()
-            .flat_map(|s| s.agents.iter())
-            .flat_map(|a| {
-                a.turn_log
-                    .iter()
-                    .filter(move |t| now - t.started <= window_ms)
-                    .map(move |t| a.turn_cost_usd(t))
-            })
-            .sum()
+            .flat_map(|s| s.throttles.iter())
+            .map(|t| t.resets_at)
+            .filter(|&r| r > now)
+            .max()
+    }
+
+    /// Spend per millisecond over the last half hour: the pace the gauge extrapolates with.
+    pub fn pace_per_ms(&self, now: i64) -> f64 {
+        self.spent_since(now, 30 * 60_000) / (30.0 * 60_000.0)
     }
 
     /// Sessions drawn in the scene: the current one first, then satellites that moved recently
@@ -294,7 +342,11 @@ impl Store {
                         agent_id: agent.id.clone(),
                         kind: BadgeKind::Waiting,
                         since: s.last_activity,
-                        label: "awaiting your orders".into(),
+                        label: if agent.last_said.trim().is_empty() {
+                            "awaiting your orders".into()
+                        } else {
+                            snippet(&agent.last_said, 90)
+                        },
                     });
                 }
                 for c in agent
@@ -467,6 +519,13 @@ fn react(store: &Store, ev: &Event) -> (Option<(ToastKind, String)>, Option<Sfx>
             Some((ToastKind::Done, "💬 turn complete: waiting for your orders".into())),
             Some(Sfx::Waiting),
         ),
+        Event::Throttle { resets_at, .. } => (
+            Some((
+                ToastKind::Error,
+                format!("⛔ plan limit reached · resets {}", clock_hm(*resets_at)),
+            )),
+            Some(Sfx::Alarm),
+        ),
         Event::ToolEnd {
             call_id,
             is_error: false,
@@ -532,7 +591,7 @@ fn check_patterns(store: &mut Store, ev: &Event) {
     }
 }
 
-pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: Res<Settings>) {
+pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, mut settings: ResMut<Settings>) {
     let now = now_millis();
     if let Some(id) = store.pending_open.take() {
         if let Some(r) = store.session_list.iter().find(|s| s.id == id).cloned() {
@@ -593,7 +652,21 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: 
                                 toast = Some((ToastKind::Error, format!("✖ {project}: a call failed")));
                                 sfx = Some(Sfx::Error);
                             }
+                            Event::Throttle { resets_at, .. } => {
+                                toast = Some((
+                                    ToastKind::Error,
+                                    format!("⛔ {project}: plan limit reached · resets {}", clock_hm(*resets_at)),
+                                ));
+                                sfx = Some(Sfx::Alarm);
+                            }
                             _ => {}
+                        }
+                    }
+                    // Every throttle, live or replayed, teaches the gauge what a window holds.
+                    if let Event::Throttle { at, resets_at, .. } = &ev {
+                        let cap = store.capacity_at(*at, *resets_at);
+                        if cap > settings.learned_capacity_usd as f64 {
+                            settings.learned_capacity_usd = cap as f32;
                         }
                     }
                     if let Some((kind, text)) = toast {
@@ -700,6 +773,35 @@ mod tests {
             modified,
             size: 1,
         }
+    }
+
+    #[test]
+    fn window_capacity_is_what_was_spent_before_the_throttle() {
+        let mut s = Session::new("s", "p", 1);
+        let msg = |role: &str, at: i64, out: u64| -> Event {
+            serde_json::from_value(serde_json::json!({
+                "type": "message", "session_id": "s", "agent_id": ROOT_AGENT, "role": role, "text": "x",
+                "model": "claude-opus-5-5", "output_tokens": out, "at": at
+            }))
+            .unwrap()
+        };
+        let h = 3_600_000;
+        // one turn before the window opened, two inside it, one after the throttle
+        for (start, out) in [
+            (h, 1_000_000u64),
+            (3 * h, 1_000_000),
+            (5 * h, 1_000_000),
+            (9 * h, 1_000_000),
+        ] {
+            s.apply(msg("user", start, 0));
+            s.apply(msg("assistant", start + 1000, out));
+        }
+        let resets_at = 2 * h + FIVE_HOURS_MS; // window opened at 2h
+        let throttled_at = 6 * h;
+        let cap = spent_between(std::iter::once(&s), resets_at - FIVE_HOURS_MS, throttled_at);
+        let one_turn = s.root().turn_cost_usd(&s.root().turn_log[0]);
+        assert!((cap - 2.0 * one_turn).abs() < 1e-9, "two turns fell inside the window");
+        assert_eq!(clock_hm(0).len(), 5);
     }
 
     #[test]

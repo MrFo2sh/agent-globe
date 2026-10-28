@@ -109,6 +109,35 @@ pub enum Event {
         #[serde(default)]
         at: Millis,
     },
+    /// Claude Code was refused by the plan's rate limit; `resets_at` is when the window reopens.
+    Throttle {
+        session_id: String,
+        agent_id: String,
+        #[serde(default)]
+        resets_at: Millis,
+        #[serde(default)]
+        kind: String,
+        #[serde(default)]
+        at: Millis,
+    },
+}
+
+/// A rate-limit refusal recorded in a session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Throttle {
+    pub at: Millis,
+    pub resets_at: Millis,
+    pub kind: String,
+}
+
+/// First non-empty line of a text, cut to `max` characters with an ellipsis.
+pub fn snippet(text: &str, max: usize) -> String {
+    let line = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("");
+    let mut out: String = line.chars().take(max).collect();
+    if line.chars().count() > max {
+        out.push('…');
+    }
+    out
 }
 
 impl Event {
@@ -120,7 +149,8 @@ impl Event {
             | Event::ToolEnd { session_id, .. }
             | Event::Message { session_id, .. }
             | Event::AgentEnd { session_id, .. }
-            | Event::TurnEnd { session_id, .. } => session_id,
+            | Event::TurnEnd { session_id, .. }
+            | Event::Throttle { session_id, .. } => session_id,
         }
     }
 }
@@ -219,6 +249,9 @@ pub struct Agent {
     /// The human's prompts in order, each with the calls and tokens that answered it.
     #[serde(default)]
     pub turn_log: Vec<Turn>,
+    /// The agent's latest message text: what it said or asked last.
+    #[serde(default)]
+    pub last_said: String,
     /// Completed turns (root agent: times it handed control back to the user).
     #[serde(default)]
     pub turns: u32,
@@ -309,6 +342,9 @@ pub struct Session {
     #[serde(skip)]
     call_owner: HashMap<String, String>,
     pub parse_errors: u32,
+    /// Rate-limit refusals seen in this session, oldest first.
+    #[serde(default)]
+    pub throttles: Vec<Throttle>,
 }
 
 impl Session {
@@ -417,6 +453,7 @@ impl Session {
             artifacts: Vec::new(),
             progress: None,
             turn_log: Vec::new(),
+            last_said: String::new(),
             turns: 0,
             waiting_for_user: false,
             order,
@@ -611,6 +648,9 @@ impl Session {
                 let a = self.agent_mut(&agent_id).expect("ensured");
                 a.waiting_for_user = false;
                 a.messages += 1;
+                if role == "assistant" && !text.trim().is_empty() {
+                    a.last_said = text.chars().take(400).collect();
+                }
                 a.output_tokens += output_tokens;
                 a.input_tokens += input_tokens;
                 a.cache_read_tokens += cache_read_tokens;
@@ -651,6 +691,17 @@ impl Session {
                 {
                     a.ended = Some(if at > 0 { at } else { a.last_activity });
                 }
+                self.touch(&agent_id, at);
+            }
+            Event::Throttle {
+                agent_id,
+                resets_at,
+                kind,
+                at,
+                ..
+            } => {
+                self.ensure_agent(&agent_id, None, None, "", "", "", "", at);
+                self.throttles.push(Throttle { at, resets_at, kind });
                 self.touch(&agent_id, at);
             }
             Event::TurnEnd { agent_id, at, .. } => {
@@ -815,6 +866,24 @@ mod tests {
         // a third prompt without a TurnEnd closes the second turn
         s.apply(msg("user", "again", 40, 0));
         assert_eq!(s.root().turn_log[1].ended, Some(40));
+    }
+
+    #[test]
+    fn throttles_and_last_words_are_kept() {
+        let mut s = Session::new("s", "p", 1);
+        s.apply(msg("assistant", "Should I delete the old records?", 5, 10));
+        assert_eq!(s.root().last_said, "Should I delete the old records?");
+        s.apply(Event::Throttle {
+            session_id: "s".into(),
+            agent_id: ROOT_AGENT.into(),
+            resets_at: 1_000_000,
+            kind: "five_hour".into(),
+            at: 900_000,
+        });
+        assert_eq!(s.throttles.len(), 1);
+        assert_eq!(s.throttles[0].resets_at, 1_000_000);
+        assert_eq!(snippet("  \n first line here\nsecond", 8), "first li…");
+        assert_eq!(snippet("short", 10), "short");
     }
 
     #[test]
