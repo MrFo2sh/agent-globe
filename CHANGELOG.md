@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.5.1 - 2026-10-28
+- History search at the bottom of the unit panel: filters the tool calls by tool, summary, command, narrator note and output, case-insensitive, with a hit count; the list stops following the newest call while a search is active.
+
 ## 0.5.0 - 2026-10-28
 - Control room: every session modified in the last 30 minutes is tailed at once (up to six), not just the open one.
 - "Needs you" queue at the top of the sidebar: approvals, failed calls, commanders waiting for orders and stalls across all watched sessions; click a row to jump there.

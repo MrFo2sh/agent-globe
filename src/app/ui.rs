@@ -517,6 +517,7 @@ pub fn draw(
     let mut view_image: Option<String> = None;
     let mut view_diffs: Option<(String, Vec<String>)> = None;
     let mut query = std::mem::take(&mut store.artifact_query);
+    let mut history = std::mem::take(&mut store.history_query);
     let mut inset_right = 0.0_f32;
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
     *last_panel = selected.as_ref().map(|a| a.id.clone());
@@ -581,12 +582,14 @@ pub fn draw(
                     &cwd,
                     &touched,
                     &mut view_diffs,
+                    &mut history,
                 );
             });
         inset_right = right.response.rect.width();
         ui_rects.push(right.response.rect);
     }
     store.artifact_query = query;
+    store.history_query = history;
     if close {
         store.selected = None;
     }
@@ -1086,6 +1089,25 @@ fn code_block(ui: &mut egui::Ui, key: &str, text: &str, color: egui::Color32, ex
     }
 }
 
+/// Case-insensitive substring test without allocating a lowercase copy of large outputs.
+fn contains_ci(hay: &str, needle_lower: &str) -> bool {
+    let n = needle_lower.as_bytes();
+    if n.is_empty() {
+        return true;
+    }
+    hay.as_bytes().windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
+}
+
+/// Does a tool call mention the search text anywhere: tool name, summary, command, narrator note, output?
+fn call_matches(c: &agent_globe::data::model::ToolCall, needle_lower: &str) -> bool {
+    contains_ci(&c.tool, needle_lower)
+        || contains_ci(&c.summary, needle_lower)
+        || c.command.as_deref().is_some_and(|x| contains_ci(x, needle_lower))
+        || contains_ci(&c.note, needle_lower)
+        || contains_ci(&c.stdout, needle_lower)
+        || contains_ci(&c.stderr, needle_lower)
+}
+
 fn status_label(a: &Agent, now: i64, stalled: &HashSet<String>) -> (&'static str, egui::Color32) {
     if a.calls.iter().any(|c| c.ended.is_none() && stalled.contains(&c.id)) {
         return ("STALLED", AMBER);
@@ -1125,6 +1147,7 @@ fn agent_panel(
     cwd: &str,
     touched: &HashMap<String, usize>,
     view_diffs: &mut Option<(String, Vec<String>)>,
+    history: &mut String,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -1333,17 +1356,58 @@ fn agent_panel(
     }
     ui.separator();
 
+    // History search sits at the bottom of the panel, like the artifact search in the shelf.
+    let needle = history.trim().to_ascii_lowercase();
+    let hits: Vec<usize> = a
+        .calls
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| needle.is_empty() || call_matches(c, &needle))
+        .map(|(i, _)| i)
+        .collect();
+    egui::Panel::bottom(egui::Id::new(("history-search", &a.id))).show(ui, |ui| {
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("🔍").small());
+            let w = (ui.available_width() - 150.0).max(120.0);
+            ui.add(
+                egui::TextEdit::singleline(history)
+                    .hint_text("search this unit's history: tool, command, output")
+                    .desired_width(w),
+            );
+            if !history.is_empty() && ui.small_button("✕").clicked() {
+                history.clear();
+            }
+            if !needle.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("{} / {}", hits.len(), a.calls.len()))
+                        .small()
+                        .monospace()
+                        .color(if hits.is_empty() { AMBER } else { DIM }),
+                );
+            }
+        });
+        ui.add_space(2.0);
+    });
+
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
-        .stick_to_bottom(true)
+        .stick_to_bottom(needle.is_empty())
         .show(ui, |ui| {
-            if !a.prompt.is_empty() {
+            if !a.prompt.is_empty() && needle.is_empty() {
                 ui.collapsing(egui::RichText::new("orders (prompt)").color(SAND), |ui| {
                     code_block(ui, &format!("{}:prompt", a.id), &a.prompt, TEXT, expanded);
                 });
             }
             ui.label(egui::RichText::new("TOOL CALLS").small().color(DIM));
-            for (i, c) in a.calls.iter().enumerate() {
+            if !needle.is_empty() && hits.is_empty() {
+                ui.label(
+                    egui::RichText::new(format!("nothing in this unit's history matches \"{}\"", history.trim()))
+                        .color(DIM),
+                );
+            }
+            for i in hits {
+                let c = &a.calls[i];
                 let open = c.ended.is_none();
                 let mark = if c.is_error {
                     egui::RichText::new("✖").color(RED)
@@ -2351,6 +2415,28 @@ mod tests {
         assert_eq!(folded.len(), 2);
         assert_eq!((folded[0].0.label.as_str(), folded[0].1), ("check passed", 3));
         assert_eq!((folded[1].0.label.as_str(), folded[1].1), ("a.rs", 2));
+    }
+
+    #[test]
+    fn history_search_is_case_insensitive_and_reads_output() {
+        let mut c = agent_globe::data::model::ToolCall {
+            id: "1".into(),
+            tool: "Bash".into(),
+            summary: "run the tests".into(),
+            command: Some("cargo test".into()),
+            note: String::new(),
+            stdout: "test result: ok. 12 passed".into(),
+            stderr: String::new(),
+            is_error: false,
+            started: 0,
+            ended: Some(1),
+        };
+        assert!(call_matches(&c, "CARGO"));
+        assert!(call_matches(&c, "12 passed"));
+        assert!(!call_matches(&c, "clippy"));
+        c.stderr = "warning: unused import".into();
+        assert!(call_matches(&c, "unused"));
+        assert!(contains_ci("Héllo", "héllo"), "non-ascii bytes compare exactly");
     }
 
     #[test]

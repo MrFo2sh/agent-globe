@@ -162,6 +162,8 @@ pub struct Store {
     pub viewer: Option<Viewer>,
     /// Filter text for the expanded artifact shelf.
     pub artifact_query: String,
+    /// Filter text for the selected unit's tool-call history.
+    pub history_query: String,
     preferred: Option<String>,
     opened_once: bool,
 }
@@ -207,6 +209,7 @@ impl Store {
             tray_mood: None,
             viewer: None,
             artifact_query: String::new(),
+            history_query: String::new(),
             preferred,
             opened_once: false,
         }
