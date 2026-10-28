@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.4.2 - 2026-10-28
+- The red "failed call" badge and red unit colour now mean the latest finished call failed; a failure buried in history no longer marks the commander as failed every time a session opens.
+
 ## 0.4.1 - 2026-10-28
 - Progress hint treats any open tool call as work in progress, so long builds no longer read "idle".
 

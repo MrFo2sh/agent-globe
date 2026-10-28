@@ -271,7 +271,7 @@ fn material_for(store: &Store, agent: &agent_globe::data::model::Agent, now: i64
     if is_stalled(store, agent) {
         return MatKey::Stalled;
     }
-    if agent.calls.iter().any(|c| c.is_error) && agent.ended.is_some() {
+    if agent.last_call_failed() && agent.ended.is_some() {
         return MatKey::Error;
     }
     if agent.depth == 0 {
@@ -650,7 +650,7 @@ pub fn project_badges(
                 .any(|a| a.session_id == session.id && a.agent_id == agent.id);
             let kind = if pending_approval {
                 Some(super::state::BadgeKind::Approval)
-            } else if agent.calls.iter().any(|c| c.is_error) && !store.acked.contains(&format!("err:{}", agent.id)) {
+            } else if agent.last_call_failed() && !store.acked.contains(&format!("err:{}", agent.id)) {
                 Some(super::state::BadgeKind::Error)
             } else if agent.depth == 0 && agent.waiting_for_user {
                 Some(super::state::BadgeKind::Waiting)

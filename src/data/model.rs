@@ -223,6 +223,16 @@ impl Agent {
         self.calls.iter().any(|c| c.ended.is_none())
     }
 
+    /// True while the agent is "taking fire": its most recently finished call failed and nothing
+    /// has succeeded since. A failure buried in history is not a current status.
+    pub fn last_call_failed(&self) -> bool {
+        self.calls
+            .iter()
+            .filter(|c| c.ended.is_some())
+            .max_by_key(|c| c.ended.unwrap_or(0))
+            .is_some_and(|c| c.is_error)
+    }
+
     pub fn cost_usd(&self) -> f64 {
         super::cost::cost_usd(
             &self.model,
@@ -675,6 +685,31 @@ mod tests {
         assert_eq!(s.root().status(10, 100), Status::Active);
         assert_eq!(s.root().status(1000, 100), Status::Idle);
         assert_eq!(s.agent("a").unwrap().status(10, 100), Status::Done);
+    }
+
+    fn end(call: &str, is_error: bool, at: Millis) -> Event {
+        Event::ToolEnd {
+            session_id: "s".into(),
+            agent_id: ROOT_AGENT.into(),
+            call_id: call.into(),
+            stdout: String::new(),
+            stderr: String::new(),
+            is_error,
+            at,
+        }
+    }
+
+    #[test]
+    fn only_the_latest_finished_call_counts_as_failed() {
+        let mut s = Session::new("s", "p", 1);
+        s.apply(tool(ROOT_AGENT, "t1", 2));
+        s.apply(end("t1", true, 3));
+        assert!(s.root().last_call_failed());
+        // A later success clears the status even though the old failure stays in history.
+        s.apply(tool(ROOT_AGENT, "t2", 4));
+        assert!(s.root().last_call_failed(), "still failed while the next call is open");
+        s.apply(end("t2", false, 5));
+        assert!(!s.root().last_call_failed());
     }
 
     #[test]
