@@ -164,6 +164,8 @@ pub struct Store {
     pub artifact_query: String,
     /// Filter text for the selected unit's tool-call history.
     pub history_query: String,
+    /// In the compact layout the sidebar collapses to a strip unless this is set.
+    pub sidebar_open: bool,
     preferred: Option<String>,
     opened_once: bool,
 }
@@ -210,9 +212,25 @@ impl Store {
             viewer: None,
             artifact_query: String::new(),
             history_query: String::new(),
+            sidebar_open: false,
             preferred,
             opened_once: false,
         }
+    }
+
+    /// API-equivalent value of every turn that started in the last `window_ms`, across all
+    /// watched sessions: a proxy for how much of a subscription's allowance was used.
+    pub fn spent_since(&self, now: i64, window_ms: i64) -> f64 {
+        self.sessions
+            .values()
+            .flat_map(|s| s.agents.iter())
+            .flat_map(|a| {
+                a.turn_log
+                    .iter()
+                    .filter(move |t| now - t.started <= window_ms)
+                    .map(move |t| a.turn_cost_usd(t))
+            })
+            .sum()
     }
 
     /// Sessions drawn in the scene: the current one first, then satellites that moved recently

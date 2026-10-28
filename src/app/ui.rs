@@ -156,6 +156,8 @@ pub fn draw(
         *last_scale = settings.ui_scale;
     }
     let now = now_millis();
+    let plan_api = settings.plan == "api";
+    let compact = settings.compact || ctx.viewport_rect().width() < 1100.0;
     if let Some(s) = store.current_session() {
         gitw.watch(&s.cwd);
         probe.watch(
@@ -206,7 +208,7 @@ pub fn draw(
     let hud = egui::Panel::top("hud").show(&mut root, |ui| {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("AGENT GLOBE").font(stencil(20.0)).color(ACCENT));
+            ui.label(egui::RichText::new(if compact { "AG" } else { "AGENT GLOBE" }).font(stencil(20.0)).color(ACCENT));
             ui.separator();
             match store.current_session() {
                 None => {
@@ -237,11 +239,13 @@ pub fn draw(
                         jump = Some(winjump::needle_for(&s.cwd, &s.project));
                     }
                     ui.separator();
-                    tip(
-                        ui,
-                        egui::RichText::new(format!("⏱ {}", dur(s.last_activity - s.started))).monospace(),
-                        "Session length: first event to the latest one.",
-                    );
+                    if !compact {
+                        tip(
+                            ui,
+                            egui::RichText::new(format!("⏱ {}", dur(s.last_activity - s.started))).monospace(),
+                            "Session length: first event to the latest one.",
+                        );
+                    }
                     tip(
                         ui,
                         egui::RichText::new(format!("units {}", s.agents.len())).monospace(),
@@ -252,6 +256,7 @@ pub fn draw(
                         egui::RichText::new(format!("active {active}")).monospace().color(ACCENT),
                         "Agents that did something in the last 20 seconds.",
                     );
+                    if !compact {
                     tip(
                         ui,
                         egui::RichText::new(format!("calls {}", s.total_calls())).monospace(),
@@ -262,6 +267,7 @@ pub fn draw(
                         egui::RichText::new(format!("{}/min", s.calls_since(now - 60_000))).monospace(),
                         "Tool calls in the last minute. Zero while the model is thinking or waiting for you.",
                     );
+                    }
                     tip(
                         ui,
                         egui::RichText::new(format!("ctx {ctx_k}k")).monospace().color(ctx_color),
@@ -271,10 +277,22 @@ pub fn draw(
                     let spent_color = if settings.budget_usd > 0.0 && spent >= settings.budget_usd as f64 { RED } else { SAND };
                     tip(
                         ui,
-                        egui::RichText::new(cost::fmt_usd(spent)).monospace().color(spent_color),
-                        "Estimated spend for this session from token counts and list prices (input, cache reads, cache writes, output).\nSet a budget alarm in settings.",
+                        egui::RichText::new(money(spent, plan_api)).monospace().color(spent_color),
+                        if plan_api {
+                            "Estimated spend for this session from token counts and API list prices (input, cache reads, cache writes, output).\nSet a budget alarm in settings."
+                        } else {
+                            "API-equivalent value of this session's tokens. On a Pro or Max plan you do not pay this: it shows how much work the plan absorbed, at API list prices.\nSwitch to API billing in settings if you pay per token."
+                        },
                     );
-                    if let Some(g) = git.as_ref() {
+                    if !plan_api {
+                        let five_h = store.spent_since(now, 5 * 3_600_000);
+                        tip(
+                            ui,
+                            egui::RichText::new(format!("5h {}", money(five_h, false))).monospace().color(DIM),
+                            "API-equivalent value of everything your watched sessions did in the last five hours: the window Pro and Max limits are measured on.",
+                        );
+                    }
+                    if !compact && let Some(g) = git.as_ref() {
                         tip(
                             ui,
                             egui::RichText::new(format!("⎇ {} · {}Δ", g.branch, g.dirty)).monospace().color(DIM),
@@ -340,11 +358,68 @@ pub fn draw(
     for a in &attention {
         needy.entry(a.session_id.clone()).or_insert(badge_style(a.kind).0);
     }
-    let left = egui::Panel::left("sessions")
+    let collapsed = compact && !store.sidebar_open;
+    let mut sidebar_toggle = false;
+    let (left_rect, inset_left) = if collapsed {
+        // A strip of session dots: enough to see who needs you and to switch, in a half-screen window.
+        let strip = egui::Panel::left("sessions-strip")
+            .resizable(false)
+            .default_size(44.0)
+            .show(&mut root, |ui| {
+                ui.add_space(6.0);
+                ui.vertical_centered(|ui| {
+                    if ui.small_button("☰").on_hover_text("Show the sessions list").clicked() {
+                        sidebar_toggle = true;
+                    }
+                    if !attention.is_empty() {
+                        ui.label(
+                            egui::RichText::new(format!("{}", attention.len()))
+                                .color(AMBER)
+                                .strong(),
+                        )
+                        .on_hover_text("Things that need you: approvals, failures, waiting commanders, stalls");
+                    }
+                    ui.separator();
+                    for s in store
+                        .session_list
+                        .iter()
+                        .filter(|s| store.watched.contains(&s.id))
+                        .take(12)
+                    {
+                        let is_current = store.current.as_deref() == Some(s.id.as_str());
+                        let flag = needy.get(&s.id).copied();
+                        let glyph = flag.unwrap_or(if now - s.modified < theme::ACTIVE_WINDOW_MS {
+                            "●"
+                        } else {
+                            "○"
+                        });
+                        let color = if flag.is_some() {
+                            AMBER
+                        } else if is_current {
+                            ACCENT
+                        } else {
+                            DIM
+                        };
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new(glyph).color(color)).frame(is_current))
+                            .on_hover_text(format!("{}  {}  {} ago", s.project, short(&s.id), age(s.modified)))
+                            .clicked()
+                        {
+                            open = Some(s.clone());
+                        }
+                    }
+                });
+            });
+        (strip.response.rect, strip.response.rect.width())
+    } else {
+        let left = egui::Panel::left("sessions")
         .resizable(true)
         .default_size(230.0)
         .show(&mut root, |ui| {
             ui.add_space(6.0);
+            if compact && ui.small_button("« collapse").clicked() {
+                sidebar_toggle = true;
+            }
             ui.label(
                 egui::RichText::new(store.claude_dir.display().to_string())
                     .small()
@@ -441,8 +516,12 @@ pub fn draw(
                 }
             });
         });
-    ui_rects.push(left.response.rect);
-    let inset_left = left.response.rect.width();
+        (left.response.rect, left.response.rect.width())
+    };
+    ui_rects.push(left_rect);
+    if sidebar_toggle {
+        store.sidebar_open = !store.sidebar_open;
+    }
     if let Some(s) = open {
         store.open(&s, &bridge.0);
     }
@@ -489,9 +568,13 @@ pub fn draw(
             }
             ui.separator();
             ui.label(
-                egui::RichText::new("drag rotate · scroll zoom · right-drag pan · click unit · R home · F cinematic")
-                    .small()
-                    .color(DIM),
+                egui::RichText::new(if compact {
+                    "drag · scroll · R home · F"
+                } else {
+                    "drag rotate · scroll zoom · right-drag pan · click unit · R home · F cinematic"
+                })
+                .small()
+                .color(DIM),
             );
             if let Some(e) = store.errors.last() {
                 ui.separator();
@@ -554,10 +637,11 @@ pub fn draw(
                 .filter(|(_, n)| *n > 0)
                 .collect()
         };
+        let vw = ctx.viewport_rect().width();
         let right = egui::Panel::right("agent")
             .resizable(true)
-            .default_size(520.0)
-            .max_size(ctx.viewport_rect().width() * 0.6)
+            .default_size(if compact { vw * 0.55 } else { 520.0 })
+            .max_size(vw * if compact { 0.8 } else { 0.6 })
             .show(&mut root, |ui| {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
@@ -583,6 +667,7 @@ pub fn draw(
                     &touched,
                     &mut view_diffs,
                     &mut history,
+                    plan_api,
                 );
             });
         inset_right = right.response.rect.width();
@@ -729,6 +814,15 @@ pub fn draw(
                     &mut settings.satellites,
                     "other active sessions as satellites around this one",
                 );
+                ui.checkbox(&mut settings.compact, "compact layout (also automatic under 1100 px wide)");
+                ui.separator();
+                ui.label(egui::RichText::new("BILLING").small().color(DIM));
+                ui.horizontal(|ui| {
+                    ui.selectable_value(&mut settings.plan, "subscription".to_string(), "Pro / Max subscription")
+                        .on_hover_text("Dollar figures are API-equivalent, shown with ≈: what the plan absorbed, not what you pay.");
+                    ui.selectable_value(&mut settings.plan, "api".to_string(), "API, pay per token")
+                        .on_hover_text("Dollar figures are what you will be billed at list prices.");
+                });
                 ui.separator();
                 ui.label(egui::RichText::new("ALERTS").small().color(DIM));
                 ui.add(
@@ -1089,6 +1183,69 @@ fn code_block(ui: &mut egui::Ui, key: &str, text: &str, color: egui::Color32, ex
     }
 }
 
+/// One tool call in the history list: time, status mark, header, narrator line, command and output.
+fn call_row(
+    ui: &mut egui::Ui,
+    i: usize,
+    c: &agent_globe::data::model::ToolCall,
+    stalled: &HashSet<String>,
+    narrator: bool,
+    expanded: &mut HashSet<String>,
+) {
+    let open = c.ended.is_none();
+    let mark = if c.is_error {
+        egui::RichText::new("✖").color(RED)
+    } else if open && stalled.contains(&c.id) {
+        egui::RichText::new("⏳").color(AMBER)
+    } else if open {
+        egui::RichText::new("●").color(ACCENT)
+    } else {
+        egui::RichText::new("✔").color(GREEN)
+    };
+    let took = c.ended.map(|e| dur(e - c.started)).unwrap_or_else(|| "running".into());
+    let header = format!("{:>3}  {:<10} {}", i + 1, c.tool, c.summary);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new(clock(c.started)).small().monospace().color(DIM));
+        ui.label(mark);
+        ui.add(egui::Label::new(egui::RichText::new(header).monospace()).truncate());
+        ui.label(egui::RichText::new(took).small().color(DIM));
+    });
+    if narrator && !c.note.is_empty() {
+        ui.horizontal(|ui| {
+            ui.add_space(26.0);
+            ui.add(
+                egui::Label::new(
+                    egui::RichText::new(format!("“{}”", c.note))
+                        .italics()
+                        .small()
+                        .color(SAND),
+                )
+                .wrap(),
+            );
+        });
+    }
+    if let Some(cmd) = &c.command {
+        egui::Frame::NONE
+            .fill(INK)
+            .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 90, 35)))
+            .inner_margin(6.0)
+            .show(ui, |ui| {
+                ui.label(egui::RichText::new(format!("$ {cmd}")).monospace().color(ACCENT));
+                if !c.stdout.is_empty() {
+                    code_block(ui, &c.id, &c.stdout, TEXT, expanded);
+                }
+                if !c.stderr.is_empty() {
+                    code_block(ui, &format!("{}:err", c.id), &c.stderr, RED, expanded);
+                }
+            });
+    } else if !c.stdout.is_empty() {
+        egui::Frame::NONE.fill(INK).inner_margin(6.0).show(ui, |ui| {
+            code_block(ui, &c.id, &c.stdout, DIM, expanded);
+        });
+    }
+    ui.add_space(4.0);
+}
+
 /// Case-insensitive substring test without allocating a lowercase copy of large outputs.
 fn contains_ci(hay: &str, needle_lower: &str) -> bool {
     let n = needle_lower.as_bytes();
@@ -1106,6 +1263,15 @@ fn call_matches(c: &agent_globe::data::model::ToolCall, needle_lower: &str) -> b
         || contains_ci(&c.note, needle_lower)
         || contains_ci(&c.stdout, needle_lower)
         || contains_ci(&c.stderr, needle_lower)
+}
+
+/// Dollar label: exact on API billing, API-equivalent (≈) on a Pro / Max subscription.
+fn money(usd: f64, plan_api: bool) -> String {
+    if plan_api {
+        cost::fmt_usd(usd)
+    } else {
+        format!("≈{}", cost::fmt_usd(usd))
+    }
 }
 
 fn status_label(a: &Agent, now: i64, stalled: &HashSet<String>) -> (&'static str, egui::Color32) {
@@ -1148,6 +1314,7 @@ fn agent_panel(
     touched: &HashMap<String, usize>,
     view_diffs: &mut Option<(String, Vec<String>)>,
     history: &mut String,
+    plan_api: bool,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -1394,7 +1561,7 @@ fn agent_panel(
         .auto_shrink([false, false])
         .stick_to_bottom(needle.is_empty())
         .show(ui, |ui| {
-            if !a.prompt.is_empty() && needle.is_empty() {
+            if !a.prompt.is_empty() && needle.is_empty() && a.turn_log.is_empty() {
                 ui.collapsing(egui::RichText::new("orders (prompt)").color(SAND), |ui| {
                     code_block(ui, &format!("{}:prompt", a.id), &a.prompt, TEXT, expanded);
                 });
@@ -1406,60 +1573,85 @@ fn agent_panel(
                         .color(DIM),
                 );
             }
-            for i in hits {
-                let c = &a.calls[i];
-                let open = c.ended.is_none();
-                let mark = if c.is_error {
-                    egui::RichText::new("✖").color(RED)
-                } else if open && stalled.contains(&c.id) {
-                    egui::RichText::new("⏳").color(AMBER)
-                } else if open {
-                    egui::RichText::new("●").color(ACCENT)
-                } else {
-                    egui::RichText::new("✔").color(GREEN)
-                };
-                let took = c.ended.map(|e| dur(e - c.started)).unwrap_or_else(|| "running".into());
-                let header = format!("{:>3}  {:<10} {}", i + 1, c.tool, c.summary);
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new(clock(c.started)).small().monospace().color(DIM));
-                    ui.label(mark);
-                    ui.add(egui::Label::new(egui::RichText::new(header).monospace()).truncate());
-                    ui.label(egui::RichText::new(took).small().color(DIM));
-                });
-                if narrator && !c.note.is_empty() {
-                    ui.horizontal(|ui| {
-                        ui.add_space(26.0);
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(format!("“{}”", c.note))
-                                    .italics()
-                                    .small()
-                                    .color(SAND),
-                            )
-                            .wrap(),
-                        );
+            if a.turn_log.is_empty() {
+                for i in hits.iter().copied() {
+                    call_row(ui, i, &a.calls[i], stalled, narrator, expanded);
+                }
+            } else {
+                // Grouped by your prompts: each turn folds its calls, time and cost.
+                let hit_set: HashSet<usize> = hits.iter().copied().collect();
+                let n = a.turn_log.len();
+                let lead: Vec<usize> = (0..a.turn_log[0].first_call.min(a.calls.len()))
+                    .filter(|i| hit_set.contains(i))
+                    .collect();
+                if !lead.is_empty() {
+                    egui::CollapsingHeader::new(
+                        egui::RichText::new(format!("before the first prompt · {} calls", lead.len()))
+                            .small()
+                            .color(DIM),
+                    )
+                    .id_salt((&a.id, "lead"))
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for i in lead {
+                            call_row(ui, i, &a.calls[i], stalled, narrator, expanded);
+                        }
                     });
                 }
-                if let Some(cmd) = &c.command {
-                    egui::Frame::NONE
-                        .fill(INK)
-                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 90, 35)))
-                        .inner_margin(6.0)
+                for ti in 0..n {
+                    let t = &a.turn_log[ti];
+                    let range = a.turn_range(ti);
+                    let idx: Vec<usize> = range.clone().filter(|i| hit_set.contains(i)).collect();
+                    if !needle.is_empty() && idx.is_empty() {
+                        continue;
+                    }
+                    let first_line: String = t
+                        .prompt
+                        .lines()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("")
+                        .trim()
+                        .chars()
+                        .take(90)
+                        .collect();
+                    let took = t.ended.unwrap_or(a.last_activity) - t.started;
+                    let units = a.calls[range.clone()]
+                        .iter()
+                        .filter(|c| c.tool == "Agent" || c.tool == "Task")
+                        .count();
+                    let cost = money(a.turn_cost_usd(t), plan_api);
+                    let title = format!("#{}  {}  {}", ti + 1, clock(t.started), first_line);
+                    egui::CollapsingHeader::new(egui::RichText::new(title).color(SAND))
+                        .id_salt((&a.id, ti))
+                        .default_open(ti + 1 == n || !needle.is_empty())
                         .show(ui, |ui| {
-                            ui.label(egui::RichText::new(format!("$ {cmd}")).monospace().color(ACCENT));
-                            if !c.stdout.is_empty() {
-                                code_block(ui, &c.id, &c.stdout, TEXT, expanded);
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} calls · {} units · {} · {}",
+                                        range.len(),
+                                        units,
+                                        dur(took),
+                                        cost
+                                    ))
+                                    .small()
+                                    .monospace()
+                                    .color(DIM),
+                                );
+                                if t.ended.is_none() {
+                                    ui.label(egui::RichText::new("● in progress").small().color(ACCENT));
+                                }
+                            });
+                            if t.prompt.trim().len() > first_line.len() {
+                                ui.collapsing(egui::RichText::new("full prompt").small().color(DIM), |ui| {
+                                    code_block(ui, &format!("{}:turn{ti}", a.id), &t.prompt, TEXT, expanded);
+                                });
                             }
-                            if !c.stderr.is_empty() {
-                                code_block(ui, &format!("{}:err", c.id), &c.stderr, RED, expanded);
+                            for i in idx {
+                                call_row(ui, i, &a.calls[i], stalled, narrator, expanded);
                             }
                         });
-                } else if !c.stdout.is_empty() {
-                    egui::Frame::NONE.fill(INK).inner_margin(6.0).show(ui, |ui| {
-                        code_block(ui, &c.id, &c.stdout, DIM, expanded);
-                    });
                 }
-                ui.add_space(4.0);
             }
             if a.calls.is_empty() {
                 ui.label(egui::RichText::new("no tool calls yet").color(DIM));

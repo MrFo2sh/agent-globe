@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.6.0 - 2026-10-28
+- Per-prompt grouping: the unit panel folds tool calls under each of your prompts, with calls, units spawned, wall time and cost per turn; the newest turn is open, older ones collapsed, and the history search keeps only turns with hits.
+- Billing mode: "Pro / Max subscription" (default) marks every dollar figure with ≈ as API-equivalent and adds a five-hour window total across watched sessions; "API" shows list-price spend as before.
+- Compact layout: on by itself under 1100 px of width or by setting. The sidebar collapses to a strip of session dots with an attention count, the HUD keeps only the key counters, and the unit panel takes a larger share of the window.
+
 ## 0.5.1 - 2026-10-28
 - History search at the bottom of the unit panel: filters the tool calls by tool, summary, command, narrator note and output, case-insensitive, with a hit count; the list stops following the newest call while a search is active.
 

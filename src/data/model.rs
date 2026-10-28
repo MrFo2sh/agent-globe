@@ -151,6 +151,24 @@ impl Progress {
     }
 }
 
+/// One of the human's prompts and everything the agent did in answer to it: the calls from
+/// `first_call` up to the next turn's first call, and the tokens the answer cost.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct Turn {
+    pub prompt: String,
+    pub started: Millis,
+    pub ended: Option<Millis>,
+    pub first_call: usize,
+    #[serde(default)]
+    pub output_tokens: u64,
+    #[serde(default)]
+    pub input_tokens: u64,
+    #[serde(default)]
+    pub cache_read_tokens: u64,
+    #[serde(default)]
+    pub cache_write_tokens: u64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolCall {
     pub id: String,
@@ -198,6 +216,9 @@ pub struct Agent {
     /// Latest task-list snapshot, if the agent keeps one.
     #[serde(default)]
     pub progress: Option<Progress>,
+    /// The human's prompts in order, each with the calls and tokens that answered it.
+    #[serde(default)]
+    pub turn_log: Vec<Turn>,
     /// Completed turns (root agent: times it handed control back to the user).
     #[serde(default)]
     pub turns: u32,
@@ -221,6 +242,25 @@ impl Agent {
 
     pub fn has_open_call(&self) -> bool {
         self.calls.iter().any(|c| c.ended.is_none())
+    }
+
+    /// Indices of the calls made in answer to turn `i`.
+    pub fn turn_range(&self, i: usize) -> std::ops::Range<usize> {
+        let n = self.calls.len();
+        let start = self.turn_log.get(i).map(|t| t.first_call).unwrap_or(0).min(n);
+        let end = self.turn_log.get(i + 1).map(|t| t.first_call).unwrap_or(n).min(n);
+        start..end.max(start)
+    }
+
+    /// API-equivalent cost of one turn's tokens at this agent's model prices.
+    pub fn turn_cost_usd(&self, t: &Turn) -> f64 {
+        super::cost::cost_usd(
+            &self.model,
+            t.input_tokens,
+            t.cache_read_tokens,
+            t.cache_write_tokens,
+            t.output_tokens,
+        )
     }
 
     /// True while the agent is "taking fire": its most recently finished call failed and nothing
@@ -376,6 +416,7 @@ impl Session {
             cache_write_tokens: 0,
             artifacts: Vec::new(),
             progress: None,
+            turn_log: Vec::new(),
             turns: 0,
             waiting_for_user: false,
             order,
@@ -577,8 +618,30 @@ impl Session {
                 if context_tokens > 0 {
                     a.context_tokens = context_tokens;
                 }
-                if a.prompt.is_empty() && role == "user" && !text.trim().is_empty() {
-                    a.prompt = text;
+                if role == "user" && !text.trim().is_empty() {
+                    // A new prompt closes the previous turn if the agent never signalled its end.
+                    if let Some(t) = a.turn_log.last_mut()
+                        && t.ended.is_none()
+                    {
+                        t.ended = Some(at);
+                    }
+                    a.turn_log.push(Turn {
+                        prompt: text.chars().take(2000).collect(),
+                        started: at,
+                        ended: None,
+                        first_call: a.calls.len(),
+                        ..Default::default()
+                    });
+                    if a.prompt.is_empty() {
+                        a.prompt = text;
+                    }
+                } else if role == "assistant"
+                    && let Some(t) = a.turn_log.last_mut()
+                {
+                    t.output_tokens += output_tokens;
+                    t.input_tokens += input_tokens;
+                    t.cache_read_tokens += cache_read_tokens;
+                    t.cache_write_tokens += cache_write_tokens;
                 }
                 self.touch(&agent_id, at);
             }
@@ -595,6 +658,11 @@ impl Session {
                 if let Some(a) = self.agent_mut(&agent_id) {
                     a.turns += 1;
                     a.waiting_for_user = true;
+                    if let Some(t) = a.turn_log.last_mut()
+                        && t.ended.is_none()
+                    {
+                        t.ended = Some(at);
+                    }
                 }
                 self.touch(&agent_id, at);
             }
@@ -710,6 +778,43 @@ mod tests {
         assert!(s.root().last_call_failed(), "still failed while the next call is open");
         s.apply(end("t2", false, 5));
         assert!(!s.root().last_call_failed());
+    }
+
+    fn msg(role: &str, text: &str, at: Millis, out: u64) -> Event {
+        serde_json::from_value(serde_json::json!({
+            "type": "message", "session_id": "s", "agent_id": ROOT_AGENT, "role": role, "text": text,
+            "model": "claude-opus-5-5", "output_tokens": out, "at": at
+        }))
+        .expect("message event")
+    }
+
+    #[test]
+    fn prompts_group_calls_and_tokens_into_turns() {
+        let mut s = Session::new("s", "p", 1);
+        s.apply(tool(ROOT_AGENT, "t0", 2)); // before any prompt was seen
+        s.apply(msg("user", "build it", 10, 0));
+        s.apply(tool(ROOT_AGENT, "t1", 11));
+        s.apply(msg("assistant", "done", 12, 500));
+        s.apply(tool(ROOT_AGENT, "t2", 13));
+        s.apply(Event::TurnEnd {
+            session_id: "s".into(),
+            agent_id: ROOT_AGENT.into(),
+            duration_ms: 0,
+            at: 20,
+        });
+        s.apply(msg("user", "now test it", 30, 0));
+        s.apply(tool(ROOT_AGENT, "t3", 31));
+        let a = s.root();
+        assert_eq!(a.turn_log.len(), 2);
+        assert_eq!((a.turn_log[0].first_call, a.turn_log[0].ended), (1, Some(20)));
+        assert_eq!(a.turn_log[0].output_tokens, 500);
+        assert_eq!(a.turn_range(0), 1..3);
+        assert_eq!(a.turn_range(1), 3..4);
+        assert!(a.turn_log[1].ended.is_none(), "the second turn is still open");
+        assert!(a.turn_cost_usd(&a.turn_log[0]) > 0.0);
+        // a third prompt without a TurnEnd closes the second turn
+        s.apply(msg("user", "again", 40, 0));
+        assert_eq!(s.root().turn_log[1].ended, Some(40));
     }
 
     #[test]
