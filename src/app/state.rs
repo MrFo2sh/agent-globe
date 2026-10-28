@@ -6,7 +6,6 @@ use super::sounds::Sfx;
 use super::theme;
 use agent_globe::bridge::{ApprovalRequest, Bridge, ToApp, ToWorker};
 use agent_globe::data::claude::SessionRef;
-use agent_globe::data::cost;
 use agent_globe::data::model::{Event, ROOT_AGENT, Session, now_millis, snippet};
 use bevy::prelude::*;
 use std::collections::{HashMap, HashSet};
@@ -64,19 +63,61 @@ pub struct Satellite {
     pub y: f32,
 }
 
-pub const FIVE_HOURS_MS: i64 = 5 * 3_600_000;
+/// What a tool call is for, as far as the radio cares.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallKind {
+    Scout,
+    Dig,
+    Intel,
+    Test,
+    Commit,
+    Other,
+}
 
-/// API-equivalent value of the turns that started in `[from, to]`.
-pub fn spent_between<'a>(sessions: impl Iterator<Item = &'a Session>, from: i64, to: i64) -> f64 {
-    sessions
-        .flat_map(|s| s.agents.iter())
-        .flat_map(|a| {
-            a.turn_log
-                .iter()
-                .filter(move |t| t.started >= from && t.started <= to)
-                .map(move |t| a.turn_cost_usd(t))
-        })
-        .sum()
+/// Classify a call by its tool and command: reads and searches scout, edits dig, web calls gather
+/// intel, build/test/check commands test the line, `git commit` fortifies.
+pub fn call_kind(tool: &str, command: Option<&str>) -> CallKind {
+    match tool {
+        "Read" | "Grep" | "Glob" => return CallKind::Scout,
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => return CallKind::Dig,
+        "WebFetch" | "WebSearch" => return CallKind::Intel,
+        _ => {}
+    }
+    let Some(cmd) = command else { return CallKind::Other };
+    let c = cmd.to_ascii_lowercase();
+    if c.contains("git commit") {
+        return CallKind::Commit;
+    }
+    const TESTS: [&str; 14] = [
+        "cargo test",
+        "cargo clippy",
+        "cargo check",
+        "cargo build",
+        "npm test",
+        "npm run build",
+        "npm run lint",
+        "npm run typecheck",
+        "pnpm test",
+        "pytest",
+        "go test",
+        "dotnet test",
+        "docker build",
+        "factory.mjs check",
+    ];
+    if TESTS.iter().any(|t| c.contains(t)) {
+        return CallKind::Test;
+    }
+    CallKind::Other
+}
+
+/// Did output of a test-like command report a failure even though the exit code did not?
+pub fn output_says_failed(stdout: &str, stderr: &str) -> bool {
+    let text = format!("{stdout}\n{stderr}");
+    text.contains("CHECK FAILED")
+        || text.contains("test result: FAILED")
+        || text.contains("error[E")
+        || text.contains(" failed, ")
+        || text.contains("FAIL ")
 }
 
 /// `hh:mm` local time of a unix-millisecond timestamp.
@@ -246,26 +287,6 @@ impl Store {
         }
     }
 
-    /// API-equivalent value of every turn that started in the last `window_ms`, across all
-    /// watched sessions: a proxy for how much of a subscription's allowance was used.
-    pub fn spent_since(&self, now: i64, window_ms: i64) -> f64 {
-        self.spent_between(now - window_ms, now)
-    }
-
-    /// API-equivalent value of the turns that started in `[from, to]`, across all watched sessions.
-    pub fn spent_between(&self, from: i64, to: i64) -> f64 {
-        spent_between(self.sessions.values(), from, to)
-    }
-
-    /// What a five-hour window holds, measured at a throttle: everything spent from the start of
-    /// that window (its reset time minus five hours) up to the refusal.
-    pub fn capacity_at(&self, throttled_at: i64, resets_at: i64) -> f64 {
-        if resets_at <= 0 || throttled_at <= 0 {
-            return 0.0;
-        }
-        self.spent_between(resets_at - FIVE_HOURS_MS, throttled_at)
-    }
-
     /// The latest throttle whose reset time is still ahead, if any.
     pub fn throttled_until(&self, now: i64) -> Option<i64> {
         self.sessions
@@ -274,11 +295,6 @@ impl Store {
             .map(|t| t.resets_at)
             .filter(|&r| r > now)
             .max()
-    }
-
-    /// Spend per millisecond over the last half hour: the pace the gauge extrapolates with.
-    pub fn pace_per_ms(&self, now: i64) -> f64 {
-        self.spent_since(now, 30 * 60_000) / (30.0 * 60_000.0)
     }
 
     /// Sessions drawn in the scene: the current one first, then satellites that moved recently
@@ -503,6 +519,45 @@ fn react(store: &Store, ev: &Event) -> (Option<(ToastKind, String)>, Option<Sfx>
         }
         Event::ToolEnd {
             call_id,
+            is_error,
+            stdout,
+            stderr,
+            ..
+        } if session
+            .agents
+            .iter()
+            .flat_map(|a| a.calls.iter())
+            .find(|c| &c.id == call_id)
+            .is_some_and(|c| {
+                matches!(
+                    call_kind(&c.tool, c.command.as_deref()),
+                    CallKind::Test | CallKind::Commit
+                )
+            }) =>
+        {
+            let call = session
+                .agents
+                .iter()
+                .flat_map(|a| a.calls.iter())
+                .find(|c| &c.id == call_id)
+                .expect("matched above");
+            let kind = call_kind(&call.tool, call.command.as_deref());
+            let failed = *is_error || (kind == CallKind::Test && output_says_failed(stdout, stderr));
+            match (kind, failed) {
+                (CallKind::Commit, false) => (Some((ToastKind::Done, "✔ committed".into())), Some(Sfx::Fortify)),
+                (CallKind::Commit, true) => (Some((ToastKind::Error, "✖ commit failed".into())), Some(Sfx::Error)),
+                (_, true) => (
+                    Some((ToastKind::Error, "✖ tests or checks failed".into())),
+                    Some(Sfx::Casualties),
+                ),
+                (_, false) => (
+                    Some((ToastKind::Done, "✔ tests and checks passed".into())),
+                    Some(Sfx::AllClear),
+                ),
+            }
+        }
+        Event::ToolEnd {
+            call_id,
             is_error: true,
             ..
         } => {
@@ -515,16 +570,28 @@ fn react(store: &Store, ev: &Event) -> (Option<(ToastKind, String)>, Option<Sfx>
                 .unwrap_or_else(|| "tool".into());
             (Some((ToastKind::Error, format!("✖ {tool} failed"))), Some(Sfx::Error))
         }
-        Event::TurnEnd { agent_id, .. } if agent_id == ROOT_AGENT => (
-            Some((ToastKind::Done, "💬 turn complete: waiting for your orders".into())),
-            Some(Sfx::Waiting),
-        ),
+        Event::TurnEnd { agent_id, .. } if agent_id == ROOT_AGENT => {
+            let asked = session
+                .agent(agent_id)
+                .is_some_and(|a| a.last_said.trim_end().ends_with('?'));
+            if asked {
+                (
+                    Some((ToastKind::Done, "💬 the commander asked you something".into())),
+                    Some(Sfx::Question),
+                )
+            } else {
+                (
+                    Some((ToastKind::Done, "💬 turn complete: waiting for your orders".into())),
+                    Some(Sfx::Waiting),
+                )
+            }
+        }
         Event::Throttle { resets_at, .. } => (
             Some((
                 ToastKind::Error,
                 format!("⛔ plan limit reached · resets {}", clock_hm(*resets_at)),
             )),
-            Some(Sfx::Alarm),
+            Some(Sfx::Ammo),
         ),
         Event::ToolEnd {
             call_id,
@@ -538,7 +605,31 @@ fn react(store: &Store, ev: &Event) -> (Option<(ToastKind, String)>, Option<Sfx>
         {
             (Some((ToastKind::Done, "🏁 shipped".into())), Some(Sfx::Complete))
         }
-        Event::ToolStart { .. } => (None, Some(Sfx::Blip)),
+        Event::ToolStart {
+            agent_id,
+            tool,
+            command,
+            ..
+        } => {
+            let kind = call_kind(tool, command.as_deref());
+            let first = session
+                .agent(agent_id)
+                .map(|a| {
+                    let range = a.turn_range(a.turn_log.len().saturating_sub(1));
+                    !a.calls[range]
+                        .iter()
+                        .any(|c| call_kind(&c.tool, c.command.as_deref()) == kind)
+                })
+                .unwrap_or(true);
+            let line = match kind {
+                CallKind::Scout if first => Some(Sfx::Scout),
+                CallKind::Dig if first => Some(Sfx::Dig),
+                CallKind::Intel if first => Some(Sfx::Intel),
+                CallKind::Test => Some(Sfx::Test),
+                _ => None,
+            };
+            (None, line.or(Some(Sfx::Blip)))
+        }
         _ => (None, None),
     }
 }
@@ -584,14 +675,14 @@ fn check_patterns(store: &mut Store, ev: &Event) {
                     "▲ CONTEXT {}k tokens — near this model's limit; split the task or start a fresh session",
                     context_tokens / 1000
                 ),
-                Sfx::Alarm,
+                Sfx::Supplies,
             );
         }
         _ => {}
     }
 }
 
-pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, mut settings: ResMut<Settings>) {
+pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: Res<Settings>) {
     let now = now_millis();
     if let Some(id) = store.pending_open.take() {
         if let Some(r) = store.session_list.iter().find(|s| s.id == id).cloned() {
@@ -636,7 +727,7 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, mut settin
                     let session = store
                         .sessions
                         .entry(sid.clone())
-                        .or_insert_with(|| Session::new(sid, project.clone(), 0));
+                        .or_insert_with(|| Session::new(sid.clone(), project.clone(), 0));
                     if session.project.is_empty() {
                         session.project = project.clone();
                     }
@@ -645,8 +736,13 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, mut settin
                     if live && !is_current {
                         match &ev {
                             Event::TurnEnd { agent_id, .. } if agent_id == ROOT_AGENT => {
+                                let asked = store
+                                    .sessions
+                                    .get(&sid)
+                                    .and_then(|s| s.agent(agent_id))
+                                    .is_some_and(|a| a.last_said.trim_end().ends_with('?'));
                                 toast = Some((ToastKind::Done, format!("💬 {project}: awaiting your orders")));
-                                sfx = Some(Sfx::Waiting);
+                                sfx = Some(if asked { Sfx::Question } else { Sfx::Waiting });
                             }
                             Event::ToolEnd { is_error: true, .. } => {
                                 toast = Some((ToastKind::Error, format!("✖ {project}: a call failed")));
@@ -657,16 +753,9 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, mut settin
                                     ToastKind::Error,
                                     format!("⛔ {project}: plan limit reached · resets {}", clock_hm(*resets_at)),
                                 ));
-                                sfx = Some(Sfx::Alarm);
+                                sfx = Some(Sfx::Ammo);
                             }
                             _ => {}
-                        }
-                    }
-                    // Every throttle, live or replayed, teaches the gauge what a window holds.
-                    if let Event::Throttle { at, resets_at, .. } = &ev {
-                        let cap = store.capacity_at(*at, *resets_at);
-                        if cap > settings.learned_capacity_usd as f64 {
-                            settings.learned_capacity_usd = cap as f32;
                         }
                     }
                     if let Some((kind, text)) = toast {
@@ -686,27 +775,12 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, mut settin
                     store.current = first;
                 }
                 store.layout_dirty = true;
-                if settings.budget_usd > 0.0
-                    && let Some(s) = store.current_session()
-                    && s.cost_usd() >= settings.budget_usd as f64
-                {
-                    let (id, spent) = (s.id.clone(), s.cost_usd());
-                    store.alarm(
-                        format!("budget:{id}"),
-                        format!(
-                            "$ BUDGET: this session has spent {} (limit {})",
-                            cost::fmt_usd(spent),
-                            cost::fmt_usd(settings.budget_usd as f64)
-                        ),
-                        Sfx::Alarm,
-                    );
-                }
             }
             ToApp::Approval(req) => {
                 let label = req.command.clone().unwrap_or_else(|| req.summary.clone());
                 let short: String = label.lines().next().unwrap_or("").chars().take(70).collect();
                 store.toast(ToastKind::Warn, format!("🛡 authorization: {} wants {short}", req.tool));
-                store.play(Sfx::Waiting);
+                store.play(Sfx::Authorize);
                 store.approvals.push(req);
             }
             ToApp::Status(s) => {
@@ -776,32 +850,21 @@ mod tests {
     }
 
     #[test]
-    fn window_capacity_is_what_was_spent_before_the_throttle() {
-        let mut s = Session::new("s", "p", 1);
-        let msg = |role: &str, at: i64, out: u64| -> Event {
-            serde_json::from_value(serde_json::json!({
-                "type": "message", "session_id": "s", "agent_id": ROOT_AGENT, "role": role, "text": "x",
-                "model": "claude-opus-5-5", "output_tokens": out, "at": at
-            }))
-            .unwrap()
-        };
-        let h = 3_600_000;
-        // one turn before the window opened, two inside it, one after the throttle
-        for (start, out) in [
-            (h, 1_000_000u64),
-            (3 * h, 1_000_000),
-            (5 * h, 1_000_000),
-            (9 * h, 1_000_000),
-        ] {
-            s.apply(msg("user", start, 0));
-            s.apply(msg("assistant", start + 1000, out));
-        }
-        let resets_at = 2 * h + FIVE_HOURS_MS; // window opened at 2h
-        let throttled_at = 6 * h;
-        let cap = spent_between(std::iter::once(&s), resets_at - FIVE_HOURS_MS, throttled_at);
-        let one_turn = s.root().turn_cost_usd(&s.root().turn_log[0]);
-        assert!((cap - 2.0 * one_turn).abs() < 1e-9, "two turns fell inside the window");
-        assert_eq!(clock_hm(0).len(), 5);
+    fn calls_are_classified_for_the_radio() {
+        assert_eq!(call_kind("Read", None), CallKind::Scout);
+        assert_eq!(call_kind("Grep", None), CallKind::Scout);
+        assert_eq!(call_kind("Edit", None), CallKind::Dig);
+        assert_eq!(call_kind("WebSearch", None), CallKind::Intel);
+        assert_eq!(call_kind("Bash", Some("cargo test --release")), CallKind::Test);
+        assert_eq!(call_kind("Bash", Some("node bin/factory.mjs check x")), CallKind::Test);
+        assert_eq!(
+            call_kind("Bash", Some("git add -A && git commit -m x")),
+            CallKind::Commit
+        );
+        assert_eq!(call_kind("Bash", Some("ls -la")), CallKind::Other);
+        assert!(output_says_failed("CHECK FAILED", ""));
+        assert!(output_says_failed("", "error[E0308]: mismatched types"));
+        assert!(!output_says_failed("test result: ok. 3 passed", ""));
     }
 
     #[test]

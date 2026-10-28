@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.8.0 - 2026-10-28
+- Radio, eleven new lines so a session can be followed by ear: "Scouting ahead" (first read or search of a turn), "Digging in" (first edit), "Gathering intel" (web), "Testing the line" (a build, test or check starts), "All clear, sir" / "We have casualties!" (it passed or failed, including failures the exit code missed), "Position fortified" (git commit), "Need your input, commander" (the turn ended with a question) next to "Waiting for commands" (it just ended), "Requesting authorization" (approval), "Running low on supplies" (context near the limit), "We are out of ammo, sir" (plan limit). Settings list every line and when it plays, with a test button each.
+- Cost is gone everywhere: no dollar figures, no budget alarm, no billing mode, no fuel gauge. Token counts stay. The only limit indicator left is the red "⛔ limit · resets hh:mm" from Claude Code's own throttle records.
+- Documents open in VS Code: markdown, PDF and other file artifacts, and the files in the Changes list, go straight to the editor like the file ring does. The in-app viewer now shows images only; the PDF text extractor dependency is dropped.
+
 ## 0.7.1 - 2026-10-28
 - Compact status hint no longer mentions the removed F shortcut.
 

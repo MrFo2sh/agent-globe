@@ -3,17 +3,16 @@
 //! the camera can ignore input that belongs to the UI.
 
 use super::debrief;
-use super::gitinfo::{self, FileChange, GitInfo, GitWatch};
+use super::gitinfo::{FileChange, GitInfo, GitWatch};
 use super::probe::Probe;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
-use super::state::{BadgeKind, BridgeRes, FIVE_HOURS_MS, Store, ToastKind, Viewer, clock_hm};
+use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer, clock_hm};
 use super::theme;
 use super::winjump;
 use agent_globe::bridge::Bridge;
 use agent_globe::data::artifacts::{Artifact, ArtifactKind};
 use agent_globe::data::claude::SessionRef;
-use agent_globe::data::cost;
 use agent_globe::data::model::{Agent, ROOT_AGENT, Session, Status, now_millis, snippet};
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
@@ -141,7 +140,6 @@ pub fn draw(
     probe: Res<Probe>,
     gitw: Res<GitWatch>,
     mut images: Local<HashMap<String, Option<egui::TextureHandle>>>,
-    mut docs: Local<HashMap<String, Option<String>>>,
     mut styled: Local<bool>,
     mut last_scale: Local<f32>,
     mut last_panel: Local<Option<String>>,
@@ -156,7 +154,6 @@ pub fn draw(
         *last_scale = settings.ui_scale;
     }
     let now = now_millis();
-    let plan_api = settings.plan == "api";
     let compact = settings.compact || ctx.viewport_rect().width() < 1100.0;
     if let Some(s) = store.current_session() {
         gitw.watch(&s.cwd);
@@ -186,7 +183,7 @@ pub fn draw(
         draw_satellites(ctx, &mut store, now);
         draw_files(ctx, &mut store);
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
-        draw_viewer(ctx, &mut store, &mut images, &mut docs);
+        draw_viewer(ctx, &mut store, &mut images);
         draw_toasts(ctx, &store);
         return Ok(());
     }
@@ -267,57 +264,12 @@ pub fn draw(
                         egui::RichText::new(format!("ctx {ctx_k}k")).monospace().color(ctx_color),
                         "Context size: how many tokens the commander's last request carried (prompt + history + tool results).\nAmber at two thirds of this model's window, red near the limit: that is where the agent starts forgetting early instructions.",
                     );
-                    let spent = s.cost_usd();
-                    let spent_color = if settings.budget_usd > 0.0 && spent >= settings.budget_usd as f64 { RED } else { SAND };
-                    tip(
-                        ui,
-                        egui::RichText::new(money(spent, plan_api)).monospace().color(spent_color),
-                        if plan_api {
-                            "Estimated spend for this session from token counts and API list prices (input, cache reads, cache writes, output).\nSet a budget alarm in settings."
-                        } else {
-                            "API-equivalent value of this session's tokens. On a Pro or Max plan you do not pay this: it shows how much work the plan absorbed, at API list prices.\nSwitch to API billing in settings if you pay per token."
-                        },
-                    );
-                    if !plan_api {
-                        // Fuel gauge: what this five-hour window has absorbed against what a window
-                        // holds (learned from past throttles), and when it runs out at this pace.
-                        let window = store.spent_since(now, FIVE_HOURS_MS);
-                        let cap = settings.learned_capacity_usd as f64;
-                        match (store.throttled_until(now), cap > 0.0) {
-                            (Some(until), _) => {
-                                tip(
-                                    ui,
-                                    egui::RichText::new(format!("⛔ limit · resets {}", clock_hm(until))).monospace().color(RED),
-                                    "Claude Code reported the five-hour limit. Nothing runs until the reset time.",
-                                );
-                            }
-                            (None, true) => {
-                                let frac = (window / cap).clamp(0.0, 1.5);
-                                let color = if frac >= 0.9 { RED } else if frac >= 0.7 { AMBER } else { ACCENT };
-                                let pace = store.pace_per_ms(now);
-                                let eta = if pace > 0.0 && window < cap {
-                                    format!(" · empty ~{}", clock_hm(now + ((cap - window) / pace) as i64))
-                                } else {
-                                    String::new()
-                                };
-                                tip(
-                                    ui,
-                                    egui::RichText::new(format!("⛽ {:.0}%{eta}", frac * 100.0)).monospace().color(color),
-                                    &format!(
-                                        "Five-hour window: {} used of {} it holds (learned from past throttles).\nThe estimate: at the pace of the last half hour it runs out around the time shown.",
-                                        money(window, false),
-                                        money(cap, false)
-                                    ),
-                                );
-                            }
-                            (None, false) => {
-                                tip(
-                                    ui,
-                                    egui::RichText::new(format!("5h {}", money(window, false))).monospace().color(DIM),
-                                    "API-equivalent value of everything your watched sessions did in the last five hours. The window's size is not known yet: the gauge calibrates itself the first time Claude Code reports the limit.",
-                                );
-                            }
-                        }
+                    if let Some(until) = store.throttled_until(now) {
+                        tip(
+                            ui,
+                            egui::RichText::new(format!("⛔ limit · resets {}", clock_hm(until))).monospace().color(RED),
+                            "Claude Code reported the five-hour limit. Nothing runs until the reset time.",
+                        );
                     }
                     if !compact && let Some(g) = git.as_ref() {
                         tip(
@@ -625,7 +577,6 @@ pub fn draw(
         .cloned();
     let mut close = false;
     let mut view_image: Option<String> = None;
-    let mut view_diffs: Option<(String, Vec<String>)> = None;
     let mut query = std::mem::take(&mut store.artifact_query);
     let mut history = std::mem::take(&mut store.history_query);
     let mut inset_right = 0.0_f32;
@@ -692,9 +643,7 @@ pub fn draw(
                     &changes,
                     &cwd,
                     &touched,
-                    &mut view_diffs,
                     &mut history,
-                    plan_api,
                 );
             });
         inset_right = right.response.rect.width();
@@ -707,15 +656,6 @@ pub fn draw(
     }
     if let Some(path) = view_image.take() {
         open_viewer(&mut store, &path);
-    }
-    if let Some((path, items)) = view_diffs.take() {
-        let index = items.iter().position(|p| p == &path).unwrap_or(0);
-        store.viewer = Some(Viewer {
-            items,
-            index,
-            zoom: 1.0,
-            offset: (0.0, 0.0),
-        });
     }
     // Hover over a satellite: a card about that session.
     let hovered_session = store
@@ -794,18 +734,26 @@ pub fn draw(
                     });
                 ui.label(egui::RichText::new(sounds.status()).small().color(DIM));
                 ui.checkbox(&mut settings.tool_blips, "blip on every tool call");
+                ui.collapsing(egui::RichText::new("what the radio means").small().color(DIM), |ui| {
+                    egui::Grid::new("radio-glossary")
+                        .num_columns(2)
+                        .spacing([14.0, 2.0])
+                        .show(ui, |ui| {
+                            for s in Sfx::ALL.iter().copied().filter(|s| s.is_voice()) {
+                                ui.label(egui::RichText::new(format!("“{}”", s.line())).small().color(SAND));
+                                ui.label(egui::RichText::new(s.when()).small().color(DIM));
+                                ui.end_row();
+                            }
+                        });
+                });
                 ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new("test:").small().color(DIM));
-                    for s in [
-                        Sfx::Prompt,
-                        Sfx::Spawn,
-                        Sfx::Done,
-                        Sfx::Error,
-                        Sfx::Complete,
-                        Sfx::Stall,
-                        Sfx::Loop,
-                    ] {
-                        if ui.small_button(s.name()).on_hover_text(s.line()).clicked() {
+                    for s in Sfx::ALL.iter().copied().filter(|s| s.is_voice()) {
+                        if ui
+                            .small_button(s.name())
+                            .on_hover_text(format!("“{}” — {}", s.line(), s.when()))
+                            .clicked()
+                        {
                             store.play(s);
                         }
                     }
@@ -841,39 +789,23 @@ pub fn draw(
                     &mut settings.satellites,
                     "other active sessions as satellites around this one",
                 );
-                ui.checkbox(&mut settings.compact, "compact layout (also automatic under 1100 px wide)");
-                ui.checkbox(&mut settings.files_ring, "file ring: the session's hottest files with beams from the units touching them");
-                ui.separator();
-                ui.label(egui::RichText::new("BILLING").small().color(DIM));
-                ui.horizontal(|ui| {
-                    ui.selectable_value(&mut settings.plan, "subscription".to_string(), "Pro / Max subscription")
-                        .on_hover_text("Dollar figures are API-equivalent, shown with ≈: what the plan absorbed, not what you pay.");
-                    ui.selectable_value(&mut settings.plan, "api".to_string(), "API, pay per token")
-                        .on_hover_text("Dollar figures are what you will be billed at list prices.");
-                });
-                ui.horizontal(|ui| {
-                    let cap = settings.learned_capacity_usd;
-                    let text = if cap > 0.0 {
-                        format!("a five-hour window holds ≈{} (learned from past throttles)", cost::fmt_usd(cap as f64))
-                    } else {
-                        "five-hour window size: not learned yet, the gauge calibrates on the first throttle".to_string()
-                    };
-                    ui.label(egui::RichText::new(text).small().color(DIM));
-                    if cap > 0.0 && ui.small_button("forget").on_hover_text("Start learning again").clicked() {
-                        settings.learned_capacity_usd = 0.0;
-                    }
-                });
+                ui.checkbox(
+                    &mut settings.compact,
+                    "compact layout (also automatic under 1100 px wide)",
+                );
+                ui.checkbox(
+                    &mut settings.files_ring,
+                    "file ring: the session's hottest files with beams from the units touching them",
+                );
                 ui.label(
-                    egui::RichText::new("approvals from any window: Ctrl+Alt+Y allows, Ctrl+Alt+N denies the oldest pending request")
-                        .small()
-                        .color(DIM),
+                    egui::RichText::new(
+                        "approvals from any window: Ctrl+Alt+Y allows, Ctrl+Alt+N denies the oldest pending request",
+                    )
+                    .small()
+                    .color(DIM),
                 );
                 ui.separator();
                 ui.label(egui::RichText::new("ALERTS").small().color(DIM));
-                ui.add(
-                    egui::Slider::new(&mut settings.budget_usd, 0.0..=200.0)
-                        .text("budget alarm ($ per session, 0 = off)"),
-                );
                 ui.checkbox(
                     &mut settings.desktop_notifications,
                     "Windows notifications when unfocused",
@@ -972,7 +904,7 @@ pub fn draw(
     if let Some(path) = store.pending_open_file.take() {
         open_in_editor("", &path);
     }
-    if let Some(rect) = draw_viewer(ctx, &mut store, &mut images, &mut docs) {
+    if let Some(rect) = draw_viewer(ctx, &mut store, &mut images) {
         ui_rects.push(rect);
     }
     if let Some(rect) = draw_approvals(ctx, &mut store, &bridge.0, inset_top) {
@@ -1131,11 +1063,10 @@ fn session_card(ui: &mut egui::Ui, s: &Session, now: i64) {
         .count();
     ui.label(
         egui::RichText::new(format!(
-            "{} units · {active} active · {} calls · {} · {}",
+            "{} units · {active} active · {} calls · {}",
             s.agents.len(),
             s.total_calls(),
-            dur(s.last_activity - s.started),
-            cost::fmt_usd(s.cost_usd())
+            dur(s.last_activity - s.started)
         ))
         .small()
         .monospace(),
@@ -1365,15 +1296,6 @@ fn call_matches(c: &agent_globe::data::model::ToolCall, needle_lower: &str) -> b
         || contains_ci(&c.stderr, needle_lower)
 }
 
-/// Dollar label: exact on API billing, API-equivalent (≈) on a Pro / Max subscription.
-fn money(usd: f64, plan_api: bool) -> String {
-    if plan_api {
-        cost::fmt_usd(usd)
-    } else {
-        format!("≈{}", cost::fmt_usd(usd))
-    }
-}
-
 fn status_label(a: &Agent, now: i64, stalled: &HashSet<String>) -> (&'static str, egui::Color32) {
     if a.calls.iter().any(|c| c.ended.is_none() && stalled.contains(&c.id)) {
         return ("STALLED", AMBER);
@@ -1412,9 +1334,7 @@ fn agent_panel(
     changes: &[FileChange],
     cwd: &str,
     touched: &HashMap<String, usize>,
-    view_diffs: &mut Option<(String, Vec<String>)>,
     history: &mut String,
-    plan_api: bool,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -1559,7 +1479,7 @@ fn agent_panel(
         let mut toggle = false;
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("CHANGES").small().color(DIM))
-                .on_hover_text("Files the working tree changed against the last commit. Click one to read its diff here; ✎ counts edits this session made to it.");
+                .on_hover_text("Files the working tree changed against the last commit. Click one to open it in VS Code; ✎ counts edits this session made to it.");
             ui.label(
                 egui::RichText::new(format!("{} files  +{add} −{del}", changes.len()))
                     .small()
@@ -1572,13 +1492,12 @@ fn agent_panel(
         });
         let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
         let max_h = if all { 360.0 } else { row_h * 3.0 + 4.0 };
-        let all_paths: Vec<String> = changes.iter().map(|c| diff_path(cwd, &c.path, c.untracked)).collect();
         egui::ScrollArea::vertical()
             .id_salt(&key)
             .max_height(max_h)
             .auto_shrink([false, true])
             .show(ui, |ui| {
-                for (i, c) in changes.iter().enumerate() {
+                for c in changes {
                     ui.horizontal(|ui| {
                         let stat = if c.untracked {
                             "new".to_string()
@@ -1598,17 +1517,14 @@ fn agent_panel(
                                     .frame(false)
                                     .truncate(),
                             )
-                            .on_hover_text("read the diff")
+                            .on_hover_text("open in VS Code")
                             .clicked()
                         {
-                            *view_diffs = Some((all_paths[i].clone(), all_paths.clone()));
+                            open_in_editor(cwd, &c.path);
                         }
                         if let Some(n) = touched.get(&c.path) {
                             ui.label(egui::RichText::new(format!("✎ {n}")).small().color(DIM))
                                 .on_hover_text("edits by this session");
-                        }
-                        if ui.small_button("open").on_hover_text("open in VS Code").clicked() {
-                            open_in_editor(cwd, &c.path);
                         }
                     });
                 }
@@ -1678,7 +1594,7 @@ fn agent_panel(
                     call_row(ui, i, &a.calls[i], stalled, narrator, expanded);
                 }
             } else {
-                // Grouped by your prompts: each turn folds its calls, time and cost.
+                // Grouped by your prompts: each turn folds its calls, units and time.
                 let hit_set: HashSet<usize> = hits.iter().copied().collect();
                 let n = a.turn_log.len();
                 let lead: Vec<usize> = (0..a.turn_log[0].first_call.min(a.calls.len()))
@@ -1719,7 +1635,6 @@ fn agent_panel(
                         .iter()
                         .filter(|c| c.tool == "Agent" || c.tool == "Task")
                         .count();
-                    let cost = money(a.turn_cost_usd(t), plan_api);
                     let title = format!("#{}  {}  {}", ti + 1, clock(t.started), first_line);
                     egui::CollapsingHeader::new(egui::RichText::new(title).color(SAND))
                         .id_salt((&a.id, ti))
@@ -1728,11 +1643,10 @@ fn agent_panel(
                             ui.horizontal_wrapped(|ui| {
                                 ui.label(
                                     egui::RichText::new(format!(
-                                        "{} calls · {} units · {} · {}",
+                                        "{} calls · {} units · {}",
                                         range.len(),
                                         units,
-                                        dur(took),
-                                        cost
+                                        dur(took)
                                     ))
                                     .small()
                                     .monospace()
@@ -1898,18 +1812,6 @@ fn dedup_artifacts(list: &[Artifact]) -> Vec<(&Artifact, usize)> {
     out
 }
 
-/// Viewer path for a diff: `diff:<cwd>|<repo path>|<1 if untracked>`. `|` cannot appear in paths.
-fn diff_path(cwd: &str, path: &str, untracked: bool) -> String {
-    format!("diff:{cwd}|{path}|{}", u8::from(untracked))
-}
-
-fn parse_diff_path(p: &str) -> Option<(&str, &str, bool)> {
-    let rest = p.strip_prefix("diff:")?;
-    let mut it = rest.split('|');
-    let (cwd, path, flag) = (it.next()?, it.next()?, it.next().unwrap_or("0"));
-    Some((cwd, path, flag == "1"))
-}
-
 fn open_in_editor(cwd: &str, path: &str) {
     let full = std::path::Path::new(cwd).join(path).display().to_string();
     std::thread::spawn(move || {
@@ -1922,30 +1824,6 @@ fn open_in_editor(cwd: &str, path: &str) {
         }
         let _ = cmd.status();
     });
-}
-
-/// A unified diff with the usual colours: additions green, removals red, hunk headers amber.
-fn render_diff(ui: &mut egui::Ui, text: &str) {
-    for line in text.lines() {
-        let color = if line.starts_with("+++") || line.starts_with("---") {
-            SAND
-        } else if line.starts_with('+') {
-            GREEN
-        } else if line.starts_with('-') {
-            RED
-        } else if line.starts_with("@@") {
-            AMBER
-        } else if line.starts_with("diff ") || line.starts_with("index ") {
-            DIM
-        } else {
-            TEXT
-        };
-        ui.add(
-            egui::Label::new(egui::RichText::new(line).monospace().color(color))
-                .wrap_mode(egui::TextWrapMode::Extend)
-                .selectable(true),
-        );
-    }
 }
 
 fn artifact_chip(
@@ -2016,7 +1894,7 @@ fn thumbnail<'a>(
 fn open_artifact(ctx: &egui::Context, a: &Artifact, git: Option<&GitInfo>) -> Option<String> {
     match a.kind {
         ArtifactKind::Image => return Some(a.target.clone()),
-        ArtifactKind::File if doc_kind(&a.target) != DocKind::Other => return Some(a.target.clone()),
+        ArtifactKind::File if doc_kind(&a.target) == DocKind::Image => return Some(a.target.clone()),
         ArtifactKind::Url | ArtifactKind::Pr => {
             let t = a.target.clone();
             std::thread::spawn(move || {
@@ -2218,26 +2096,16 @@ fn draw_approvals(ctx: &egui::Context, store: &mut Store, bridge: &Bridge, inset
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum DocKind {
     Image,
-    Markdown,
-    Pdf,
     Other,
-    Diff,
 }
 
 fn doc_kind(path: &str) -> DocKind {
-    if path.starts_with("diff:") {
-        return DocKind::Diff;
-    }
     let p = path.to_ascii_lowercase();
     if [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"]
         .iter()
         .any(|e| p.ends_with(e))
     {
         DocKind::Image
-    } else if p.ends_with(".md") || p.ends_with(".markdown") {
-        DocKind::Markdown
-    } else if p.ends_with(".pdf") {
-        DocKind::Pdf
     } else {
         DocKind::Other
     }
@@ -2254,7 +2122,7 @@ fn open_viewer(store: &mut Store, path: &str) {
                 .map(|a| {
                     a.artifacts
                         .iter()
-                        .filter(|x| doc_kind(&x.target) != DocKind::Other)
+                        .filter(|x| doc_kind(&x.target) == DocKind::Image)
                         .map(|x| x.target.clone())
                         .collect()
                 })
@@ -2292,119 +2160,13 @@ fn full_image<'a>(
     images.get(&key).and_then(|t| t.as_ref())
 }
 
-/// Text of a markdown or pdf file, read once. PDFs give extracted text with page breaks.
-fn doc_text<'a>(docs: &'a mut HashMap<String, Option<String>>, path: &str) -> Option<&'a str> {
-    if !docs.contains_key(path) {
-        let loaded = match doc_kind(path) {
-            DocKind::Pdf => pdf_extract::extract_text(path).ok(),
-            DocKind::Diff => parse_diff_path(path).and_then(|(cwd, rel, new)| gitinfo::diff_text(cwd, rel, new)),
-            _ => std::fs::read_to_string(path).ok(),
-        };
-        docs.insert(path.to_string(), loaded);
-    }
-    docs.get(path).and_then(|t| t.as_deref())
-}
-
-/// A small markdown renderer: headings, bullets, numbered lists, fenced code, inline code, bold.
-fn render_markdown(ui: &mut egui::Ui, text: &str) {
-    let mut in_code = false;
-    let mut code = String::new();
-    for raw in text.lines() {
-        let line = raw.trim_end();
-        if line.trim_start().starts_with("```") {
-            if in_code {
-                egui::Frame::NONE.fill(INK).inner_margin(6.0).show(ui, |ui| {
-                    ui.add(
-                        egui::Label::new(egui::RichText::new(code.trim_end()).monospace())
-                            .wrap()
-                            .selectable(true),
-                    );
-                });
-                code.clear();
-            }
-            in_code = !in_code;
-            continue;
-        }
-        if in_code {
-            code.push_str(raw);
-            code.push('\n');
-            continue;
-        }
-        let trimmed = line.trim_start();
-        if trimmed.is_empty() {
-            ui.add_space(6.0);
-        } else if let Some(h) = trimmed.strip_prefix("### ") {
-            ui.label(egui::RichText::new(h).strong().color(SAND));
-        } else if let Some(h) = trimmed.strip_prefix("## ") {
-            ui.label(egui::RichText::new(h).font(stencil(15.0)).color(SAND));
-        } else if let Some(h) = trimmed.strip_prefix("# ") {
-            ui.label(egui::RichText::new(h).font(stencil(18.0)).color(ACCENT));
-        } else if let Some(item) = trimmed.strip_prefix("- ").or_else(|| trimmed.strip_prefix("* ")) {
-            ui.horizontal_wrapped(|ui| {
-                ui.add_space((line.len() - trimmed.len()) as f32 * 4.0);
-                ui.label(egui::RichText::new("•").color(SAND));
-                inline_markdown(ui, item);
-            });
-        } else if trimmed.starts_with('|') {
-            ui.label(egui::RichText::new(trimmed).monospace().small());
-        } else {
-            ui.horizontal_wrapped(|ui| inline_markdown(ui, trimmed));
-        }
-    }
-    if in_code && !code.is_empty() {
-        ui.add(
-            egui::Label::new(egui::RichText::new(code.trim_end()).monospace())
-                .wrap()
-                .selectable(true),
-        );
-    }
-}
-
 /// `code` and **bold** inside a line.
-fn inline_markdown(ui: &mut egui::Ui, text: &str) {
-    ui.spacing_mut().item_spacing.x = 0.0;
-    let mut rest = text;
-    loop {
-        let code_at = rest.find('`');
-        let bold_at = rest.find("**");
-        let next = match (code_at, bold_at) {
-            (None, None) => None,
-            (Some(c), None) => Some((c, false)),
-            (None, Some(b)) => Some((b, true)),
-            (Some(c), Some(b)) => Some(if c <= b { (c, false) } else { (b, true) }),
-        };
-        let Some((at, is_bold)) = next else {
-            ui.label(rest);
-            return;
-        };
-        ui.label(&rest[..at]);
-        let marker = if is_bold { "**" } else { "`" };
-        let after = &rest[at + marker.len()..];
-        match after.find(marker) {
-            Some(end) => {
-                let inner = &after[..end];
-                if is_bold {
-                    ui.label(egui::RichText::new(inner).strong());
-                } else {
-                    ui.label(egui::RichText::new(inner).monospace().color(ACCENT));
-                }
-                rest = &after[end + marker.len()..];
-            }
-            None => {
-                ui.label(after);
-                return;
-            }
-        }
-    }
-}
-
 /// Centered, movable, resizable viewer. Images: drag to pan, scroll to zoom. Markdown is rendered,
 /// PDFs show extracted text. ◀ ▶ or arrow keys browse the unit's items, Esc or ✕ closes.
 fn draw_viewer(
     ctx: &egui::Context,
     store: &mut Store,
     images: &mut HashMap<String, Option<egui::TextureHandle>>,
-    docs: &mut HashMap<String, Option<String>>,
 ) -> Option<egui::Rect> {
     let mut viewer = store.viewer.clone()?;
     let n = viewer.items.len();
@@ -2448,10 +2210,7 @@ fn draw_viewer(
         )
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
-                let name = match parse_diff_path(&path) {
-                    Some((_, rel, _)) => format!("Δ {rel}"),
-                    None => path.rsplit(['/', '\\']).next().unwrap_or("").to_string(),
-                };
+                let name = path.rsplit(['/', '\\']).next().unwrap_or("").to_string();
                 ui.add(egui::Label::new(egui::RichText::new(name).font(stencil(14.0)).color(SAND)).truncate())
                     .on_hover_text(&path);
                 ui.label(
@@ -2521,48 +2280,16 @@ fn draw_viewer(
                         ui.label(egui::RichText::new(format!("cannot read {path}")).color(RED));
                     }
                 },
-                DocKind::Markdown | DocKind::Pdf | DocKind::Other | DocKind::Diff => {
-                    let body = doc_text(docs, &path).map(str::to_owned);
-                    egui::ScrollArea::vertical()
-                        .id_salt("viewer-doc")
-                        .max_width(avail.x)
-                        .max_height(avail.y)
-                        .show(ui, |ui| {
-                            ui.set_min_width(avail.x - 20.0);
-                            match (kind, body) {
-                                (DocKind::Markdown, Some(t)) => render_markdown(ui, &t),
-                                (DocKind::Diff, Some(t)) => render_diff(ui, &t),
-                                (_, Some(t)) => {
-                                    for (i, page) in t.split('\u{c}').enumerate() {
-                                        if i > 0 {
-                                            ui.separator();
-                                            ui.label(egui::RichText::new(format!("page {}", i + 1)).small().color(DIM));
-                                        }
-                                        ui.add(
-                                            egui::Label::new(egui::RichText::new(page.trim()).monospace())
-                                                .wrap()
-                                                .selectable(true),
-                                        );
-                                    }
-                                }
-                                (_, None) => {
-                                    ui.label(egui::RichText::new(format!("cannot read {path}")).color(RED));
-                                }
-                            }
-                        });
+                DocKind::Other => {
+                    ui.label(egui::RichText::new("this file opens in VS Code, not here").color(DIM));
                 }
             }
         })?;
     if open_ext {
-        match parse_diff_path(&path) {
-            Some((cwd, rel, _)) => open_in_editor(cwd, rel),
-            None => {
-                let p = path.clone();
-                std::thread::spawn(move || {
-                    let _ = open::that(&p);
-                });
-            }
-        }
+        let p = path.clone();
+        std::thread::spawn(move || {
+            let _ = open::that(&p);
+        });
     }
     if close {
         store.viewer = None;
@@ -2739,13 +2466,5 @@ mod tests {
         c.stderr = "warning: unused import".into();
         assert!(call_matches(&c, "unused"));
         assert!(contains_ci("Héllo", "héllo"), "non-ascii bytes compare exactly");
-    }
-
-    #[test]
-    fn diff_paths_round_trip() {
-        let p = diff_path("D:\\repo", "src/app/ui.rs", true);
-        assert_eq!(doc_kind(&p), DocKind::Diff);
-        assert_eq!(parse_diff_path(&p), Some(("D:\\repo", "src/app/ui.rs", true)));
-        assert_eq!(doc_kind("notes.md"), DocKind::Markdown);
     }
 }

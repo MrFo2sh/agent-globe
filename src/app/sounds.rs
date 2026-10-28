@@ -30,10 +30,21 @@ pub enum Sfx {
     Alarm,
     Fanfare,
     Waiting,
+    Scout,
+    Dig,
+    Intel,
+    Test,
+    AllClear,
+    Casualties,
+    Fortify,
+    Question,
+    Authorize,
+    Supplies,
+    Ammo,
 }
 
 impl Sfx {
-    pub const ALL: [Sfx; 12] = [
+    pub const ALL: [Sfx; 23] = [
         Sfx::Prompt,
         Sfx::Spawn,
         Sfx::Done,
@@ -46,6 +57,17 @@ impl Sfx {
         Sfx::Alarm,
         Sfx::Fanfare,
         Sfx::Waiting,
+        Sfx::Scout,
+        Sfx::Dig,
+        Sfx::Intel,
+        Sfx::Test,
+        Sfx::AllClear,
+        Sfx::Casualties,
+        Sfx::Fortify,
+        Sfx::Question,
+        Sfx::Authorize,
+        Sfx::Supplies,
+        Sfx::Ammo,
     ];
 
     pub fn name(self) -> &'static str {
@@ -62,6 +84,17 @@ impl Sfx {
             Sfx::Alarm => "alarm",
             Sfx::Fanfare => "fanfare",
             Sfx::Waiting => "waiting",
+            Sfx::Scout => "scout",
+            Sfx::Dig => "dig",
+            Sfx::Intel => "intel",
+            Sfx::Test => "test",
+            Sfx::AllClear => "allclear",
+            Sfx::Casualties => "casualties",
+            Sfx::Fortify => "fortify",
+            Sfx::Question => "question",
+            Sfx::Authorize => "authorize",
+            Sfx::Supplies => "supplies",
+            Sfx::Ammo => "ammo",
         }
     }
 
@@ -80,6 +113,17 @@ impl Sfx {
             Sfx::Alarm => "(siren)",
             Sfx::Fanfare => "(fanfare)",
             Sfx::Waiting => "Waiting for commands, sir.",
+            Sfx::Scout => "Scouting ahead.",
+            Sfx::Dig => "Digging in.",
+            Sfx::Intel => "Gathering intel.",
+            Sfx::Test => "Testing the line.",
+            Sfx::AllClear => "All clear, sir.",
+            Sfx::Casualties => "We have casualties!",
+            Sfx::Fortify => "Position fortified.",
+            Sfx::Question => "Need your input, commander.",
+            Sfx::Authorize => "Requesting authorization.",
+            Sfx::Supplies => "Running low on supplies.",
+            Sfx::Ammo => "We are out of ammo, sir.",
         }
     }
 
@@ -97,6 +141,17 @@ impl Sfx {
             Sfx::Alarm => include_bytes!("../../assets/sounds/alarm.wav"),
             Sfx::Fanfare => include_bytes!("../../assets/sounds/fanfare.wav"),
             Sfx::Waiting => include_bytes!("../../assets/sounds/waiting.wav"),
+            Sfx::Scout => include_bytes!("../../assets/sounds/scout.wav"),
+            Sfx::Dig => include_bytes!("../../assets/sounds/dig.wav"),
+            Sfx::Intel => include_bytes!("../../assets/sounds/intel.wav"),
+            Sfx::Test => include_bytes!("../../assets/sounds/test.wav"),
+            Sfx::AllClear => include_bytes!("../../assets/sounds/allclear.wav"),
+            Sfx::Casualties => include_bytes!("../../assets/sounds/casualties.wav"),
+            Sfx::Fortify => include_bytes!("../../assets/sounds/fortify.wav"),
+            Sfx::Question => include_bytes!("../../assets/sounds/question.wav"),
+            Sfx::Authorize => include_bytes!("../../assets/sounds/authorize.wav"),
+            Sfx::Supplies => include_bytes!("../../assets/sounds/supplies.wav"),
+            Sfx::Ammo => include_bytes!("../../assets/sounds/ammo.wav"),
         }
     }
 
@@ -105,7 +160,52 @@ impl Sfx {
         match self {
             Sfx::Blip => 0.15,
             Sfx::Prompt | Sfx::Complete | Sfx::Waiting => 4.0,
+            Sfx::Scout => 20.0,
+            Sfx::Dig => 20.0,
+            Sfx::Intel => 20.0,
+            Sfx::Test => 10.0,
+            Sfx::AllClear => 5.0,
+            Sfx::Casualties => 5.0,
+            Sfx::Fortify => 5.0,
+            Sfx::Question => 4.0,
+            Sfx::Authorize => 3.0,
+            Sfx::Supplies => 60.0,
+            Sfx::Ammo => 60.0,
             _ => 2.5,
+        }
+    }
+
+    /// A spoken line, as opposed to a tone.
+    pub fn is_voice(self) -> bool {
+        !matches!(self, Sfx::Blip | Sfx::Alarm | Sfx::Fanfare)
+    }
+
+    /// When the radio says this line: the glossary shown in settings.
+    pub fn when(self) -> &'static str {
+        match self {
+            Sfx::Prompt => "you sent a prompt",
+            Sfx::Spawn => "a subagent was deployed",
+            Sfx::Done => "a subagent finished",
+            Sfx::Error => "a tool call failed",
+            Sfx::Complete => "the factory shipped a product",
+            Sfx::Stall => "a call has run for two minutes",
+            Sfx::Loop => "the same command three times in a row",
+            Sfx::Ship => "a release was tagged",
+            Sfx::Blip => "every tool call (optional)",
+            Sfx::Alarm => "an alarm with no voice line",
+            Sfx::Fanfare => "a milestone",
+            Sfx::Waiting => "the turn ended, nothing was asked",
+            Sfx::Scout => "first read or search of a turn",
+            Sfx::Dig => "first edit of a turn",
+            Sfx::Intel => "first web fetch or search of a turn",
+            Sfx::Test => "a build, test or check command starts",
+            Sfx::AllClear => "that command passed",
+            Sfx::Casualties => "that command failed",
+            Sfx::Fortify => "a git commit succeeded",
+            Sfx::Question => "the turn ended with a question for you",
+            Sfx::Authorize => "a tool call waits for your yes or no",
+            Sfx::Supplies => "context near the model's limit",
+            Sfx::Ammo => "the plan's five-hour limit was hit",
         }
     }
 }

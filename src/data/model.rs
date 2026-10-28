@@ -285,17 +285,6 @@ impl Agent {
         start..end.max(start)
     }
 
-    /// API-equivalent cost of one turn's tokens at this agent's model prices.
-    pub fn turn_cost_usd(&self, t: &Turn) -> f64 {
-        super::cost::cost_usd(
-            &self.model,
-            t.input_tokens,
-            t.cache_read_tokens,
-            t.cache_write_tokens,
-            t.output_tokens,
-        )
-    }
-
     /// True while the agent is "taking fire": its most recently finished call failed and nothing
     /// has succeeded since. A failure buried in history is not a current status.
     pub fn last_call_failed(&self) -> bool {
@@ -304,16 +293,6 @@ impl Agent {
             .filter(|c| c.ended.is_some())
             .max_by_key(|c| c.ended.unwrap_or(0))
             .is_some_and(|c| c.is_error)
-    }
-
-    pub fn cost_usd(&self) -> f64 {
-        super::cost::cost_usd(
-            &self.model,
-            self.input_tokens,
-            self.cache_read_tokens,
-            self.cache_write_tokens,
-            self.output_tokens,
-        )
     }
 
     fn add_artifacts(&mut self, found: Vec<Artifact>) {
@@ -381,10 +360,6 @@ impl Session {
 
     pub fn total_calls(&self) -> usize {
         self.agents.iter().map(|a| a.calls.len()).sum()
-    }
-
-    pub fn cost_usd(&self) -> f64 {
-        self.agents.iter().map(Agent::cost_usd).sum()
     }
 
     pub fn calls_since(&self, since: Millis) -> usize {
@@ -862,7 +837,6 @@ mod tests {
         assert_eq!(a.turn_range(0), 1..3);
         assert_eq!(a.turn_range(1), 3..4);
         assert!(a.turn_log[1].ended.is_none(), "the second turn is still open");
-        assert!(a.turn_cost_usd(&a.turn_log[0]) > 0.0);
         // a third prompt without a TurnEnd closes the second turn
         s.apply(msg("user", "again", 40, 0));
         assert_eq!(s.root().turn_log[1].ended, Some(40));

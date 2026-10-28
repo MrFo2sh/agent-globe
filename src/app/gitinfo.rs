@@ -58,22 +58,6 @@ pub fn parse_changes(numstat: &str, porcelain: &str) -> Vec<FileChange> {
     out
 }
 
-/// Unified diff of one file against HEAD; untracked files show as all additions.
-pub fn diff_text(cwd: &str, path: &str, untracked: bool) -> Option<String> {
-    if untracked {
-        let full = std::path::Path::new(cwd).join(path);
-        let text = std::fs::read_to_string(full).ok()?;
-        let mut out = format!("+++ {path} (new file)\n");
-        for l in text.lines() {
-            out.push('+');
-            out.push_str(l);
-            out.push('\n');
-        }
-        return Some(out);
-    }
-    git(cwd, &["diff", "HEAD", "--", path])
-}
-
 impl GitInfo {
     /// `https://github.com/owner/repo` from an https or ssh remote, if it is GitHub-like.
     pub fn web_url(&self) -> Option<String> {
