@@ -151,7 +151,9 @@ pub fn drive(
         return;
     }
     if keys.just_pressed(KeyCode::Escape) {
-        if store.hide_ui {
+        if store.viewer.is_some() {
+            store.viewer = None;
+        } else if store.hide_ui {
             store.hide_ui = false;
         } else {
             store.selected = None;

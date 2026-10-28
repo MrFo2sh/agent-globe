@@ -7,7 +7,7 @@ use super::gitinfo::{GitInfo, GitWatch};
 use super::probe::Probe;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
-use super::state::{BadgeKind, BridgeRes, Store, ToastKind};
+use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer};
 use super::theme;
 use agent_globe::bridge::Bridge;
 use agent_globe::data::artifacts::{Artifact, ArtifactKind};
@@ -178,6 +178,7 @@ pub fn draw(
             });
         draw_badges(ctx, &store);
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
+        draw_viewer(ctx, &mut store, &mut images);
         draw_toasts(ctx, &store);
         return Ok(());
     }
@@ -448,6 +449,7 @@ pub fn draw(
         .and_then(|id| store.current_session().and_then(|s| s.agent(id)))
         .cloned();
     let mut close = false;
+    let mut view_image: Option<String> = None;
     let mut inset_right = 0.0_f32;
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
     *last_panel = selected.as_ref().map(|a| a.id.clone());
@@ -476,6 +478,7 @@ pub fn draw(
                     &probe,
                     git.as_ref(),
                     &mut images,
+                    &mut view_image,
                 );
             });
         inset_right = right.response.rect.width();
@@ -483,6 +486,9 @@ pub fn draw(
     }
     if close {
         store.selected = None;
+    }
+    if let Some(path) = view_image.take() {
+        open_viewer(&mut store, &path);
     }
     // Hover: a small card at the top right that never steals the pointer.
     if let Some(agent) = hovered
@@ -678,6 +684,9 @@ pub fn draw(
 
     draw_badges(ctx, &store);
     draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
+    if let Some(rect) = draw_viewer(ctx, &mut store, &mut images) {
+        ui_rects.push(rect);
+    }
     if let Some(rect) = draw_approvals(ctx, &mut store, &bridge.0, inset_top) {
         ui_rects.push(rect);
     }
@@ -852,6 +861,7 @@ fn agent_panel(
     probe: &Probe,
     git: Option<&GitInfo>,
     images: &mut HashMap<String, Option<egui::TextureHandle>>,
+    view_image: &mut Option<String>,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -928,33 +938,39 @@ fn agent_panel(
     if !a.artifacts.is_empty() {
         ui.add_space(4.0);
         ui.label(egui::RichText::new("ARTIFACTS").small().color(DIM));
-        const SHOWN: usize = 18;
         let key = format!("{}:artifacts", a.id);
         let all = expanded.contains(&key);
         let total = a.artifacts.len();
+        let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+        let shelf_h = if all { f32::INFINITY } else { row_h * 2.0 + 4.0 };
         let mut toggle = false;
-        ui.horizontal_wrapped(|ui| {
-            for art in a.artifacts.iter().rev().take(if all { total } else { SHOWN }) {
-                let alive = if art.kind == ArtifactKind::Url {
-                    probe.is_alive(&art.target)
-                } else {
-                    None
-                };
-                if artifact_chip(ui, art, alive, images).clicked() {
-                    open_artifact(ui.ctx(), art, git);
-                }
-            }
-            if total > SHOWN {
-                let label = if all {
-                    "▴ fewer".to_string()
-                } else {
-                    format!("▾ {} more", total - SHOWN)
-                };
-                if ui.small_button(egui::RichText::new(label).small()).clicked() {
-                    toggle = true;
-                }
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(format!("{total} items")).small().color(DIM));
+            let label = if all { "▴ collapse" } else { "▾ expand" };
+            if ui.small_button(egui::RichText::new(label).small()).clicked() {
+                toggle = true;
             }
         });
+        egui::ScrollArea::vertical()
+            .id_salt(&key)
+            .max_height(shelf_h)
+            .auto_shrink([false, true])
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    for art in a.artifacts.iter().rev() {
+                        let alive = if art.kind == ArtifactKind::Url {
+                            probe.is_alive(&art.target)
+                        } else {
+                            None
+                        };
+                        if artifact_chip(ui, art, alive, images, row_h - 6.0).clicked()
+                            && let Some(path) = open_artifact(ui.ctx(), art, git)
+                        {
+                            *view_image = Some(path);
+                        }
+                    }
+                });
+            });
         if toggle {
             if all {
                 expanded.remove(&key);
@@ -1147,6 +1163,7 @@ fn artifact_chip(
     a: &Artifact,
     alive: Option<bool>,
     images: &mut HashMap<String, Option<egui::TextureHandle>>,
+    thumb_px: f32,
 ) -> egui::Response {
     let (g, mut color) = glyph(a);
     if alive == Some(false) {
@@ -1166,7 +1183,7 @@ fn artifact_chip(
     if a.kind == ArtifactKind::Image
         && let Some(tex) = thumbnail(ui.ctx(), images, &a.target)
     {
-        let size = fit(tex.size_vec2(), 120.0);
+        let size = fit(tex.size_vec2(), thumb_px);
         return ui
             .add(egui::Button::image(egui::Image::new(egui::load::SizedTexture::new(
                 tex.id(),
@@ -1201,9 +1218,11 @@ fn thumbnail<'a>(
 }
 
 /// Click handling for every artifact kind. Opening runs off-thread so the frame never waits.
-fn open_artifact(ctx: &egui::Context, a: &Artifact, git: Option<&GitInfo>) {
+/// Returns Some(path) when the artifact is an image: the caller opens the in-app viewer.
+fn open_artifact(ctx: &egui::Context, a: &Artifact, git: Option<&GitInfo>) -> Option<String> {
     match a.kind {
-        ArtifactKind::Url | ArtifactKind::Pr | ArtifactKind::Image => {
+        ArtifactKind::Image => return Some(a.target.clone()),
+        ArtifactKind::Url | ArtifactKind::Pr => {
             let t = a.target.clone();
             std::thread::spawn(move || {
                 let _ = open::that(&t);
@@ -1233,6 +1252,7 @@ fn open_artifact(ctx: &egui::Context, a: &Artifact, git: Option<&GitInfo>) {
         },
         ArtifactKind::Test => {}
     }
+    None
 }
 
 /// Speech bubbles: the newest artifact of each unit, for 90 s, floating above the unit.
@@ -1260,6 +1280,7 @@ fn draw_bubbles(
         bubbles.push((a.id.clone(), art.clone(), pos));
     }
     let mut dismiss: Vec<String> = Vec::new();
+    let mut view: Vec<String> = Vec::new();
     for (agent_id, art, (x, y)) in bubbles {
         let alive = if art.kind == ArtifactKind::Url {
             probe.is_alive(&art.target)
@@ -1278,8 +1299,10 @@ fn draw_bubbles(
                     .show(ui, |ui| {
                         ui.set_max_width(260.0);
                         ui.horizontal(|ui| {
-                            if artifact_chip(ui, &art, alive, images).clicked() {
-                                open_artifact(ui.ctx(), &art, git);
+                            if artifact_chip(ui, &art, alive, images, 120.0).clicked()
+                                && let Some(path) = open_artifact(ui.ctx(), &art, git)
+                            {
+                                view.push(path);
                             }
                             if ui.small_button("✕").on_hover_text("dismiss").clicked() {
                                 dismiss.push(art.target.clone());
@@ -1312,6 +1335,9 @@ fn draw_bubbles(
     }
     for t in dismiss {
         store.dismissed_bubbles.insert(t);
+    }
+    if let Some(path) = view.pop() {
+        open_viewer(store, &path);
     }
 }
 
@@ -1389,4 +1415,159 @@ fn draw_approvals(ctx: &egui::Context, store: &mut Store, bridge: &Bridge, inset
         store.decide(bridge, req.id, d);
     }
     Some(win.response.rect)
+}
+
+/// Open the in-app viewer on `path`, with every image of the same unit as siblings.
+fn open_viewer(store: &mut Store, path: &str) {
+    let mut paths: Vec<String> = store
+        .current_session()
+        .map(|s| {
+            s.agents
+                .iter()
+                .find(|a| a.artifacts.iter().any(|x| x.target == path))
+                .map(|a| {
+                    a.artifacts
+                        .iter()
+                        .filter(|x| x.kind == ArtifactKind::Image)
+                        .map(|x| x.target.clone())
+                        .collect()
+                })
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    if paths.is_empty() {
+        paths.push(path.to_string());
+    }
+    let index = paths.iter().position(|p| p == path).unwrap_or(0);
+    store.viewer = Some(Viewer {
+        paths,
+        index,
+        zoom: 1.0,
+    });
+}
+
+/// Full-resolution texture for the viewer, cached under its own key.
+fn full_image<'a>(
+    ctx: &egui::Context,
+    images: &'a mut HashMap<String, Option<egui::TextureHandle>>,
+    path: &str,
+) -> Option<&'a egui::TextureHandle> {
+    let key = format!("full:{path}");
+    if !images.contains_key(&key) {
+        let loaded = image::open(path).ok().map(|img| {
+            let img = img.thumbnail(2048, 2048).to_rgba8();
+            let (w, h) = img.dimensions();
+            let ci = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], img.as_raw());
+            ctx.load_texture(key.clone(), ci, egui::TextureOptions::LINEAR)
+        });
+        images.insert(key.clone(), loaded);
+    }
+    images.get(&key).and_then(|t| t.as_ref())
+}
+
+/// Centered image viewer: scroll to zoom, ◀ ▶ or arrow keys to browse, Esc or ✕ to close.
+fn draw_viewer(
+    ctx: &egui::Context,
+    store: &mut Store,
+    images: &mut HashMap<String, Option<egui::TextureHandle>>,
+) -> Option<egui::Rect> {
+    let mut viewer = store.viewer.clone()?;
+    let n = viewer.paths.len();
+    let (left, right) = ctx.input(|i| {
+        (
+            i.key_pressed(egui::Key::ArrowLeft),
+            i.key_pressed(egui::Key::ArrowRight),
+        )
+    });
+    if left && n > 0 {
+        viewer.index = (viewer.index + n - 1) % n;
+    }
+    if right && n > 0 {
+        viewer.index = (viewer.index + 1) % n;
+    }
+    let path = viewer.paths.get(viewer.index).cloned().unwrap_or_default();
+    let vr = ctx.viewport_rect();
+    let max = egui::vec2(vr.width() * 0.82, vr.height() * 0.78);
+    let mut close = false;
+    let mut open_ext = false;
+    let win = egui::Window::new("image viewer")
+        .title_bar(false)
+        .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+        .resizable(false)
+        .collapsible(false)
+        .frame(
+            egui::Frame::NONE
+                .fill(INK)
+                .stroke(egui::Stroke::new(1.5, SAND))
+                .inner_margin(10.0)
+                .corner_radius(8.0),
+        )
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(short_path(&path)).font(stencil(14.0)).color(SAND));
+                ui.label(
+                    egui::RichText::new(format!("{} / {}", viewer.index + 1, n.max(1)))
+                        .small()
+                        .color(DIM),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("✕  (Esc)").clicked() {
+                        close = true;
+                    }
+                    if ui.button("open externally").clicked() {
+                        open_ext = true;
+                    }
+                    if n > 1 && ui.button("▶").clicked() {
+                        viewer.index = (viewer.index + 1) % n;
+                    }
+                    if n > 1 && ui.button("◀").clicked() {
+                        viewer.index = (viewer.index + n - 1) % n;
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("{:.0}%  (scroll to zoom)", viewer.zoom * 100.0))
+                            .small()
+                            .color(DIM),
+                    );
+                });
+            });
+            ui.add_space(6.0);
+            match full_image(ctx, images, &path) {
+                Some(tex) => {
+                    let fitted = fit(tex.size_vec2(), max.x.min(max.y)) * viewer.zoom;
+                    let shown = egui::vec2(fitted.x.min(max.x), fitted.y.min(max.y));
+                    let resp = egui::ScrollArea::both()
+                        .max_width(max.x)
+                        .max_height(max.y)
+                        .show(ui, |ui| {
+                            ui.add(egui::Image::new(egui::load::SizedTexture::new(tex.id(), fitted)))
+                        })
+                        .inner;
+                    let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+                    if resp.hovered() && scroll != 0.0 {
+                        viewer.zoom = (viewer.zoom * (1.0 + scroll * 0.002)).clamp(0.2, 8.0);
+                    }
+                    let _ = shown;
+                }
+                None => {
+                    ui.label(egui::RichText::new(format!("cannot read {path}")).color(RED));
+                }
+            }
+        })?;
+    if open_ext {
+        let p = path.clone();
+        std::thread::spawn(move || {
+            let _ = open::that(&p);
+        });
+    }
+    if close {
+        store.viewer = None;
+    } else {
+        store.viewer = Some(viewer);
+    }
+    Some(win.response.rect)
+}
+
+fn short_path(p: &str) -> String {
+    let parts: Vec<&str> = p.rsplit(['/', '\\']).take(3).collect();
+    parts.into_iter().rev().collect::<Vec<_>>().join("/")
 }

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.3.2 - 2026-10-28
+- Artifact shelf: two rows by default, expand / collapse, scrollable; smaller thumbnails in the shelf.
+- Integrated image viewer: click an image artifact to open it inside Agent Globe. Scroll to zoom,
+  arrow keys or ◀ ▶ to browse the unit's images, Esc or ✕ to close, "open externally" if needed.
+
 ## 0.3.1 - 2026-10-28
 - Artifact extraction rejects template URLs, shell fragments and sentence words; the chip strip
   shows the newest 18 with a "more" toggle.

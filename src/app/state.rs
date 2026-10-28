@@ -43,6 +43,14 @@ pub enum BadgeKind {
     Approval,
 }
 
+/// Images of one unit, browsable with previous / next.
+#[derive(Clone, Debug)]
+pub struct Viewer {
+    pub paths: Vec<String>,
+    pub index: usize,
+    pub zoom: f32,
+}
+
 #[derive(Clone, Debug)]
 pub struct Badge {
     pub agent_id: String,
@@ -95,6 +103,8 @@ pub struct Store {
     /// Artifact targets the user dismissed from the speech bubbles.
     pub dismissed_bubbles: HashSet<String>,
     pub tray_mood: Option<super::alerts::Mood>,
+    /// The in-app image viewer, when open.
+    pub viewer: Option<Viewer>,
     preferred: Option<String>,
     opened_once: bool,
     /// When the current session was opened; batches in the first moments are history, not news.
@@ -134,6 +144,7 @@ impl Store {
             approvals: Vec::new(),
             dismissed_bubbles: HashSet::new(),
             tray_mood: None,
+            viewer: None,
             preferred,
             opened_once: false,
             opened_at: Instant::now(),
