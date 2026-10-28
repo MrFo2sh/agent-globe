@@ -102,10 +102,12 @@ fn maximize_window(mut windows: Query<&mut Window, With<PrimaryWindow>>, mut don
 }
 
 /// Title-bar and taskbar icon for the running window (the exe resource covers Explorer).
-fn window_icon(windows: NonSend<bevy::winit::WinitWindows>, mut done: Local<bool>) {
+fn window_icon(windows: Option<NonSend<bevy::winit::WinitWindows>>, mut done: Local<bool>) {
     if *done {
         return;
     }
+    // Not reachable in every Bevy build; the exe's icon resource covers the window then.
+    let Some(windows) = windows else { return };
     let Ok(img) = image::load_from_memory(include_bytes!("../../assets/icon/agent-globe-64.png")) else {
         *done = true;
         return;
