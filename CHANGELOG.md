@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.6.1 - 2026-10-28
+- HUD: the session-length counter is gone (it is in the unit panel), so the cost and five-hour figures no longer run under the buttons.
+
 ## 0.6.0 - 2026-10-28
 - Per-prompt grouping: the unit panel folds tool calls under each of your prompts, with calls, units spawned, wall time and cost per turn; the newest turn is open, older ones collapsed, and the history search keeps only turns with hits.
 - Billing mode: "Pro / Max subscription" (default) marks every dollar figure with ≈ as API-equivalent and adds a five-hour window total across watched sessions; "API" shows list-price spend as before.

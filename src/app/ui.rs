@@ -239,13 +239,6 @@ pub fn draw(
                         jump = Some(winjump::needle_for(&s.cwd, &s.project));
                     }
                     ui.separator();
-                    if !compact {
-                        tip(
-                            ui,
-                            egui::RichText::new(format!("⏱ {}", dur(s.last_activity - s.started))).monospace(),
-                            "Session length: first event to the latest one.",
-                        );
-                    }
                     tip(
                         ui,
                         egui::RichText::new(format!("units {}", s.agents.len())).monospace(),
