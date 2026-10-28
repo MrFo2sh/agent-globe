@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.2.3 - 2026-10-28
+- Badges sit directly above their units (projection offset fix).
+
 ## 0.2.2 - 2026-10-28
 - Notification badges above units: glowing "!" lamp when a unit finishes, chat bubble over the
   commander while it waits for your orders, red warning when a call failed. Click the unit to dismiss.

@@ -635,7 +635,6 @@ pub fn project_badges(
     nodes: Query<(&NodeAgent, &GlobalTransform)>,
 ) {
     let Ok((cam, cam_tf)) = cams.single() else { return };
-    let (left, top) = store.scene_insets.map(|(l, t, _, _)| (l, t)).unwrap_or((0.0, 0.0));
     let zoom = settings.ui_scale.max(0.1);
     let mut badges = Vec::new();
     if let Some(session) = store.current_session() {
@@ -656,8 +655,8 @@ pub fn project_badges(
             if let Ok(p) = cam.world_to_viewport(cam_tf, head) {
                 badges.push(super::state::Badge {
                     kind,
-                    x: (p.x + left) / zoom,
-                    y: (p.y + top) / zoom,
+                    x: p.x / zoom,
+                    y: p.y / zoom,
                 });
             }
         }
