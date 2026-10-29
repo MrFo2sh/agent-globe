@@ -294,8 +294,10 @@ pub fn sync(
         }
     }
 
-    // ---- the page asked for the keyboard to come back to the app (quick open)
-    if std::mem::take(&mut store.focus_app) {
+    // ---- the keyboard comes back to the app: the page asked (quick open), or the app's own side
+    // was clicked while a surface exists
+    let has_surface = views.page.is_some() || views.pdf.is_some();
+    if std::mem::take(&mut store.focus_app) && has_surface {
         #[cfg(windows)]
         if let raw_window_handle::RawWindowHandle::Win32(h) = wrapper.get_window_handle() {
             unsafe {

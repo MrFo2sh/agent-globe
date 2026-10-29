@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.25.3 - 2026-10-29
+- Text fields take the keyboard back. Once the editor surface (a native child window) has had the keyboard, Windows kept handing it back, so the history and artifact searches and every other box looked disabled. A click on the app's own side, or a field gaining focus, now returns the keyboard to the app.
+
 ## 0.25.2 - 2026-10-29
 - Cards drag again. The motion check added for slow header clicks looked at egui's one-frame drag-start flag, which fires before the pointer has moved far enough, so no drag ever began. The check now watches the drag as it goes.
 

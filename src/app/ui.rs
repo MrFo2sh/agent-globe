@@ -146,6 +146,7 @@ pub struct Side<'w, 's> {
     /// AGENT_GLOBE_OPEN=<file> was honoured once (a dev aid: open a file without a click).
     pub env_opened: Local<'s, bool>,
     pub env_toggled: Local<'s, bool>,
+    pub was_typing: Local<'s, bool>,
     pub monitors: Query<'w, 's, &'static bevy::window::Monitor>,
 }
 
@@ -179,6 +180,25 @@ pub fn draw(
     }
     let now = now_millis();
     store.typing = ctx.memory(|m| m.focused().is_some());
+    // The editor surface is a native child window: once it has had the keyboard, Windows hands
+    // the keyboard back to it whenever the window is activated, and egui's text fields look
+    // disabled. A press on the app's own side, or a text field gaining focus, takes it back.
+    {
+        let ppp = ctx.pixels_per_point();
+        let surface = store
+            .webview_rect
+            .map(|r| egui::Rect::from_min_size(egui::pos2(r[0] / ppp, r[1] / ppp), egui::vec2(r[2] / ppp, r[3] / ppp)));
+        let pressed_outside = ctx.input(|i| {
+            i.pointer.any_pressed()
+                && i.pointer
+                    .interact_pos()
+                    .is_some_and(|p| !surface.is_some_and(|r| r.contains(p)))
+        });
+        if pressed_outside || (store.typing && !*side.was_typing) {
+            store.focus_app = true;
+        }
+        *side.was_typing = store.typing;
+    }
     // Where the monitors meet, in window points: the dock grid puts a column line on each seam.
     {
         let ppp = ctx.pixels_per_point();
