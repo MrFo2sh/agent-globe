@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.12.0 - 2026-10-29
+- ⌨ button next to the session name in the HUD opens a terminal in the session's root folder: Windows Terminal if installed, otherwise PowerShell.
+
 ## 0.11.2 - 2026-10-29
 - The reply card is drawn on the top layer: badges and file labels no longer show through or over it. It is draggable, stays on screen, and scrolls.
 

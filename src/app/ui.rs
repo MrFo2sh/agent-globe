@@ -248,6 +248,14 @@ pub fn draw(
                     if jump_button(ui).clicked() {
                         jump = Some(winjump::needle_for(&s.cwd, &s.project));
                     }
+                    if !s.cwd.is_empty()
+                        && ui
+                            .small_button("⌨")
+                            .on_hover_text(format!("Open a terminal in {}", s.cwd))
+                            .clicked()
+                    {
+                        open_terminal(&s.cwd);
+                    }
                     ui.separator();
                     tip(
                         ui,
@@ -1126,6 +1134,43 @@ fn usage_color(pct: f32) -> egui::Color32 {
 fn jump_button(ui: &mut egui::Ui) -> egui::Response {
     ui.small_button("🖥")
         .on_hover_text("Bring this session's editor window (VS Code) to the front")
+}
+
+/// Open a terminal in the session's root folder: Windows Terminal if present, else PowerShell.
+fn open_terminal(cwd: &str) {
+    let cwd = cwd.to_string();
+    std::thread::spawn(move || {
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            // Windows Terminal opens a tab in the folder; -NoExit keeps the shell after `cd`.
+            let wt = std::process::Command::new("wt")
+                .args(["-d", &cwd])
+                .creation_flags(0x0800_0000)
+                .spawn();
+            if wt.is_ok() {
+                return;
+            }
+            let _ = std::process::Command::new("cmd")
+                .args([
+                    "/C",
+                    "start",
+                    "powershell",
+                    "-NoExit",
+                    "-Command",
+                    &format!("Set-Location -LiteralPath '{}'", cwd.replace('\'', "''")),
+                ])
+                .creation_flags(0x0800_0000)
+                .spawn();
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = std::process::Command::new("x-terminal-emulator")
+                .current_dir(&cwd)
+                .spawn()
+                .or_else(|_| std::process::Command::new("gnome-terminal").current_dir(&cwd).spawn());
+        }
+    });
 }
 
 /// Floating label under every satellite commander: project, id, state. Click to switch.
