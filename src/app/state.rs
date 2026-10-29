@@ -262,8 +262,8 @@ pub struct Store {
     /// Per-card floating position and drag state, by card id.
     pub cards: HashMap<String, CardState>,
     /// The files card: the session folder as a tree plus the finder.
+    /// The files sidebar is expanded (collapsed: a strip with the 🗂 button).
     pub files_open: bool,
-    pub files_max: bool,
     pub files_query: String,
     pub files_focus_search: bool,
     pub files_open_dirs: HashSet<String>,
@@ -369,7 +369,6 @@ impl Store {
             turn_query: String::new(),
             cards: HashMap::new(),
             files_open: false,
-            files_max: false,
             files_query: String::new(),
             files_focus_search: false,
             files_open_dirs: HashSet::new(),

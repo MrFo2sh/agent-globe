@@ -290,7 +290,7 @@ pub fn draw(
                     if !s.cwd.is_empty()
                         && ui
                             .small_button("🗂")
-                            .on_hover_text("Files: the session folder as a tree, with a fuzzy finder (Ctrl+P)")
+                            .on_hover_text("Expand or collapse the files sidebar (Ctrl+P)")
                             .clicked()
                     {
                         open_files = true;
@@ -637,6 +637,50 @@ pub fn draw(
     if sidebar_toggle {
         store.sidebar_open = !store.sidebar_open;
     }
+    // ---- files sidebar: beside the sessions, collapsible to a strip, pushing the dock area ----
+    let files_ctx = store
+        .current_session()
+        .map(|s| (s.cwd.clone(), s.project.clone()))
+        .filter(|(cwd, _)| !cwd.is_empty());
+    let mut files_w = 0.0_f32;
+    let mut files_toggle = false;
+    if let Some((cwd, project)) = files_ctx {
+        if store.files_open {
+            let panel = egui::Panel::left("files")
+                .resizable(true)
+                .default_size(330.0)
+                .show(&mut root, |ui| {
+                    editor::files_body(ui, ctx, &mut store, &mut side.index, &cwd, &project)
+                });
+            files_w = panel.response.rect.width();
+            ui_rects.push(panel.response.rect);
+            if panel.inner.collapse {
+                files_toggle = true;
+            }
+        } else {
+            let strip = egui::Panel::left("files-strip")
+                .resizable(false)
+                .default_size(34.0)
+                .show(&mut root, |ui| {
+                    ui.add_space(6.0);
+                    ui.vertical_centered(|ui| {
+                        if ui
+                            .small_button("🗂")
+                            .on_hover_text("Files: the session folder as a tree, with a finder (Ctrl+P)")
+                            .clicked()
+                        {
+                            files_toggle = true;
+                        }
+                    });
+                });
+            files_w = strip.response.rect.width();
+            ui_rects.push(strip.response.rect);
+        }
+    }
+    if files_toggle {
+        store.files_open = !store.files_open;
+    }
+    let inset_left = inset_left + files_w;
     if let Some(s) = open {
         store.open(&s, &bridge.0);
     }
@@ -1139,7 +1183,6 @@ pub fn draw(
     cards.extend(draw_terminal(ctx, &mut store, &mut settings, &mut side.terms));
     let narrator = settings.narrator;
     cards.extend(draw_turn_card(ctx, &mut store, &mut settings, narrator));
-    cards.extend(editor::draw_files_card(ctx, &mut store, &mut settings, &mut side.index));
     cards.extend(editor::draw_editor_card(ctx, &mut store, &mut settings));
     cards.extend(settings_rect);
     store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();

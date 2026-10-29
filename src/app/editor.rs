@@ -98,117 +98,119 @@ fn tree(
     }
 }
 
-/// The files card: the session folder as a tree, and the card's search box as a fuzzy finder
-/// over the whole folder (Ctrl+P from anywhere opens it with the box focused).
-pub fn draw_files_card(
+/// What the files sidebar asked for this frame.
+#[derive(Default)]
+pub struct FilesActions {
+    pub collapse: bool,
+}
+
+/// The files sidebar's content: the session folder as a tree, with a finder box on top (Ctrl+P
+/// from anywhere expands the sidebar and focuses it). Click opens a file in the editor card;
+/// right-click reveals it in VS Code.
+pub fn files_body(
+    ui: &mut egui::Ui,
     ctx: &egui::Context,
     store: &mut Store,
-    settings: &mut Settings,
     index: &mut FileIndex,
-) -> Option<egui::Rect> {
-    if !store.files_open {
-        return None;
-    }
-    let (cwd, project) = store
-        .current_session()
-        .map(|s| (s.cwd.clone(), s.project.clone()))
-        .unwrap_or_default();
-    if cwd.is_empty() {
-        store.files_open = false;
-        return None;
-    }
-    index.ensure(&cwd, false);
+    cwd: &str,
+    project: &str,
+) -> FilesActions {
+    let mut act = FilesActions::default();
+    index.ensure(cwd, false);
     let building = index.is_building();
     let count = index.len();
-    let maxed = store.files_max;
-    let (mut cs, mut dock, grid) = begin_card(store, settings, "files-card", ctx);
-    let mut query = std::mem::take(&mut store.files_query);
-    let focus_search = std::mem::take(&mut store.files_focus_search);
-    let open_dirs = store.files_open_dirs.clone();
     let mut refresh = false;
     let mut open_path: Option<String> = None;
     let mut reveal: Option<String> = None;
     let mut toggle_dir: Option<String> = None;
-    let vr = ctx.viewport_rect();
-    let default_pos = egui::pos2(vr.min.x + 72.0, vr.min.y + 90.0);
-    let out = floating_card(
-        ctx,
-        "files-card",
-        maxed,
-        &mut cs,
-        &mut dock,
-        grid,
-        default_pos,
-        egui::vec2(400.0, 640.0),
-        Some(&mut query),
-        |ui| {
-            ui.label(egui::RichText::new("🗂").size(16.0));
-            ui.label(egui::RichText::new(&project).font(stencil(14.0)).color(SAND));
-            ui.add(egui::Label::new(egui::RichText::new(&cwd).small().monospace().color(DIM)).truncate());
-            if building {
-                ui.spinner();
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("🗂").size(14.0));
+        ui.label(egui::RichText::new(project).font(stencil(13.0)).color(SAND));
+        if building {
+            ui.spinner();
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .small_button("⟨")
+                .on_hover_text("Collapse the files sidebar")
+                .clicked()
+            {
+                act.collapse = true;
             }
             if ui.small_button("↻").on_hover_text("Rebuild the file index").clicked() {
                 refresh = true;
             }
-        },
-        |ui, q| {
-            if focus_search {
-                ctx.memory_mut(|m| m.request_focus(egui::Id::new(("files-card", "search"))));
-            }
-            if !q.is_empty() {
-                let hits = index.search(q, 40);
-                ui.label(
-                    egui::RichText::new(format!("{} of {count} files · Enter opens the first", hits.len()))
-                        .small()
-                        .color(DIM),
-                );
-                if ctx.input(|i| i.key_pressed(egui::Key::Enter))
-                    && let Some((p, _)) = hits.first()
-                {
-                    open_path = Some(format!("{cwd}/{p}"));
+        });
+    });
+    ui.horizontal(|ui| {
+        let focus = std::mem::take(&mut store.files_focus_search);
+        let resp = ui.add(
+            egui::TextEdit::singleline(&mut store.files_query)
+                .id(egui::Id::new(("files-panel", "search")))
+                .desired_width(ui.available_width() - 30.0)
+                .font(egui::TextStyle::Monospace)
+                .hint_text("🔍 find a file  (Ctrl+P)"),
+        );
+        if focus {
+            resp.request_focus();
+        }
+        if !store.files_query.is_empty() && ui.small_button("⌫").on_hover_text("Clear").clicked() {
+            store.files_query.clear();
+        }
+    });
+    ui.separator();
+    let q = store.files_query.trim().to_string();
+    if !q.is_empty() {
+        let hits = index.search(&q, 60);
+        ui.label(
+            egui::RichText::new(format!("{} of {count} files · Enter opens the first", hits.len()))
+                .small()
+                .color(DIM),
+        );
+        if ctx.input(|i| i.key_pressed(egui::Key::Enter))
+            && let Some((p, _)) = hits.first()
+        {
+            open_path = Some(format!("{cwd}/{p}"));
+        }
+        egui::ScrollArea::vertical()
+            .id_salt("files-finder")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width() - 8.0);
+                for (p, idx) in &hits {
+                    let r = ui
+                        .add(egui::Button::new(hit_label(p, idx)).frame(false))
+                        .on_hover_text("click: open here · right-click: VS Code");
+                    if r.clicked() {
+                        open_path = Some(format!("{cwd}/{p}"));
+                    }
+                    if r.secondary_clicked() {
+                        reveal = Some(format!("{cwd}/{p}"));
+                    }
                 }
-                egui::ScrollArea::vertical()
-                    .id_salt("files-finder")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width() - 8.0);
-                        for (p, idx) in &hits {
-                            let r = ui
-                                .add(egui::Button::new(hit_label(p, idx)).frame(false))
-                                .on_hover_text("click: open here · right-click: VS Code");
-                            if r.clicked() {
-                                open_path = Some(format!("{cwd}/{p}"));
-                            }
-                            if r.secondary_clicked() {
-                                reveal = Some(format!("{cwd}/{p}"));
-                            }
-                        }
-                    });
-            } else {
-                egui::ScrollArea::vertical()
-                    .id_salt("files-tree")
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width() - 8.0);
-                        tree(
-                            ui,
-                            index,
-                            &cwd,
-                            0,
-                            &open_dirs,
-                            &mut toggle_dir,
-                            &mut open_path,
-                            &mut reveal,
-                        );
-                    });
-            }
-        },
-    );
-    store.files_query = query;
-    end_card(store, settings, "files-card", cs, dock, &out.sash);
+            });
+    } else {
+        let open_dirs = store.files_open_dirs.clone();
+        egui::ScrollArea::vertical()
+            .id_salt("files-tree")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_min_width(ui.available_width() - 8.0);
+                tree(
+                    ui,
+                    index,
+                    cwd,
+                    0,
+                    &open_dirs,
+                    &mut toggle_dir,
+                    &mut open_path,
+                    &mut reveal,
+                );
+            });
+    }
     if refresh {
-        index.ensure(&cwd, true);
+        index.ensure(cwd, true);
     }
     if let Some(d) = toggle_dir
         && !store.files_open_dirs.remove(&d)
@@ -221,13 +223,7 @@ pub fn draw_files_card(
     if let Some(p) = reveal {
         open_in_editor("", &p);
     }
-    if out.toggle_max {
-        store.files_max = !store.files_max;
-    }
-    if out.close {
-        store.files_open = false;
-    }
-    out.rect
+    act
 }
 
 /// The editor card: tabs for the open files and the rectangle the WebView surface fills.
