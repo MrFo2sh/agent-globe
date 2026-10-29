@@ -3474,7 +3474,8 @@ fn code_block(
 
 /// One tool call in the history list: time, status mark, header, narrator line, command and output.
 /// A prompt group header with an absolute id: the arrow and the title toggle it on click, fold /
-/// unfold set it from outside, and a double-click is reported back (it opens the turn card).
+/// unfold set it from outside, and a double-click or right-click is reported back (it opens the
+/// turn card).
 fn group_header(
     ui: &mut egui::Ui,
     id: egui::Id,
@@ -3495,7 +3496,8 @@ fn group_header(
         ui.add(egui::Label::new(title).truncate());
     });
     let hit = ui.interact(row.response.rect, id.with("row"), egui::Sense::click());
-    let double = hit.double_clicked();
+    // A double-click or a right-click opens the group as a card; a click folds or unfolds it.
+    let double = hit.double_clicked() || hit.secondary_clicked();
     if hit.clicked() && !double {
         st.toggle(ui);
     }
