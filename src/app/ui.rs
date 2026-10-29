@@ -12,7 +12,7 @@ use super::settings::Pane;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
 use super::state::CardState;
-use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer, clock_hm};
+use super::state::{BadgeKind, BridgeRes, EditorCmd, Store, ToastKind, Viewer, clock_hm};
 use super::terminal::{self, Terminals};
 use super::theme;
 use super::usage::{self, UsageState, UsageWatch};
@@ -182,9 +182,48 @@ pub fn draw(
         *side.env_opened = true;
         store.open_doc(&p);
     }
-    if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::P)) && !store.typing && !store.hide_ui {
-        store.files_open = true;
-        store.files_focus_search = true;
+    if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::P)) && !store.hide_ui && !store.quick_open {
+        store.quick_open = true;
+        store.quick_focus = true;
+        store.quick_query.clear();
+        store.quick_sel = 0;
+    }
+    // Card-scoped shortcuts, by the card under the pointer.
+    if let Some((id, step)) = store.zoom_request.take() {
+        match id.as_str() {
+            "editor-card" => store.editor_cmds.push(EditorCmd::Zoom(step)),
+            "terminal-card" => {
+                store.term_font = if step == 0 {
+                    13.0
+                } else {
+                    (store.term_font + step as f32).clamp(9.0, 28.0)
+                };
+            }
+            _ => {
+                let cs = store.cards.entry(id).or_default();
+                cs.zoom = if step == 0 {
+                    1.0
+                } else {
+                    (cs.zoom * 1.1_f32.powi(step)).clamp(0.6, 2.5)
+                };
+            }
+        }
+    }
+    if store.hot_card.as_deref() == Some("editor-card") && !store.typing {
+        let (md_switch, close_tab) = ctx.input(|i| {
+            (
+                i.modifiers.command && i.modifiers.shift && i.key_pressed(egui::Key::V),
+                i.modifiers.command && i.key_pressed(egui::Key::W),
+            )
+        });
+        if md_switch {
+            store.md_preview = !store.md_preview;
+            let preview = store.md_preview;
+            store.editor_cmds.push(EditorCmd::Mode { preview });
+        }
+        if close_tab && let Some(i) = store.active_doc {
+            store.close_doc(i);
+        }
     }
     let compact = settings.compact || ctx.viewport_rect().width() < 1100.0;
     if let Some(s) = store.current_session() {
@@ -225,12 +264,26 @@ pub fn draw(
         draw_files(ctx, &mut store);
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
         draw_viewer(ctx, &mut store, &mut images);
-        let mut cards: Vec<egui::Rect> = Vec::new();
-        cards.extend(draw_reply(ctx, &mut store, &mut settings));
-        cards.extend(draw_terminal(ctx, &mut store, &mut settings, &mut side.terms));
+        let mut cards: Vec<(&str, egui::Rect)> = Vec::new();
+        if let Some(r) = draw_reply(ctx, &mut store, &mut settings) {
+            cards.push(("reply-card", r));
+        }
+        if let Some(r) = draw_terminal(ctx, &mut store, &mut settings, &mut side.terms) {
+            cards.push(("terminal-card", r));
+        }
         let narrator = settings.narrator;
-        cards.extend(draw_turn_card(ctx, &mut store, &mut settings, narrator));
-        store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
+        if let Some(r) = draw_turn_card(ctx, &mut store, &mut settings, narrator) {
+            cards.push(("turn-card", r));
+        }
+        store.card_rects = cards
+            .iter()
+            .map(|(_, r)| [r.min.x, r.min.y, r.max.x, r.max.y])
+            .collect();
+        let pointer = ctx.pointer_latest_pos();
+        store.hot_card = cards
+            .iter()
+            .find(|(_, r)| pointer.is_some_and(|p| r.contains(p)))
+            .map(|(id, _)| id.to_string());
         draw_toasts(ctx, &store);
         return Ok(());
     }
@@ -1178,15 +1231,34 @@ pub fn draw(
     if let Some(rect) = draw_approvals(ctx, &mut store, &bridge.0, inset_top) {
         ui_rects.push(rect);
     }
-    let mut cards: Vec<egui::Rect> = Vec::new();
-    cards.extend(draw_reply(ctx, &mut store, &mut settings));
-    cards.extend(draw_terminal(ctx, &mut store, &mut settings, &mut side.terms));
+    let mut cards: Vec<(&str, egui::Rect)> = Vec::new();
+    if let Some(r) = draw_reply(ctx, &mut store, &mut settings) {
+        cards.push(("reply-card", r));
+    }
+    if let Some(r) = draw_terminal(ctx, &mut store, &mut settings, &mut side.terms) {
+        cards.push(("terminal-card", r));
+    }
     let narrator = settings.narrator;
-    cards.extend(draw_turn_card(ctx, &mut store, &mut settings, narrator));
-    cards.extend(editor::draw_editor_card(ctx, &mut store, &mut settings));
-    cards.extend(settings_rect);
-    store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
-    ui_rects.extend(cards);
+    if let Some(r) = draw_turn_card(ctx, &mut store, &mut settings, narrator) {
+        cards.push(("turn-card", r));
+    }
+    if let Some(r) = editor::draw_editor_card(ctx, &mut store, &mut settings) {
+        cards.push(("editor-card", r));
+    }
+    if let Some(r) = settings_rect {
+        cards.push(("settings-card", r));
+    }
+    editor::draw_quick_open(ctx, &mut store, &mut side.index);
+    store.card_rects = cards
+        .iter()
+        .map(|(_, r)| [r.min.x, r.min.y, r.max.x, r.max.y])
+        .collect();
+    let pointer = ctx.pointer_latest_pos();
+    store.hot_card = cards
+        .iter()
+        .find(|(_, r)| pointer.is_some_and(|p| r.contains(p)))
+        .map(|(id, _)| id.to_string());
+    ui_rects.extend(cards.iter().map(|(_, r)| *r));
     draw_toasts(ctx, &store);
 
     store.scene_insets = Some((inset_left, inset_top, inset_right, inset_bottom));
@@ -1966,7 +2038,13 @@ pub(super) fn floating_card(
         ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) && ctx.memory(|m| m.focused().is_none());
     let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new(id));
     let can_drag = !maxed;
+    let zoom = cs.zoom;
     let content = |ui: &mut egui::Ui, out: &mut CardOut| {
+        if (zoom - 1.0).abs() > 0.01 {
+            for f in ui.style_mut().text_styles.values_mut() {
+                f.size *= zoom;
+            }
+        }
         // The title row is the drag handle, declared first so the buttons drawn over it win clicks.
         let row_h = 24.0;
         let header_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), row_h));
@@ -2294,6 +2372,7 @@ fn draw_terminal(
         (vr.max.y - height - 56.0).max(vr.min.y + 56.0),
     );
     let maxed = store.terminal_max;
+    let font_px = store.term_font;
     let (mut cs, mut dock, grid) = begin_card(store, settings, "terminal-card", ctx);
     let mut query = std::mem::take(&mut store.terminal_query);
     let spawn_error = terms.error.clone();
@@ -2403,7 +2482,7 @@ fn draw_terminal(
                         }
                     });
                     if q.is_empty() {
-                        draw_grid(ui, tab);
+                        draw_grid(ui, tab, font_px);
                     } else {
                         let lines = tab.all_lines();
                         egui::ScrollArea::vertical()
@@ -2488,8 +2567,8 @@ fn rgb(c: [u8; 3]) -> egui::Color32 {
 
 /// The console grid: sized to the space it gets (and the shell told), painted cell by cell,
 /// keys and paste forwarded while it has the keyboard, the wheel scrolling the history.
-fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab) {
-    let font = egui::FontId::monospace(13.0);
+fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab, font_px: f32) {
+    let font = egui::FontId::monospace(font_px);
     let (cw, ch) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
     let avail = ui.available_size();
     let (rect, resp) = ui.allocate_exact_size(avail, egui::Sense::click_and_drag());

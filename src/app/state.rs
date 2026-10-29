@@ -185,22 +185,44 @@ pub struct Doc {
     pub path: String,
     pub kind: DocKind,
     pub dirty: bool,
+    /// A preview tab (single click): the next single click reuses it. Double-click or an edit pins it.
+    pub preview: bool,
 }
 
 /// What the UI asks the editor page to do; `webview.rs` carries it out on the main thread.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorCmd {
-    Open { path: String },
-    Mode { preview: bool },
+    Open {
+        path: String,
+    },
+    Mode {
+        preview: bool,
+    },
     Save,
-    Close { path: String },
+    Close {
+        path: String,
+    },
+    /// Font steps for the page: +1 / -1, or a jump back to the default.
+    Zoom(i32),
 }
 
-/// A card's floating position (None: its default) and whether its title is being dragged.
-#[derive(Debug, Clone, Default)]
+/// A card's floating position (None: its default), whether its title is being dragged, and its
+/// own text zoom.
+#[derive(Debug, Clone)]
 pub struct CardState {
     pub pos: Option<[f32; 2]>,
     pub dragging: bool,
+    pub zoom: f32,
+}
+
+impl Default for CardState {
+    fn default() -> Self {
+        CardState {
+            pos: None,
+            dragging: false,
+            zoom: 1.0,
+        }
+    }
 }
 
 #[derive(Resource)]
@@ -275,6 +297,19 @@ pub struct Store {
     pub editor_cmds: Vec<EditorCmd>,
     /// Markdown opens rendered (true) or as source.
     pub md_preview: bool,
+    /// The quick-open palette (Ctrl+P): its query, selection, and a pending focus request.
+    pub quick_open: bool,
+    pub quick_query: String,
+    pub quick_sel: usize,
+    pub quick_focus: bool,
+    /// The card under the pointer this frame, by id: Ctrl+plus/minus act on it, not the whole UI.
+    pub hot_card: Option<String>,
+    /// A zoom step (+1 / -1 / 0 = reset) asked for the card under the pointer.
+    pub zoom_request: Option<(String, i32)>,
+    /// Terminal font size in points.
+    pub term_font: f32,
+    /// Ask the host to hand the keyboard back to the app window (after the page asked for it).
+    pub focus_app: bool,
     /// Where the WebView surface goes this frame, in physical pixels (x, y, w, h); None hides it.
     pub webview_rect: Option<[f32; 4]>,
     pub webview_logged: bool,
@@ -378,6 +413,14 @@ impl Store {
             active_doc: None,
             editor_cmds: Vec::new(),
             md_preview: true,
+            quick_open: false,
+            quick_query: String::new(),
+            quick_sel: 0,
+            quick_focus: false,
+            hot_card: None,
+            zoom_request: None,
+            term_font: 13.0,
+            focus_app: false,
             webview_rect: None,
             webview_logged: false,
             typing: false,
@@ -537,22 +580,55 @@ impl Store {
             .is_some_and(|t| t.elapsed().as_secs_f32() > HISTORY_GRACE_S)
     }
 
-    /// Open a file in the editor card: focus it if it is already open, otherwise add a tab.
+    /// Open a file in the editor card as a preview tab: focus it if it is already open, reuse
+    /// the current preview tab if there is one, otherwise add a tab.
     pub fn open_doc(&mut self, path: &str) {
+        self.open_doc_as(path, true);
+    }
+
+    /// Open a file pinned (double-click): it keeps its tab.
+    pub fn open_doc_pinned(&mut self, path: &str) {
+        self.open_doc_as(path, false);
+    }
+
+    fn open_doc_as(&mut self, path: &str, preview: bool) {
         let path = path.replace('/', "\\");
         if let Some(i) = self.docs.iter().position(|d| d.path == path) {
+            self.active_doc = Some(i);
+            if !preview {
+                self.docs[i].preview = false;
+            }
+        } else if preview && let Some(i) = self.docs.iter().position(|d| d.preview && !d.dirty) {
+            let old = std::mem::replace(
+                &mut self.docs[i],
+                Doc {
+                    path: path.clone(),
+                    kind: super::files::kind_of(&path),
+                    dirty: false,
+                    preview: true,
+                },
+            );
+            self.editor_cmds.push(EditorCmd::Close { path: old.path });
             self.active_doc = Some(i);
         } else {
             self.docs.push(Doc {
                 path: path.clone(),
                 kind: super::files::kind_of(&path),
                 dirty: false,
+                preview,
             });
             self.active_doc = Some(self.docs.len() - 1);
         }
         self.editor_open = true;
         info!("editor: open {path}");
         self.editor_cmds.push(EditorCmd::Open { path });
+    }
+
+    /// The tab at `i` stops being a preview.
+    pub fn pin_doc(&mut self, i: usize) {
+        if let Some(d) = self.docs.get_mut(i) {
+            d.preview = false;
+        }
     }
 
     /// Close a tab; the neighbour becomes active.

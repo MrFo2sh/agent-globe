@@ -57,7 +57,7 @@ fn tree(
     depth: usize,
     open_dirs: &HashSet<String>,
     toggle: &mut Option<String>,
-    open: &mut Option<String>,
+    open: &mut Option<(String, bool)>,
     reveal: &mut Option<String>,
 ) {
     for e in index.list(dir) {
@@ -83,9 +83,14 @@ fn tree(
                         )
                         .frame(false),
                     )
-                    .on_hover_text(format!("{}\nclick: open here · right-click: VS Code", e.path));
-                if r.clicked() {
-                    *open = Some(e.path.clone());
+                    .on_hover_text(format!(
+                        "{}\nclick: preview · double-click: keep open · right-click: VS Code",
+                        e.path
+                    ));
+                if r.double_clicked() {
+                    *open = Some((e.path.clone(), false));
+                } else if r.clicked() {
+                    *open = Some((e.path.clone(), true));
                 }
                 if r.secondary_clicked() {
                     *reveal = Some(e.path.clone());
@@ -120,7 +125,7 @@ pub fn files_body(
     let building = index.is_building();
     let count = index.len();
     let mut refresh = false;
-    let mut open_path: Option<String> = None;
+    let mut open_path: Option<(String, bool)> = None;
     let mut reveal: Option<String> = None;
     let mut toggle_dir: Option<String> = None;
     ui.add_space(4.0);
@@ -171,7 +176,7 @@ pub fn files_body(
         if ctx.input(|i| i.key_pressed(egui::Key::Enter))
             && let Some((p, _)) = hits.first()
         {
-            open_path = Some(format!("{cwd}/{p}"));
+            open_path = Some((format!("{cwd}/{p}"), true));
         }
         egui::ScrollArea::vertical()
             .id_salt("files-finder")
@@ -181,9 +186,11 @@ pub fn files_body(
                 for (p, idx) in &hits {
                     let r = ui
                         .add(egui::Button::new(hit_label(p, idx)).frame(false))
-                        .on_hover_text("click: open here · right-click: VS Code");
-                    if r.clicked() {
-                        open_path = Some(format!("{cwd}/{p}"));
+                        .on_hover_text("click: preview · double-click: keep open · right-click: VS Code");
+                    if r.double_clicked() {
+                        open_path = Some((format!("{cwd}/{p}"), false));
+                    } else if r.clicked() {
+                        open_path = Some((format!("{cwd}/{p}"), true));
                     }
                     if r.secondary_clicked() {
                         reveal = Some(format!("{cwd}/{p}"));
@@ -217,13 +224,148 @@ pub fn files_body(
     {
         store.files_open_dirs.insert(d);
     }
-    if let Some(p) = open_path {
-        store.open_doc(&p);
+    if let Some((p, preview)) = open_path {
+        if preview {
+            store.open_doc(&p);
+        } else {
+            store.open_doc_pinned(&p);
+        }
     }
     if let Some(p) = reveal {
         open_in_editor("", &p);
     }
     act
+}
+
+/// The quick-open palette (Ctrl+P): a box at the top, the best matches under it, arrows to move,
+/// Enter to open, Esc to close. With an empty box it lists the files already open.
+pub fn draw_quick_open(ctx: &egui::Context, store: &mut Store, index: &mut FileIndex) {
+    if !store.quick_open {
+        return;
+    }
+    let Some(cwd) = store.current_session().map(|s| s.cwd.clone()).filter(|c| !c.is_empty()) else {
+        store.quick_open = false;
+        return;
+    };
+    index.ensure(&cwd, false);
+    let (esc, enter, up, down) = ctx.input(|i| {
+        let hit = |k: egui::Key| {
+            i.raw
+                .events
+                .iter()
+                .any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if *key == k))
+        };
+        (
+            hit(egui::Key::Escape),
+            hit(egui::Key::Enter),
+            hit(egui::Key::ArrowUp),
+            hit(egui::Key::ArrowDown),
+        )
+    });
+    let query = store.quick_query.trim().to_string();
+    let rows: Vec<(String, Vec<usize>, bool)> = if query.is_empty() {
+        store.docs.iter().map(|d| (d.path.clone(), Vec::new(), true)).collect()
+    } else {
+        index
+            .search(&query, 14)
+            .into_iter()
+            .map(|(p, idx)| (format!("{cwd}/{p}"), idx, false))
+            .collect()
+    };
+    if up {
+        store.quick_sel = store.quick_sel.saturating_sub(1);
+    }
+    if down && !rows.is_empty() {
+        store.quick_sel = (store.quick_sel + 1).min(rows.len() - 1);
+    }
+    store.quick_sel = store.quick_sel.min(rows.len().saturating_sub(1));
+    let mut chosen: Option<String> = None;
+    let mut close = esc;
+    let focus = std::mem::take(&mut store.quick_focus);
+    let vr = ctx.viewport_rect();
+    egui::Area::new(egui::Id::new("quick-open"))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(egui::pos2(vr.center().x - 330.0, vr.min.y + 70.0))
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(6, 12, 5))
+                .stroke(egui::Stroke::new(1.5, ACCENT))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 6],
+                    blur: 22,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(190),
+                })
+                .inner_margin(10.0)
+                .corner_radius(8.0)
+                .show(ui, |ui| {
+                    ui.set_width(660.0);
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut store.quick_query)
+                            .id(egui::Id::new("quick-open-search"))
+                            .desired_width(f32::INFINITY)
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text("file name · ↑ ↓ · Enter opens · Esc closes"),
+                    );
+                    if focus {
+                        resp.request_focus();
+                    }
+                    if resp.changed() {
+                        store.quick_sel = 0;
+                    }
+                    ui.add_space(4.0);
+                    if rows.is_empty() {
+                        ui.label(
+                            egui::RichText::new(if query.is_empty() {
+                                "no files open · type to search"
+                            } else {
+                                "no matches"
+                            })
+                            .small()
+                            .color(DIM),
+                        );
+                    }
+                    for (i, (path, idx, is_open)) in rows.iter().enumerate() {
+                        let selected = i == store.quick_sel;
+                        let shown = if *is_open {
+                            path.strip_prefix(&format!("{cwd}\\"))
+                                .unwrap_or(path)
+                                .replace('\\', "/")
+                        } else {
+                            path.strip_prefix(&format!("{cwd}/")).unwrap_or(path).to_string()
+                        };
+                        let job = hit_label(&shown, idx);
+                        let r = ui.add(
+                            egui::Button::new(job)
+                                .frame(false)
+                                .fill(if selected {
+                                    egui::Color32::from_rgb(18, 58, 28)
+                                } else {
+                                    egui::Color32::TRANSPARENT
+                                })
+                                .min_size(egui::vec2(ui.available_width(), 0.0)),
+                        );
+                        if r.hovered() {
+                            store.quick_sel = i;
+                        }
+                        if r.clicked() {
+                            chosen = Some(path.clone());
+                        }
+                    }
+                });
+        });
+    if enter && let Some((path, _, _)) = rows.get(store.quick_sel) {
+        chosen = Some(path.clone());
+    }
+    if let Some(p) = chosen {
+        store.open_doc(&p);
+        close = true;
+    }
+    if close {
+        store.quick_open = false;
+        store.quick_query.clear();
+        store.quick_sel = 0;
+    }
 }
 
 /// The editor card: tabs for the open files and the rectangle the WebView surface fills.
@@ -243,6 +385,7 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
         .unwrap_or_else(|| "editor".to_string());
     let preview = store.md_preview;
     let mut switch: Option<usize> = None;
+    let mut pin: Option<usize> = None;
     let mut close: Option<usize> = None;
     let mut save = false;
     let mut toggle_preview = false;
@@ -297,11 +440,22 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
                 for (i, d) in docs.iter().enumerate() {
                     let name = file_name(&d.path);
                     let label = if d.dirty { format!("{name} ●") } else { name };
-                    if ui
-                        .selectable_label(Some(i) == active, egui::RichText::new(label).small().monospace())
-                        .on_hover_text(&d.path)
-                        .clicked()
-                    {
+                    let mut text = egui::RichText::new(label).small().monospace();
+                    if d.preview {
+                        text = text.italics().color(DIM);
+                    }
+                    let r = ui.selectable_label(Some(i) == active, text).on_hover_text(format!(
+                        "{}\n{}",
+                        d.path,
+                        if d.preview {
+                            "preview tab: double-click to keep"
+                        } else {
+                            ""
+                        }
+                    ));
+                    if r.double_clicked() {
+                        pin = Some(i);
+                    } else if r.clicked() {
                         switch = Some(i);
                     }
                     if Some(i) == active && ui.small_button("✕").on_hover_text("Close this file").clicked() {
@@ -346,6 +500,9 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
             let path = d.path.clone();
             store.editor_cmds.push(EditorCmd::Open { path });
         }
+    }
+    if let Some(i) = pin {
+        store.pin_doc(i);
     }
     if let Some(i) = close {
         store.close_doc(i);

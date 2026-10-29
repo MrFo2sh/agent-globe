@@ -18,6 +18,9 @@ const PAGE: &str = include_str!("../../assets/editor/page.html");
 enum Ipc {
     Ready,
     Log(String),
+    QuickOpen,
+    Mode { preview: bool },
+    CloseTab,
     Dirty { path: String, dirty: bool },
     Save { path: String, content: String },
 }
@@ -28,6 +31,11 @@ fn parse_ipc(body: &str) -> Option<Ipc> {
     match v["type"].as_str()? {
         "ready" => Some(Ipc::Ready),
         "log" => Some(Ipc::Log(v["text"].as_str().unwrap_or("").to_string())),
+        "quickopen" => Some(Ipc::QuickOpen),
+        "mode" => Some(Ipc::Mode {
+            preview: v["preview"].as_bool().unwrap_or(true),
+        }),
+        "closetab" => Some(Ipc::CloseTab),
         "dirty" => Some(Ipc::Dirty {
             path,
             dirty: v["dirty"].as_bool().unwrap_or(true),
@@ -190,6 +198,17 @@ pub fn sync(
     for m in inbox {
         match m {
             Ipc::Log(text) => info!("editor page: {text}"),
+            Ipc::QuickOpen => {
+                store.quick_open = true;
+                store.quick_focus = true;
+                store.focus_app = true;
+            }
+            Ipc::Mode { preview } => store.md_preview = preview,
+            Ipc::CloseTab => {
+                if let Some(i) = store.active_doc {
+                    store.close_doc(i);
+                }
+            }
             Ipc::Ready => {
                 info!("editor page ready");
                 views.ready = true;
@@ -203,6 +222,9 @@ pub fn sync(
             Ipc::Dirty { path, dirty } => {
                 if let Some(d) = store.docs.iter_mut().find(|d| d.path == path) {
                     d.dirty = dirty;
+                    if dirty {
+                        d.preview = false;
+                    }
                 }
             }
             Ipc::Save { path, content } => match std::fs::write(&path, content) {
@@ -267,7 +289,18 @@ pub fn sync(
                 ));
             }
             EditorCmd::Save => views.run("window.agSave()".to_string()),
+            EditorCmd::Zoom(d) => views.run(format!("window.agZoom({d})")),
             EditorCmd::Close { path } => views.run(format!("window.agClose({})", serde_json::json!(path))),
+        }
+    }
+
+    // ---- the page asked for the keyboard to come back to the app (quick open)
+    if std::mem::take(&mut store.focus_app) {
+        #[cfg(windows)]
+        if let raw_window_handle::RawWindowHandle::Win32(h) = wrapper.get_window_handle() {
+            unsafe {
+                windows_sys::Win32::UI::Input::KeyboardAndMouse::SetFocus(h.hwnd.get() as _);
+            }
         }
     }
 

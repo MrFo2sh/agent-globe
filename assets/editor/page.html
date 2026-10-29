@@ -54,7 +54,7 @@
     if (editor && which === 'editor') editor.layout();
   };
   const status = (t) => { const s = $('status'); s.textContent = t; s.style.display = t ? 'block' : 'none'; };
-  let editor = null, current = null, mode = 'edit';
+  let editor = null, current = null, mode = 'edit', fontSize = 13;
   const models = {};
   const dirty = {};
 
@@ -81,6 +81,28 @@
     }
     show('preview');
   }
+
+  window.agZoom = (d) => {
+    fontSize = Math.max(8, Math.min(40, fontSize + d));
+    if (editor) editor.updateOptions({ fontSize });
+    $('preview').style.zoom = String(fontSize / 13);
+  };
+  const toggleMode = () => {
+    if (!current || current.kind !== 'md') return;
+    window.agMode(mode === 'preview' ? 'edit' : 'preview');
+    post({ type: 'mode', preview: mode === 'preview' });
+  };
+  // The keys the page owns while it has the keyboard: zoom, Markdown switch, quick open, close tab.
+  document.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey || e.altKey) return;
+    const k = e.key;
+    if (k === '=' || k === '+') { e.preventDefault(); e.stopPropagation(); window.agZoom(1); }
+    else if (k === '-') { e.preventDefault(); e.stopPropagation(); window.agZoom(-1); }
+    else if (k === '0') { e.preventDefault(); e.stopPropagation(); window.agZoom(13 - fontSize); }
+    else if (k === 'p' || k === 'P') { e.preventDefault(); e.stopPropagation(); post({ type: 'quickopen' }); }
+    else if (e.shiftKey && (k === 'v' || k === 'V')) { e.preventDefault(); e.stopPropagation(); toggleMode(); }
+    else if (k === 'w' || k === 'W') { e.preventDefault(); e.stopPropagation(); post({ type: 'closetab' }); }
+  }, true);
 
   window.agMode = (m) => {
     mode = m;

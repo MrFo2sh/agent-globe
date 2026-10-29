@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.23.0 - 2026-10-29
+- Scoped zoom: Ctrl with + / - / 0 acts on the card under the pointer (the editor's font, the terminal's font, the text of the reply and turn cards). Only with no card under the pointer, and no text field typing, does it scale the whole UI. Inside the editor the page handles the keys itself.
+- Ctrl+Shift+V flips Markdown between edit and preview, from the app or from inside the editor.
+- Ctrl+P opens a quick-open palette at the top: type, ↑ ↓, Enter opens, Esc closes; an empty box lists the open files. It works from inside the editor too, which hands the keyboard back to the app.
+- Preview tabs: a single click opens a file in a preview tab that the next single click reuses; double-click, or any edit, keeps the tab. Ctrl+W closes the active tab.
+
 ## 0.22.1 - 2026-10-29
 - The dock area is exactly the free space: right of both left sidebars, left of the agent panel, under the top bar, above the status bar. Docked panes are fractions of it, so they give way when the agent panel or a sidebar opens and take the space back when it closes.
 

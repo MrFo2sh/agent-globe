@@ -199,22 +199,38 @@ fn apply_title_bar(settings: Res<settings::Settings>, mut windows: Query<&mut Wi
     }
 }
 
-/// Ctrl and + / - / 0 scale the whole UI, the same knob as the "ui scale" slider.
-fn zoom_keys(keys: Res<ButtonInput<KeyCode>>, mut settings: ResMut<settings::Settings>) {
+/// Ctrl and + / - / 0: the card under the pointer zooms its own text; with no card there and
+/// no text field typing, the whole UI scales (the "ui scale" slider's knob).
+fn zoom_keys(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut settings: ResMut<settings::Settings>,
+    mut store: ResMut<state::Store>,
+) {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     if !ctrl {
         return;
     }
-    let step = if keys.just_pressed(KeyCode::Equal) || keys.just_pressed(KeyCode::NumpadAdd) {
-        0.1
+    let step: i32 = if keys.just_pressed(KeyCode::Equal) || keys.just_pressed(KeyCode::NumpadAdd) {
+        1
     } else if keys.just_pressed(KeyCode::Minus) || keys.just_pressed(KeyCode::NumpadSubtract) {
-        -0.1
+        -1
     } else if keys.just_pressed(KeyCode::Digit0) || keys.just_pressed(KeyCode::Numpad0) {
-        1.0 - settings.ui_scale
+        0
     } else {
         return;
     };
-    let next = ((settings.ui_scale + step) * 10.0).round() / 10.0;
+    if let Some(id) = store.hot_card.clone() {
+        store.zoom_request = Some((id, step));
+        return;
+    }
+    if store.typing {
+        return;
+    }
+    let next = if step == 0 {
+        1.0
+    } else {
+        ((settings.ui_scale + 0.1 * step as f32) * 10.0).round() / 10.0
+    };
     settings.ui_scale = next.clamp(0.6, 1.8);
 }
 
