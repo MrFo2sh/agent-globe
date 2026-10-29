@@ -1039,7 +1039,7 @@ pub fn draw(
                     });
             },
         );
-        end_card(&mut store, &mut settings, "settings-card", cs, dock);
+        end_card(&mut store, &mut settings, "settings-card", cs, dock, &out.sash);
         settings_rect = out.rect;
         if let Some(r) = out.rect {
             ui_rects.push(r);
@@ -1607,8 +1607,11 @@ pub(super) struct CardOut {
     drag_started: bool,
     drag_delta: egui::Vec2,
     drag_stopped: bool,
-    /// An edge of a docked card being dragged: 0 left, 1 right, 2 top, 3 bottom.
+    /// An edge of a docked card being dragged: 0 left, 1 right, 2 top, 3 bottom, 4 corner.
     edge: Option<u8>,
+    /// Edges this frame moved: (axis 0 = x / 1 = y, from, to) as fractions. Neighbouring panes
+    /// sharing that line follow, so shrinking one pane grows the next.
+    pub sash: Vec<(u8, f32, f32)>,
 }
 
 /// The dock grid: the window cut into cells, two per monitor by default. A docked card fills a
@@ -1766,11 +1769,51 @@ pub(super) fn begin_card(
     (cs, dock, grid)
 }
 
-pub(super) fn end_card(store: &mut Store, settings: &mut Settings, id: &str, cs: CardState, dock: Option<Pane>) {
+pub(super) fn end_card(
+    store: &mut Store,
+    settings: &mut Settings,
+    id: &str,
+    cs: CardState,
+    dock: Option<Pane>,
+    sash: &[(u8, f32, f32)],
+) {
     store.cards.insert(id.to_string(), cs);
+    // A moved edge drags every other docked edge on the same line with it: a shared sash, as
+    // between editor groups. Panes never drop below a sliver.
+    for (axis, from, to) in sash {
+        for (k, p) in settings.panes.iter_mut() {
+            if k == id {
+                continue;
+            }
+            *p = sash_follow(*p, *axis, *from, *to);
+        }
+    }
     if let Some(d) = dock {
         settings.panes.insert(id.to_string(), d);
     }
+}
+
+/// `p` with any edge lying on `from` (axis 0: x, 1: y) moved to `to`, kept at least a sliver wide.
+fn sash_follow(p: Pane, axis: u8, from: f32, to: f32) -> Pane {
+    let eps = 0.004;
+    let min = DockGrid::MIN;
+    let mut q = p;
+    if axis == 0 {
+        if (p.x0 - from).abs() <= eps {
+            q.x0 = to.min(q.x1 - min).max(0.0);
+        }
+        if (p.x1 - from).abs() <= eps {
+            q.x1 = to.max(q.x0 + min).min(1.0);
+        }
+    } else {
+        if (p.y0 - from).abs() <= eps {
+            q.y0 = to.min(q.y1 - min).max(0.0);
+        }
+        if (p.y1 - from).abs() <= eps {
+            q.y1 = to.max(q.y0 + min).min(1.0);
+        }
+    }
+    q
 }
 
 /// While a title is dragged: the grid, faint, and a target for every block a card can fill
@@ -2033,7 +2076,7 @@ pub(super) fn floating_card(
         let cur = grid.clamp(*d);
         let (fx, fy) = (grid.snap_x(pointer.x), grid.snap_y(pointer.y));
         let min = DockGrid::MIN;
-        *d = match side {
+        let next = match side {
             0 => Pane {
                 x0: fx.min(cur.x1 - min),
                 ..cur
@@ -2056,6 +2099,17 @@ pub(super) fn floating_card(
                 ..cur
             },
         };
+        for (axis, from, to) in [
+            (0u8, cur.x0, next.x0),
+            (0, cur.x1, next.x1),
+            (1, cur.y0, next.y0),
+            (1, cur.y1, next.y1),
+        ] {
+            if (from - to).abs() > 1e-6 {
+                out.sash.push((axis, from, to));
+            }
+        }
+        *d = next;
     }
     out
 }
@@ -2154,7 +2208,7 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store, settings: &mut Settings) -
         },
     );
     store.reply_query = query;
-    end_card(store, settings, "reply-card", cs, dock);
+    end_card(store, settings, "reply-card", cs, dock, &out.sash);
     if out.toggle_max {
         store.reply_max = !store.reply_max;
     }
@@ -2365,7 +2419,7 @@ fn draw_terminal(
         store.terminal_open = None;
     }
     store.terminal_query = query;
-    end_card(store, settings, "terminal-card", cs, dock);
+    end_card(store, settings, "terminal-card", cs, dock, &out.sash);
     if out.toggle_max {
         store.terminal_max = !store.terminal_max;
     }
@@ -2759,7 +2813,7 @@ fn draw_turn_card(
     store.expanded_calls = expanded;
     store.turn_query = query;
     store.turn_tab = tab;
-    end_card(store, settings, "turn-card", cs, dock);
+    end_card(store, settings, "turn-card", cs, dock, &out.sash);
     if out.toggle_max {
         store.turn_max = !store.turn_max;
     }
@@ -4708,5 +4762,35 @@ mod dock_tests {
             "far from a line stays free"
         );
         assert!((grid.snap_y(455.0) - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_shared_edge_moves_the_neighbour() {
+        // files on the left quarter, editor beside it: shrinking files grows the editor
+        let editor = Pane {
+            x0: 0.25,
+            y0: 0.0,
+            x1: 0.5,
+            y1: 1.0,
+        };
+        let moved = sash_follow(editor, 0, 0.25, 0.15);
+        assert!((moved.x0 - 0.15).abs() < 1e-6 && (moved.x1 - 0.5).abs() < 1e-6);
+        // an edge on a different line is left alone
+        let other = Pane {
+            x0: 0.5,
+            y0: 0.0,
+            x1: 0.75,
+            y1: 1.0,
+        };
+        assert_eq!(sash_follow(other, 0, 0.25, 0.15), other);
+        // a neighbour never collapses past a sliver
+        let thin = Pane {
+            x0: 0.25,
+            y0: 0.0,
+            x1: 0.3,
+            y1: 1.0,
+        };
+        let pushed = sash_follow(thin, 0, 0.25, 0.29);
+        assert!(pushed.x1 - pushed.x0 >= DockGrid::MIN - 1e-6);
     }
 }

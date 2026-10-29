@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.21.2 - 2026-10-29
+- Docked panes share their edges like editor groups: drag the edge between two panes and both follow, so shrinking the files pane hands the space to the editor beside it. Every pane on that line moves, and none drops below a sliver.
+
 ## 0.21.1 - 2026-10-29
 - The editor surface was never created: the host looked the window up through a registry this Bevy build does not expose. It now takes the window's raw handle from the window entity. The first open downloads Monaco, which can take a while; the page reports boot, libraries and errors into the log.
 - Docked cards resize freely: drag any edge or the bottom-right corner; it snaps when within a few pixels of a grid line and lands wherever you leave it otherwise. Dock targets still give quarters, halves and whole monitors as starting shapes. Pane positions are saved as fractions of the dock area.

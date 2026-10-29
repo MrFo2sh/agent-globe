@@ -206,7 +206,7 @@ pub fn draw_files_card(
         },
     );
     store.files_query = query;
-    end_card(store, settings, "files-card", cs, dock);
+    end_card(store, settings, "files-card", cs, dock, &out.sash);
     if refresh {
         index.ensure(&cwd, true);
     }
@@ -336,7 +336,7 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
             surface = Some(rect);
         },
     );
-    end_card(store, settings, "editor-card", cs, dock);
+    end_card(store, settings, "editor-card", cs, dock, &out.sash);
     store.webview_rect = surface
         .filter(|_| !docs.is_empty())
         .map(|r| [r.min.x * ppp, r.min.y * ppp, r.width() * ppp, r.height() * ppp]);
