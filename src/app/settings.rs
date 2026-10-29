@@ -35,6 +35,8 @@ pub struct Settings {
     pub compact: bool,
     /// Windows notifications when the window is not focused (off by default: the radio is the alert).
     pub desktop_notifications: bool,
+    /// Native window title bar in windowed mode (off: the app draws its own chrome).
+    pub title_bar: bool,
 }
 
 impl Default for Settings {
@@ -58,6 +60,7 @@ impl Default for Settings {
             files_ring: true,
             compact: false,
             desktop_notifications: false,
+            title_bar: false,
         }
     }
 }

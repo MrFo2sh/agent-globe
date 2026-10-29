@@ -23,7 +23,7 @@ Put VS Code with your agent on one screen and this on the other.
 - Radio: twenty spoken lines that let you follow a session by ear, from "Scouting ahead" to
   "We have casualties!" and "Need your input, commander". Settings list what each one means.
 - Approvals from the globe (PreToolUse hook) with global Ctrl+Alt+Y / Ctrl+Alt+N hotkeys; 🖥 jumps
-  to the session's VS Code window; radio voice lines, badges, progress rings, debrief coach.
+  to the session's VS Code window; radio voice lines, badges, progress rings, integrated terminal.
 
 New to Rust or to this codebase? Read [docs/COURSE.md](docs/COURSE.md): a short course on the
 project with diagrams and the code it quotes.
@@ -124,8 +124,10 @@ curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo"
 - **Cost.** Session spend in the HUD from token counts and list prices; per-unit cost in the
   panel; a budget alarm in settings.
 - **Git.** Branch and uncommitted-change count of the session's folder in the HUD.
+- **Terminal (⌨).** A persistent PowerShell in the session's folder, inside the app: Enter runs,
+  ↑ ↓ history, ⟲ restart. Right-click for a native window instead.
 
-## Radio, narrator, alarms, debrief
+## Radio, narrator, alarms
 
 - **Radio.** Voice lines on prompt received, unit deployed, mission accomplished, taking fire,
   construction complete, stall and loop. Mute and volume in ⚙ settings. Replace any line with your
@@ -139,8 +141,6 @@ curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo"
   settings.
 - **Alarms.** Same command three times, a call open for two minutes, or context near the model's
   limit: toast, sound, and the unit turns amber.
-- **Debrief (🎖).** Where the session's time went, what failed, and coaching lines based on the
-  evidence: reads before the first edit, retried commands, context peaks, missing delegation.
 - **Glossary.** Hover any counter for what it means.
 
 ## Layout

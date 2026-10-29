@@ -2,7 +2,6 @@
 
 mod alerts;
 mod camera;
-mod debrief;
 mod gitinfo;
 mod hotkeys;
 mod probe;
@@ -11,6 +10,7 @@ mod servers;
 mod settings;
 mod sounds;
 mod state;
+mod terminal;
 mod theme;
 mod ui;
 mod usage;
@@ -46,6 +46,8 @@ pub fn run(cfg: Config) {
             primary_window: Some(Window {
                 title: "Agent Globe".into(),
                 resolution: (1400, 860).into(),
+                // No native title bar: the app draws its own chrome; F11 toggles full screen.
+                decorations: false,
                 ..default()
             }),
             ..default()
@@ -70,6 +72,7 @@ pub fn run(cfg: Config) {
         .init_resource::<camera::CameraState>()
         .init_resource::<probe::Probe>()
         .init_resource::<servers::ServerWatch>()
+        .init_resource::<terminal::Terminals>()
         .init_resource::<gitinfo::GitWatch>()
         .insert_resource(hotkeys::start())
         .add_systems(Startup, (camera::setup, scene::setup, sounds::setup, alerts::setup))
@@ -106,6 +109,7 @@ pub fn run(cfg: Config) {
                     settings::persist,
                     maximize_window,
                     toggle_fullscreen,
+                    apply_title_bar,
                     zoom_keys,
                     window_icon,
                 )
@@ -140,6 +144,18 @@ fn toggle_fullscreen(keys: Res<ButtonInput<KeyCode>>, mut windows: Query<&mut Wi
             WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
             _ => WindowMode::Windowed,
         };
+    }
+}
+
+/// The "title bar" setting drives the native window decorations.
+fn apply_title_bar(settings: Res<settings::Settings>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
+    if !settings.is_changed() {
+        return;
+    }
+    for mut w in &mut windows {
+        if w.decorations != settings.title_bar {
+            w.decorations = settings.title_bar;
+        }
     }
 }
 

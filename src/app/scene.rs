@@ -2,11 +2,12 @@
 //! tracer rounds while a call runs, sand dust, a night sky.
 
 use super::settings::Settings;
+use super::sounds::Sfx;
 use super::state::Store;
 use super::theme;
 use agent_globe::data::files::{self, FileStat};
 use agent_globe::data::layout::{self, Layout};
-use agent_globe::data::model::{Status, now_millis};
+use agent_globe::data::model::{ROOT_AGENT, Status, now_millis};
 use bevy::picking::events::{PointerClick, PointerOut, PointerOver};
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -1146,6 +1147,9 @@ fn on_click(ev: On<PointerClick>, nodes: Query<&NodeAgent>, mut store: ResMut<St
         store.acked.insert(format!("done:{}:{}", n.session, n.id));
         store.acked.insert(format!("err:{}:{}", n.session, n.id));
         if store.current.as_deref() == Some(n.session.as_str()) {
+            if n.id == ROOT_AGENT && store.selected.as_deref() != Some(n.id.as_str()) {
+                store.play(Sfx::Select);
+            }
             store.selected = Some(n.id.clone());
         } else {
             // Another constellation: go there first; nothing is selected until you click again.

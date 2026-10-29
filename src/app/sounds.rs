@@ -41,10 +41,12 @@ pub enum Sfx {
     Authorize,
     Supplies,
     Ammo,
+    /// You clicked the commander.
+    Select,
 }
 
 impl Sfx {
-    pub const ALL: [Sfx; 23] = [
+    pub const ALL: [Sfx; 24] = [
         Sfx::Prompt,
         Sfx::Spawn,
         Sfx::Done,
@@ -68,6 +70,7 @@ impl Sfx {
         Sfx::Authorize,
         Sfx::Supplies,
         Sfx::Ammo,
+        Sfx::Select,
     ];
 
     pub fn name(self) -> &'static str {
@@ -95,6 +98,7 @@ impl Sfx {
             Sfx::Authorize => "authorize",
             Sfx::Supplies => "supplies",
             Sfx::Ammo => "ammo",
+            Sfx::Select => "yes",
         }
     }
 
@@ -124,6 +128,7 @@ impl Sfx {
             Sfx::Authorize => "Requesting authorization.",
             Sfx::Supplies => "Running low on supplies.",
             Sfx::Ammo => "We are out of ammo, sir.",
+            Sfx::Select => "Yes, commander!",
         }
     }
 
@@ -152,6 +157,7 @@ impl Sfx {
             Sfx::Authorize => include_bytes!("../../assets/sounds/authorize.wav"),
             Sfx::Supplies => include_bytes!("../../assets/sounds/supplies.wav"),
             Sfx::Ammo => include_bytes!("../../assets/sounds/ammo.wav"),
+            Sfx::Select => include_bytes!("../../assets/sounds/yes.wav"),
         }
     }
 
@@ -171,6 +177,7 @@ impl Sfx {
             Sfx::Authorize => 3.0,
             Sfx::Supplies => 60.0,
             Sfx::Ammo => 60.0,
+            Sfx::Select => 0.8,
             _ => 2.5,
         }
     }
@@ -206,6 +213,7 @@ impl Sfx {
             Sfx::Authorize => "a tool call waits for your yes or no",
             Sfx::Supplies => "context near the model's limit",
             Sfx::Ammo => "the plan's five-hour limit was hit",
+            Sfx::Select => "you clicked the commander",
         }
     }
 }

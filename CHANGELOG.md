@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.16.0 - 2026-10-29
+- Integrated terminal: the HUD's ⌨ opens a persistent PowerShell in the session's folder, inside the app. Enter runs a line, ↑ ↓ walk the history, cd and variables stick between commands, errors show inline, ⟲ restarts the shell, 🗑 clears, ⧉ copies. Right-click ⌨ still opens a native window. One shell per session; closed shells end with the app.
+- One card chrome for the reply, the terminal and settings: drag to move, drag the corner to resize, ⛶ to fill the screen, Esc to close. Cards sit above the badges and file labels; badges under a card are not drawn.
+- No native title bar: the app is all chrome. A "native title bar" switch in settings brings Windows' bar back in windowed mode.
+- "Yes, commander!" when you click the commander.
+- Scene shortcuts (R, Esc) stay quiet while you type in a text field.
+- Removed the debrief window and its button.
+
 ## 0.15.0 - 2026-10-29
 - Ctrl and + / - scale the whole UI in steps of ten percent, Ctrl 0 resets; the same setting as the ui scale slider, remembered across runs.
 - The reply card can fill the screen (the full button, restore to go back) or be resized by dragging its bottom-right corner; the size is remembered.

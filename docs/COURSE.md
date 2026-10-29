@@ -242,7 +242,7 @@ src/
     ├── camera.rs      orbit camera, fly-to
     ├── ui.rs          every egui panel
     ├── sounds.rs      radio lines
-    ├── hotkeys.rs, winjump.rs, usage.rs, gitinfo.rs, probe.rs, debrief.rs, settings.rs, theme.rs
+    ├── hotkeys.rs, winjump.rs, usage.rs, gitinfo.rs, probe.rs, terminal.rs, settings.rs, theme.rs
 ```
 
 The split matters: `data/` has no idea Bevy exists, so its tests run in milliseconds and most

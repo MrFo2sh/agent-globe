@@ -23,12 +23,12 @@ running app themselves while you work: odd clicks in screenshots may be theirs.
 | `src/app/state.rs` | `Store` resource: sessions, watched set, attention queue, badges, approvals, viewer, queries; `drain_bridge`, `watch_stalls`, pattern alarms, radio triggers (`call_kind`). No cost anywhere: the owner asked for it to go. |
 | `src/app/scene.rs` | 3D: units keyed by (session, agent), rings, satellites, halos, dust, file ring, beams, badge projection, click/hover observers. |
 | `src/app/camera.rs` | HDR orbit camera, viewport between panels, fly-to, Esc handling. |
-| `src/app/ui.rs` | All egui: HUD, sidebar (Needs-You queue, sessions tree, compact strip), unit panel (artifact shelf, changes, turns, history search), hover cards, settings, debrief, badges, bubbles, approvals, image viewer (images only; other files open in VS Code), file labels. ~2,500 lines; search for `fn draw_` and `fn agent_panel`. |
+| `src/app/ui.rs` | All egui: HUD, sidebar (Needs-You queue, sessions tree, compact strip), unit panel (artifact shelf, changes, turns, history search), hover cards, settings, terminal, badges, bubbles, approvals, image viewer (images only; other files open in VS Code), file labels. ~2,500 lines; search for `fn draw_` and `fn agent_panel`. |
 | `src/app/sounds.rs` | Radio voice lines (embedded WAVs), own rodio sink with device picker. |
 | `src/app/alerts.rs` | Tray icon moods, optional Windows toasts. |
 | `src/app/hotkeys.rs` | Global Ctrl+Alt+Y / Ctrl+Alt+N approval hotkeys (Win32 `RegisterHotKey` on its own thread). |
 | `src/app/winjump.rs` | Bring a session's VS Code window to front by title (skips our own process: asking our window for its title deadlocks). |
-| `src/app/gitinfo.rs`, `probe.rs`, `debrief.rs`, `settings.rs`, `theme.rs` | git branch/dirty/changes, URL liveness, after-action report, persisted settings (`%APPDATA%/agent-globe/settings.json`), palette and tuning constants. |
+| `src/app/gitinfo.rs`, `probe.rs`, `terminal.rs`, `settings.rs`, `theme.rs` | git branch/dirty/changes, URL liveness, integrated PowerShell per session, persisted settings (`%APPDATA%/agent-globe/settings.json`), palette and tuning constants. |
 
 Data flow: files/hooks → `bridge` threads → `ToApp` channel → `drain_bridge` applies events to
 `Store.sessions` → `scene` syncs entities from the store each frame → `ui::draw` reads the store.

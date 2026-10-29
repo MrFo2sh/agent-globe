@@ -1,14 +1,14 @@
 //! egui layer: HUD (top), sessions (left), selected agent (right), status (bottom), toasts,
-//! hover card, settings and debrief windows. Reports whether the pointer is over any of these so
+//! hover card, settings and terminal cards. Reports whether the pointer is over any of these so
 //! the camera can ignore input that belongs to the UI.
 
-use super::debrief;
 use super::gitinfo::{FileChange, GitInfo, GitWatch};
 use super::probe::Probe;
 use super::servers::{self, ServerWatch, Snapshot};
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
 use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer, clock_hm};
+use super::terminal::{LineKind, Terminals};
 use super::theme;
 use super::usage::{self, UsageState, UsageWatch};
 use super::winjump;
@@ -144,6 +144,7 @@ pub fn draw(
     gitw: Res<GitWatch>,
     usage: Res<UsageWatch>,
     serverw: Res<ServerWatch>,
+    mut terms: ResMut<Terminals>,
     mut images: Local<HashMap<String, Option<egui::TextureHandle>>>,
     mut styled: Local<bool>,
     mut last_scale: Local<f32>,
@@ -159,6 +160,7 @@ pub fn draw(
         *last_scale = settings.ui_scale;
     }
     let now = now_millis();
+    store.typing = ctx.memory(|m| m.focused().is_some());
     let compact = settings.compact || ctx.viewport_rect().width() < 1100.0;
     if let Some(s) = store.current_session() {
         gitw.watch(&s.cwd);
@@ -192,7 +194,10 @@ pub fn draw(
         draw_files(ctx, &mut store);
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
         draw_viewer(ctx, &mut store, &mut images);
-        draw_reply(ctx, &mut store);
+        let mut cards: Vec<egui::Rect> = Vec::new();
+        cards.extend(draw_reply(ctx, &mut store));
+        cards.extend(draw_terminal(ctx, &mut store, &mut terms));
+        store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
         draw_toasts(ctx, &store);
         return Ok(());
     }
@@ -208,12 +213,12 @@ pub fn draw(
 
     // ---- top: HUD ----
     let mut toggle_settings = false;
-    let mut toggle_debrief = false;
     let mut go_home = false;
     let mut cinematic = false;
     let mut toggle_sound = false;
     let mut toggle_usage = false;
     let mut pick_root = false;
+    let mut open_term: Option<String> = None;
     let usage_state = usage.snapshot();
     let hud = egui::Panel::top("hud").show(&mut root, |ui| {
         ui.add_space(4.0);
@@ -248,13 +253,16 @@ pub fn draw(
                     if jump_button(ui).clicked() {
                         jump = Some(winjump::needle_for(&s.cwd, &s.project));
                     }
-                    if !s.cwd.is_empty()
-                        && ui
-                            .small_button("⌨")
-                            .on_hover_text(format!("Open a terminal in {}", s.cwd))
-                            .clicked()
-                    {
-                        open_terminal(&s.cwd);
+                    if !s.cwd.is_empty() {
+                        let r = ui.small_button("⌨").on_hover_text(format!(
+                            "Terminal in {}\nright-click: a native window instead",
+                            s.cwd
+                        ));
+                        if r.clicked() {
+                            open_term = Some(s.id.clone());
+                        } else if r.secondary_clicked() {
+                            open_terminal(&s.cwd);
+                        }
                     }
                     ui.separator();
                     tip(
@@ -314,13 +322,6 @@ pub fn draw(
                 if ui.button(icon).on_hover_text("Mute / unmute the radio").clicked() {
                     toggle_sound = true;
                 }
-                if ui
-                    .button(egui::RichText::new("🎖 debrief").color(SAND))
-                    .on_hover_text("After-action report: where the time went and what to do better next prompt.")
-                    .clicked()
-                {
-                    toggle_debrief = true;
-                }
                 // Servers this session is running right now.
                 if alive_servers > 0 {
                     ui.separator();
@@ -338,7 +339,7 @@ pub fn draw(
                         pick_root = true;
                     }
                 }
-                // Plan usage, left of the debrief button: the same numbers the editor shows.
+                // Plan usage: the same numbers the editor shows.
                 ui.separator();
                 match &usage_state {
                     Some(UsageState::Ready(u)) => {
@@ -390,14 +391,18 @@ pub fn draw(
     if toggle_settings {
         store.show_settings = !store.show_settings;
     }
-    if toggle_debrief {
-        store.show_debrief = !store.show_debrief;
-    }
     if toggle_usage {
         store.show_usage = !store.show_usage;
     }
     if pick_root {
         store.selected = Some(ROOT_AGENT.to_string());
+    }
+    if let Some(sid) = open_term {
+        store.terminal_open = if store.terminal_open.as_deref() == Some(sid.as_str()) {
+            None
+        } else {
+            Some(sid)
+        };
     }
     if go_home {
         store.selected = None;
@@ -827,14 +832,30 @@ pub fn draw(
             });
     }
 
-    // ---- settings window ----
+    // ---- settings card ----
+    let mut settings_rect: Option<egui::Rect> = None;
     if store.show_settings {
-        let mut open = true;
-        let win = egui::Window::new("⚙ settings")
-            .open(&mut open)
-            .resizable(false)
-            .default_pos(egui::pos2(260.0, 80.0))
-            .show(ctx, |ui| {
+        let maxed = store.settings_max;
+        let out = floating_card(
+            ctx,
+            "settings-card",
+            maxed,
+            egui::pos2(260.0, 80.0),
+            egui::vec2(440.0, 600.0),
+            |ui, out| {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("⚙").size(16.0));
+                    ui.label(egui::RichText::new("settings").font(stencil(14.0)).color(SAND));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        card_buttons(ui, maxed, out);
+                    });
+                });
+                ui.separator();
+                egui::ScrollArea::vertical()
+                    .id_salt("settings-scroll")
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                ui.set_min_width(ui.available_width() - 8.0);
                 ui.label(egui::RichText::new("RADIO").small().color(DIM));
                 ui.checkbox(&mut settings.sound, "sound on");
                 ui.add(egui::Slider::new(&mut settings.volume, 0.0..=1.0).text("volume"));
@@ -909,6 +930,8 @@ pub fn draw(
                 ui.add(egui::Slider::new(&mut settings.bloom, 0.0..=0.6).text("bloom"));
                 ui.add(egui::Slider::new(&mut settings.ui_scale, 0.6..=1.8).text("ui scale"));
                 ui.checkbox(&mut settings.scanlines, "CRT scanlines");
+                ui.checkbox(&mut settings.title_bar, "native title bar")
+                    .on_hover_text("Windows' own title bar in windowed mode (F11 leaves full screen). Off: the app is all chrome.");
                 ui.checkbox(&mut settings.narrator, "narrator line under each call");
                 ui.checkbox(&mut settings.progress_rings, "progress rings and hints under units");
                 ui.checkbox(
@@ -952,11 +975,17 @@ pub fn draw(
                             .color(DIM),
                     );
                 });
-            });
-        if let Some(w) = win {
-            ui_rects.push(w.response.rect);
+                    });
+            },
+        );
+        settings_rect = out.rect;
+        if let Some(r) = out.rect {
+            ui_rects.push(r);
         }
-        if !open {
+        if out.toggle_max {
+            store.settings_max = !store.settings_max;
+        }
+        if out.close {
             store.show_settings = false;
         }
     }
@@ -1029,67 +1058,6 @@ pub fn draw(
         }
     }
 
-    // ---- debrief window ----
-    if store.show_debrief {
-        let mut open = true;
-        let report = store.current_session().map(debrief::report);
-        let win = egui::Window::new("🎖 debrief")
-            .open(&mut open)
-            .resizable(true)
-            .default_width(520.0)
-            .default_pos(egui::pos2(300.0, 90.0))
-            .show(ctx, |ui| match report {
-                None => {
-                    ui.label(egui::RichText::new("no session open").color(DIM));
-                }
-                Some(r) => {
-                    ui.label(
-                        egui::RichText::new("AFTER-ACTION REPORT")
-                            .font(stencil(16.0))
-                            .color(SAND),
-                    );
-                    ui.add_space(4.0);
-                    egui::Grid::new("debrief-rows")
-                        .num_columns(2)
-                        .spacing([18.0, 2.0])
-                        .show(ui, |ui| {
-                            for (k, v) in &r.rows {
-                                ui.label(egui::RichText::new(k).color(DIM));
-                                ui.label(egui::RichText::new(v).monospace());
-                                ui.end_row();
-                            }
-                        });
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("WHERE THE TIME WENT").small().color(DIM));
-                    for (cat, share, n) in &r.shares {
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::ProgressBar::new(*share)
-                                    .desired_width(180.0)
-                                    .fill(egui::Color32::from_rgb(60, 110, 40))
-                                    .text(egui::RichText::new(format!("{:.0}%", share * 100.0)).small()),
-                            );
-                            ui.label(egui::RichText::new(format!("{}  ({n} calls)", cat.label())).small());
-                        });
-                    }
-                    ui.add_space(6.0);
-                    ui.label(egui::RichText::new("COACH").small().color(DIM));
-                    for t in &r.tips {
-                        ui.horizontal_wrapped(|ui| {
-                            ui.label(egui::RichText::new("▸").color(SAND));
-                            ui.label(egui::RichText::new(t).color(TEXT));
-                        });
-                    }
-                }
-            });
-        if let Some(w) = win {
-            ui_rects.push(w.response.rect);
-        }
-        if !open {
-            store.show_debrief = false;
-        }
-    }
-
     draw_badges(ctx, &mut store);
     draw_progress(ctx, &store, &settings, now);
     draw_satellites(ctx, &mut store, now);
@@ -1104,7 +1072,12 @@ pub fn draw(
     if let Some(rect) = draw_approvals(ctx, &mut store, &bridge.0, inset_top) {
         ui_rects.push(rect);
     }
-    draw_reply(ctx, &mut store);
+    let mut cards: Vec<egui::Rect> = Vec::new();
+    cards.extend(draw_reply(ctx, &mut store));
+    cards.extend(draw_terminal(ctx, &mut store, &mut terms));
+    cards.extend(settings_rect);
+    store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
+    ui_rects.extend(cards);
     draw_toasts(ctx, &store);
 
     store.scene_insets = Some((inset_left, inset_top, inset_right, inset_bottom));
@@ -1362,6 +1335,13 @@ fn draw_badges(ctx: &egui::Context, store: &mut Store) {
         if !scene.contains(egui::pos2(b.x, b.y)) {
             continue;
         }
+        if store
+            .card_rects
+            .iter()
+            .any(|r| b.x >= r[0] && b.x <= r[2] && b.y >= r[1] && b.y <= r[3])
+        {
+            continue;
+        }
         let (glyph, color, label) = badge_style(b.kind);
         let question = if b.kind == BadgeKind::Waiting {
             store
@@ -1422,39 +1402,39 @@ fn draw_badges(ctx: &egui::Context, store: &mut Store) {
 }
 
 /// The reply card: the commander's last message, the one the editor shows as its answer, with
-/// light Markdown. Opened from the 💬 badge; Esc, ✕ or the badge again closes it.
-fn draw_reply(ctx: &egui::Context, store: &mut Store) {
-    let Some((sid, aid)) = store.reply_open.clone() else {
-        return;
-    };
-    let Some(agent) = store.sessions.get(&sid).and_then(|s| s.agent(&aid)).cloned() else {
-        store.reply_open = None;
-        return;
-    };
-    let project = store.sessions.get(&sid).map(|s| s.project.clone()).unwrap_or_default();
-    let anchor = store
-        .badges
-        .iter()
-        .find(|b| b.session_id == sid && b.agent_id == aid)
-        .map(|b| egui::pos2(b.x + 28.0, b.y - 20.0));
+/// What a floating card reports back: header buttons pressed, and where it ended up on screen.
+struct CardOut {
+    close: bool,
+    toggle_max: bool,
+    rect: Option<egui::Rect>,
+}
+
+/// The chrome shared by the reply and terminal cards: a Tooltip-order area (above the badges
+/// and file labels), solid frame, drag to move and a corner to resize when floating, or pinned
+/// to fill the screen.
+fn floating_card(
+    ctx: &egui::Context,
+    id: &str,
+    maxed: bool,
+    default_pos: egui::Pos2,
+    default_size: egui::Vec2,
+    body: impl FnOnce(&mut egui::Ui, &mut CardOut),
+) -> CardOut {
     let vr = ctx.viewport_rect();
-    let mut close = false;
-    let mut toggle_max = false;
-    let maxed = store.reply_max;
-    let width = (vr.width() * 0.38).clamp(380.0, 640.0);
-    let height = (vr.height() * 0.45).clamp(220.0, 520.0);
-    let default_pos = anchor.unwrap_or_else(|| vr.center() - egui::vec2(width / 2.0, height / 2.0));
-    // Maximised: pinned to the screen with a margin. Floating: movable, with a drag corner to resize.
     let margin = 16.0;
     let max_size = vr.size() - egui::vec2(2.0 * margin + 24.0, 2.0 * margin + 24.0);
-    // A Foreground area, drawn last, so the badges and file labels (also Foreground) stay behind it.
-    let area = egui::Area::new(egui::Id::new("reply-card")).order(egui::Order::Foreground);
+    let mut out = CardOut {
+        close: false,
+        toggle_max: false,
+        rect: None,
+    };
+    let area = egui::Area::new(egui::Id::new(id)).order(egui::Order::Tooltip);
     let area = if maxed {
         area.fixed_pos(vr.min + egui::vec2(margin, margin)).movable(false)
     } else {
         area.default_pos(default_pos).movable(true).constrain(true)
     };
-    area.show(ctx, |ui| {
+    let resp = area.show(ctx, |ui| {
         egui::Frame::NONE
             .fill(egui::Color32::from_rgb(6, 12, 5))
             .stroke(egui::Stroke::new(1.5, ACCENT))
@@ -1467,74 +1447,258 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) {
             .inner_margin(12.0)
             .corner_radius(8.0)
             .show(ui, |ui| {
-                let body = |ui: &mut egui::Ui, close: &mut bool, toggle_max: &mut bool| {
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new("💬").size(16.0));
-                        ui.label(
-                            egui::RichText::new(format!("{project} · {}", agent_title(&agent)))
-                                .font(stencil(14.0))
-                                .color(SAND),
-                        );
-                        ui.label(
-                            egui::RichText::new(clock(agent.last_activity))
-                                .small()
-                                .monospace()
-                                .color(DIM),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("✕  (Esc)").clicked() {
-                                *close = true;
-                            }
-                            if ui
-                                .small_button(if maxed { "🗗 restore" } else { "⛶ full" })
-                                .on_hover_text(if maxed {
-                                    "Back to the floating card"
-                                } else {
-                                    "Fill the screen (or drag the bottom-right corner to resize)"
-                                })
-                                .clicked()
-                            {
-                                *toggle_max = true;
-                            }
-                            if ui
-                                .small_button("⧉ copy")
-                                .on_hover_text("Copy the whole reply")
-                                .clicked()
-                            {
-                                ctx.copy_text(agent.last_said.clone());
-                            }
-                        });
-                    });
-                    ui.separator();
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                        ui.set_min_width(ui.available_width() - 8.0);
-                        if agent.last_said.trim().is_empty() {
-                            ui.label(egui::RichText::new("nothing said yet").color(DIM));
-                        } else {
-                            render_reply(ui, &agent.last_said);
-                        }
-                    });
-                };
                 if maxed {
                     ui.set_width(max_size.x);
                     ui.set_height(max_size.y);
-                    body(ui, &mut close, &mut toggle_max);
+                    body(ui, &mut out);
                 } else {
                     egui::Resize::default()
-                        .id_salt("reply-size")
-                        .default_size(egui::vec2(width, height))
+                        .id_salt((id, "size"))
+                        .default_size(default_size)
                         .min_size(egui::vec2(320.0, 160.0))
                         .max_size(max_size)
-                        .show(ui, |ui| body(ui, &mut close, &mut toggle_max));
+                        .show(ui, |ui| body(ui, &mut out));
                 }
             });
     });
-    if toggle_max {
+    out.rect = Some(resp.response.rect);
+    out
+}
+
+/// ✕ and ⛶ for a card header. Call inside a right-to-left layout, before the card's own buttons.
+fn card_buttons(ui: &mut egui::Ui, maxed: bool, out: &mut CardOut) {
+    if ui.small_button("✕  (Esc)").clicked() {
+        out.close = true;
+    }
+    if ui
+        .small_button(if maxed { "🗗 restore" } else { "⛶ full" })
+        .on_hover_text(if maxed {
+            "Back to the floating card"
+        } else {
+            "Fill the screen (or drag the bottom-right corner to resize)"
+        })
+        .clicked()
+    {
+        out.toggle_max = true;
+    }
+}
+
+/// The reply card: the commander's last message, the one the editor shows as its answer, with
+/// light Markdown. Opened from the 💬 badge; Esc, ✕ or the badge again closes it.
+fn draw_reply(ctx: &egui::Context, store: &mut Store) -> Option<egui::Rect> {
+    let (sid, aid) = store.reply_open.clone()?;
+    let Some(agent) = store.sessions.get(&sid).and_then(|s| s.agent(&aid)).cloned() else {
+        store.reply_open = None;
+        return None;
+    };
+    let project = store.sessions.get(&sid).map(|s| s.project.clone()).unwrap_or_default();
+    let anchor = store
+        .badges
+        .iter()
+        .find(|b| b.session_id == sid && b.agent_id == aid)
+        .map(|b| egui::pos2(b.x + 28.0, b.y - 20.0));
+    let vr = ctx.viewport_rect();
+    let width = (vr.width() * 0.38).clamp(380.0, 640.0);
+    let height = (vr.height() * 0.45).clamp(220.0, 520.0);
+    let default_pos = anchor.unwrap_or_else(|| vr.center() - egui::vec2(width / 2.0, height / 2.0));
+    let maxed = store.reply_max;
+    let out = floating_card(
+        ctx,
+        "reply-card",
+        maxed,
+        default_pos,
+        egui::vec2(width, height),
+        |ui, out| {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("💬").size(16.0));
+                ui.label(
+                    egui::RichText::new(format!("{project} · {}", agent_title(&agent)))
+                        .font(stencil(14.0))
+                        .color(SAND),
+                );
+                ui.label(
+                    egui::RichText::new(clock(agent.last_activity))
+                        .small()
+                        .monospace()
+                        .color(DIM),
+                );
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    card_buttons(ui, maxed, out);
+                    if ui
+                        .small_button("⧉ copy")
+                        .on_hover_text("Copy the whole reply")
+                        .clicked()
+                    {
+                        ctx.copy_text(agent.last_said.clone());
+                    }
+                });
+            });
+            ui.separator();
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                ui.set_min_width(ui.available_width() - 8.0);
+                if agent.last_said.trim().is_empty() {
+                    ui.label(egui::RichText::new("nothing said yet").color(DIM));
+                } else {
+                    render_reply(ui, &agent.last_said);
+                }
+            });
+        },
+    );
+    if out.toggle_max {
         store.reply_max = !store.reply_max;
     }
-    if close {
+    if out.close {
         store.reply_open = None;
     }
+    out.rect
+}
+
+/// The integrated terminal: a persistent PowerShell in the session's folder, in the same card as
+/// the reply. Enter runs a line, ↑↓ walk the history, ⟲ restarts the shell.
+fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) -> Option<egui::Rect> {
+    let sid = store.terminal_open.clone()?;
+    let Some((project, cwd)) = store.sessions.get(&sid).map(|s| (s.project.clone(), s.cwd.clone())) else {
+        store.terminal_open = None;
+        return None;
+    };
+    let vr = ctx.viewport_rect();
+    let width = (vr.width() * 0.5).clamp(480.0, 900.0);
+    let height = (vr.height() * 0.45).clamp(240.0, 560.0);
+    let default_pos = egui::pos2(
+        vr.center().x - width / 2.0,
+        (vr.max.y - height - 56.0).max(vr.min.y + 56.0),
+    );
+    let maxed = store.terminal_max;
+    let mut restart = false;
+    let spawn_error = terms.error.clone();
+    let out = floating_card(
+        ctx,
+        "terminal-card",
+        maxed,
+        default_pos,
+        egui::vec2(width, height),
+        |ui, out| {
+            let Some(shell) = terms.get_or_spawn(&sid, &cwd) else {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("⌨").size(16.0));
+                    ui.label(
+                        egui::RichText::new(format!("{project} · terminal"))
+                            .font(stencil(14.0))
+                            .color(SAND),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        card_buttons(ui, maxed, out)
+                    });
+                });
+                ui.separator();
+                ui.label(egui::RichText::new(spawn_error.unwrap_or_default()).color(RED));
+                return;
+            };
+            let busy = shell.is_busy();
+            let dead = shell.is_dead();
+            let now_cwd = shell.cwd();
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("⌨").size(16.0));
+                ui.label(egui::RichText::new(&project).font(stencil(14.0)).color(SAND));
+                ui.add(egui::Label::new(egui::RichText::new(&now_cwd).small().monospace().color(DIM)).truncate());
+                if busy {
+                    ui.spinner();
+                }
+                if dead {
+                    ui.label(egui::RichText::new("shell exited").small().color(RED));
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    card_buttons(ui, maxed, out);
+                    if ui
+                        .small_button("⟲")
+                        .on_hover_text("Restart the shell (ends whatever is running)")
+                        .clicked()
+                    {
+                        restart = true;
+                    }
+                    if ui.small_button("🗑").on_hover_text("Clear the screen").clicked() {
+                        shell.clear();
+                    }
+                    if ui.small_button("⧉").on_hover_text("Copy everything").clicked() {
+                        let all: Vec<String> = shell.snapshot().into_iter().map(|l| l.text).collect();
+                        ctx.copy_text(all.join("\n"));
+                    }
+                });
+            });
+            ui.separator();
+            let input_h = ui.spacing().interact_size.y + 12.0;
+            let lines = shell.snapshot();
+            let avail = (ui.available_height() - input_h).max(60.0);
+            egui::ScrollArea::vertical()
+                .id_salt("terminal-scroll")
+                .auto_shrink([false, false])
+                .max_height(avail)
+                .stick_to_bottom(true)
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width() - 8.0);
+                    let start = lines.len().saturating_sub(1500);
+                    for l in &lines[start..] {
+                        let rt = match l.kind {
+                            LineKind::Cmd => egui::RichText::new(&l.text).monospace().color(SAND).strong(),
+                            LineKind::Out => egui::RichText::new(&l.text).monospace().color(TEXT),
+                            LineKind::Note => egui::RichText::new(&l.text).monospace().small().color(DIM),
+                        };
+                        ui.add(egui::Label::new(rt).selectable(true).wrap());
+                    }
+                });
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("❯").monospace().color(ACCENT));
+                let hint = if busy {
+                    "running… Enter queues the next command"
+                } else {
+                    "command · Enter runs · ↑ ↓ history"
+                };
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut shell.input)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(f32::INFINITY)
+                        .hint_text(hint)
+                        .lock_focus(true),
+                );
+                if shell.want_focus {
+                    resp.request_focus();
+                    shell.want_focus = false;
+                }
+                if resp.has_focus() {
+                    let (up, down) = ctx.input(|i| {
+                        let hit = |k: egui::Key| {
+                            i.raw
+                                .events
+                                .iter()
+                                .any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if *key == k))
+                        };
+                        (hit(egui::Key::ArrowUp), hit(egui::Key::ArrowDown))
+                    });
+                    if up {
+                        shell.recall(-1);
+                    }
+                    if down {
+                        shell.recall(1);
+                    }
+                }
+                if resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    let cmd = std::mem::take(&mut shell.input);
+                    shell.run(&cmd);
+                    shell.want_focus = true;
+                }
+            });
+        },
+    );
+    if restart {
+        terms.restart(&sid, &cwd);
+    }
+    if out.toggle_max {
+        store.terminal_max = !store.terminal_max;
+    }
+    if out.close {
+        store.terminal_open = None;
+    }
+    out.rect
 }
 
 /// Light Markdown for replies: headings, bullets, numbered lists, fenced code, inline code, bold.

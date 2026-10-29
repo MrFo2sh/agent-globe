@@ -144,14 +144,18 @@ pub fn drive(
     }
     cam.enabled = !store.pointer_over_ui;
 
-    if keys.just_pressed(KeyCode::KeyR) || store.reset_view {
+    if (keys.just_pressed(KeyCode::KeyR) && !store.typing) || store.reset_view {
         store.reset_view = false;
         go_home(&mut cam);
         return;
     }
-    if keys.just_pressed(KeyCode::Escape) {
-        if store.reply_open.is_some() {
+    if keys.just_pressed(KeyCode::Escape) && !store.typing {
+        if store.terminal_open.is_some() {
+            store.terminal_open = None;
+        } else if store.reply_open.is_some() {
             store.reply_open = None;
+        } else if store.show_settings {
+            store.show_settings = false;
         } else if store.viewer.is_some() {
             store.viewer = None;
         } else if store.hide_ui {

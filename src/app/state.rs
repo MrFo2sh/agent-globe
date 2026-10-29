@@ -213,7 +213,6 @@ pub struct Store {
     /// True while the mouse is over an egui panel or window; the camera ignores input then.
     pub pointer_over_ui: bool,
     pub show_settings: bool,
-    pub show_debrief: bool,
     /// The plan-usage window (session, weekly, per-model limits).
     pub show_usage: bool,
     /// One-frame request from the "fold all" button: collapse every prompt group.
@@ -222,6 +221,15 @@ pub struct Store {
     pub reply_open: Option<(String, String)>,
     /// The reply card fills the screen (⛶) instead of floating next to the unit.
     pub reply_max: bool,
+    /// The integrated terminal: the session whose shell is open.
+    pub terminal_open: Option<String>,
+    pub terminal_max: bool,
+    pub settings_max: bool,
+    /// An egui text field has the keyboard: scene shortcuts (R, Esc) stay out of the way.
+    pub typing: bool,
+    /// Screen rects of the open cards this frame (min x, min y, max x, max y): badges under
+    /// them are not drawn.
+    pub card_rects: Vec<[f32; 4]>,
     /// A ✕ was clicked once on this pid; a second click within three seconds ends the process.
     pub kill_armed: Option<(u32, std::time::Instant)>,
     /// Container id armed for a kill (first click), like kill_armed but for Docker.
@@ -291,13 +299,17 @@ impl Store {
             layout_dirty: true,
             pointer_over_ui: false,
             show_settings: false,
-            show_debrief: false,
             show_usage: false,
             fold_groups: false,
             kill_armed: None,
             docker_armed: None,
             reply_open: None,
             reply_max: false,
+            terminal_open: None,
+            terminal_max: false,
+            settings_max: false,
+            typing: false,
+            card_rects: Vec::new(),
             hide_ui: false,
             reset_view: false,
             expanded_calls: HashSet::new(),
