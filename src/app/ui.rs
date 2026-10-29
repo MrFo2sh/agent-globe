@@ -667,7 +667,9 @@ pub fn draw(
     let mut history = std::mem::take(&mut store.history_query);
     let mut fold_groups = std::mem::take(&mut store.fold_groups);
     let mut kill_armed = store.kill_armed.take();
+    let mut docker_armed = store.docker_armed.take();
     let mut kill_request: Option<u32> = None;
+    let mut docker_request: Option<(String, String, String)> = None;
     let mut inset_right = 0.0_f32;
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
     *last_panel = selected.as_ref().map(|a| a.id.clone());
@@ -736,7 +738,9 @@ pub fn draw(
                     &mut fold_groups,
                     &servers_snap,
                     &mut kill_armed,
+                    &mut docker_armed,
                     &mut kill_request,
+                    &mut docker_request,
                 );
             });
         inset_right = right.response.rect.width();
@@ -746,10 +750,26 @@ pub fn draw(
     store.history_query = history;
     store.fold_groups = fold_groups;
     store.kill_armed = kill_armed.filter(|(_, at)| at.elapsed().as_secs_f32() < 3.0);
+    store.docker_armed = docker_armed.filter(|(_, at)| at.elapsed().as_secs_f32() < 3.0);
     if let Some(pid) = kill_request {
         let msg = servers::kill(pid);
         store.toast(
             if msg.starts_with('✖') {
+                ToastKind::Warn
+            } else {
+                ToastKind::Error
+            },
+            msg,
+        );
+    }
+    if let Some((verb, id, name)) = docker_request {
+        let ok = matches!(verb.as_str(), "start" | "stop");
+        let msg = servers::docker_action(&verb, &id, &name);
+        let clean = msg.starts_with('▶') || msg.starts_with('⏸') || msg.starts_with('✖');
+        store.toast(
+            if clean && ok {
+                ToastKind::Done
+            } else if clean {
                 ToastKind::Warn
             } else {
                 ToastKind::Error
@@ -1878,7 +1898,9 @@ fn agent_panel(
     fold_all: &mut bool,
     servers: &Snapshot,
     kill_armed: &mut Option<(u32, std::time::Instant)>,
+    docker_armed: &mut Option<(String, std::time::Instant)>,
     kill_request: &mut Option<u32>,
+    docker_request: &mut Option<(String, String, String)>,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -2017,123 +2039,180 @@ fn agent_panel(
     }
     if a.depth == 0 && (!servers.servers.is_empty() || !servers.procs.is_empty()) {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("SERVERS & PROCESSES").small().color(DIM)).on_hover_text(
-            "Servers this session started (from the URLs it printed and the commands it ran) and background processes it spawned. ✕ twice ends a process and everything under it.",
-        );
-        let armed_for = |pid: u32, armed: &Option<(u32, std::time::Instant)>| {
-            armed.is_some_and(|(p, at)| p == pid && at.elapsed().as_secs_f32() < 3.0)
-        };
-        let kill_button = |ui: &mut egui::Ui,
-                           pid: u32,
-                           kill_armed: &mut Option<(u32, std::time::Instant)>,
-                           kill_request: &mut Option<u32>| {
-            let armed = armed_for(pid, kill_armed);
-            let label = if armed {
-                egui::RichText::new("kill?").color(AMBER).strong()
-            } else {
-                egui::RichText::new("✕").color(RED)
-            };
-            if ui
-                .small_button(label)
-                .on_hover_text(if armed {
-                    "Click again to end this process tree"
-                } else {
-                    "End this process (asks once more)"
-                })
-                .clicked()
-            {
-                if armed {
-                    *kill_request = Some(pid);
-                    *kill_armed = None;
-                } else {
-                    *kill_armed = Some((pid, std::time::Instant::now()));
-                }
-            }
-        };
-        for srv in &servers.servers {
-            ui.horizontal(|ui| {
-                let (dot, color) = if srv.alive { ("●", ACCENT) } else { ("○", DIM) };
-                ui.label(egui::RichText::new(dot).color(color));
-                if let Some(t) = &srv.title {
-                    ui.label(egui::RichText::new(t).color(SAND).strong());
-                }
-                let link = ui
-                    .add(
-                        egui::Button::new(egui::RichText::new(&srv.url).monospace().color(if srv.alive {
-                            ACCENT
-                        } else {
-                            DIM
-                        }))
-                        .frame(false),
-                    )
-                    .on_hover_text(if srv.alive {
-                        "open in the browser"
+        let srv_header = egui::RichText::new(format!(
+            "SERVERS & PROCESSES  ·  {} server{}  {} process{}",
+            servers.servers.len(),
+            if servers.servers.len() == 1 { "" } else { "s" },
+            servers.procs.len(),
+            if servers.procs.len() == 1 { "" } else { "es" }
+        ))
+        .small()
+        .color(DIM);
+        egui::CollapsingHeader::new(srv_header)
+            .id_salt((&a.id, "servers"))
+            .default_open(true)
+            .show(ui, |ui| {
+                let armed_for = |pid: u32, armed: &Option<(u32, std::time::Instant)>| {
+                    armed.is_some_and(|(p, at)| p == pid && at.elapsed().as_secs_f32() < 3.0)
+                };
+                let armed_for_str = |id: &str, armed: &Option<(String, std::time::Instant)>| {
+                    armed
+                        .as_ref()
+                        .is_some_and(|(p, at)| p == id && at.elapsed().as_secs_f32() < 3.0)
+                };
+                let kill_button = |ui: &mut egui::Ui,
+                                   pid: u32,
+                                   kill_armed: &mut Option<(u32, std::time::Instant)>,
+                                   kill_request: &mut Option<u32>| {
+                    let armed = armed_for(pid, kill_armed);
+                    let label = if armed {
+                        egui::RichText::new("kill?").color(AMBER).strong()
                     } else {
-                        "not listening right now"
-                    });
-                if link.clicked() {
-                    let u = srv.url.clone();
-                    std::thread::spawn(move || {
-                        let _ = open::that(&u);
-                    });
-                }
-                match srv.pid {
-                    Some(pid) if srv.protected => {
-                        let lower = srv.name.to_ascii_lowercase();
-                        let owner = if lower.contains("docker") || lower.contains("wsl") {
-                            "docker".to_string()
+                        egui::RichText::new("✕").color(RED)
+                    };
+                    if ui
+                        .small_button(label)
+                        .on_hover_text(if armed {
+                            "Click again to end this process tree"
                         } else {
-                            srv.name.clone()
-                        };
-                        ui.label(egui::RichText::new(format!("· {owner} (pid {pid})")).small().color(DIM))
+                            "End this process (asks once more)"
+                        })
+                        .clicked()
+                    {
+                        if armed {
+                            *kill_request = Some(pid);
+                            *kill_armed = None;
+                        } else {
+                            *kill_armed = Some((pid, std::time::Instant::now()));
+                        }
+                    }
+                };
+                for srv in &servers.servers {
+                    ui.horizontal(|ui| {
+                        let (dot, color) = if srv.alive { ("●", ACCENT) } else { ("○", DIM) };
+                        ui.label(egui::RichText::new(dot).color(color));
+                        if let Some(t) = &srv.title {
+                            ui.label(egui::RichText::new(t).color(SAND).strong());
+                        }
+                        let link = ui
+                            .add(
+                                egui::Button::new(egui::RichText::new(&srv.url).monospace().color(if srv.alive {
+                                    ACCENT
+                                } else {
+                                    DIM
+                                }))
+                                .frame(false),
+                            )
+                            .on_hover_text(if srv.alive {
+                                "open in the browser"
+                            } else {
+                                "not listening right now"
+                            });
+                        if link.clicked() {
+                            let u = srv.url.clone();
+                            std::thread::spawn(move || {
+                                let _ = open::that(&u);
+                            });
+                        }
+                        match srv.pid {
+                            Some(_) if srv.container.is_some() => {
+                                let c = srv.container.as_ref().unwrap();
+                                let (dotc, state) = if c.running {
+                                    (ACCENT, "running")
+                                } else {
+                                    (DIM, "stopped")
+                                };
+                                ui.label(
+                                    egui::RichText::new(format!("· 🐳 {} ({state})", c.name))
+                                        .small()
+                                        .color(dotc),
+                                );
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    let armed = armed_for_str(&c.id, docker_armed);
+                                    if armed {
+                                        if ui
+                                            .small_button(egui::RichText::new("kill?").color(AMBER).strong())
+                                            .on_hover_text("Click again to kill the container")
+                                            .clicked()
+                                        {
+                                            *docker_request = Some(("kill".into(), c.id.clone(), c.name.clone()));
+                                            *docker_armed = None;
+                                        }
+                                    } else if ui
+                                        .small_button(egui::RichText::new("⛔").color(RED))
+                                        .on_hover_text("Kill the container (asks once more)")
+                                        .clicked()
+                                    {
+                                        *docker_armed = Some((c.id.clone(), std::time::Instant::now()));
+                                    }
+                                    if c.running {
+                                        if ui.small_button("⏸").on_hover_text("docker stop (graceful)").clicked() {
+                                            *docker_request = Some(("stop".into(), c.id.clone(), c.name.clone()));
+                                        }
+                                    } else if ui.small_button("▶").on_hover_text("docker start").clicked() {
+                                        *docker_request = Some(("start".into(), c.id.clone(), c.name.clone()));
+                                    }
+                                });
+                            }
+                            Some(pid) if srv.protected => {
+                                let lower = srv.name.to_ascii_lowercase();
+                                let owner = if lower.contains("docker") || lower.contains("wsl") {
+                                    "docker".to_string()
+                                } else {
+                                    srv.name.clone()
+                                };
+                                ui.label(egui::RichText::new(format!("· {owner} (pid {pid})")).small().color(DIM))
                             .on_hover_text(
                                 "Owned by Docker, the system or Agent Globe itself: stop it from there, not here.",
                             );
-                    }
-                    Some(pid) => {
-                        ui.label(
-                            egui::RichText::new(format!("· {} (pid {pid})", srv.name))
-                                .small()
-                                .color(DIM),
-                        );
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            kill_button(ui, pid, kill_armed, kill_request);
+                            }
+                            Some(pid) => {
+                                ui.label(
+                                    egui::RichText::new(format!("· {} (pid {pid})", srv.name))
+                                        .small()
+                                        .color(DIM),
+                                );
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    kill_button(ui, pid, kill_armed, kill_request);
+                                });
+                            }
+                            None => {
+                                ui.label(egui::RichText::new("· not listening").small().color(DIM));
+                            }
+                        }
+                    });
+                }
+                if !servers.procs.is_empty() {
+                    let header = egui::RichText::new(format!(
+                        "⚙ {} background process{}",
+                        servers.procs.len(),
+                        if servers.procs.len() == 1 { "" } else { "es" }
+                    ))
+                    .small()
+                    .color(SAND);
+                    egui::CollapsingHeader::new(header)
+                        .id_salt((&a.id, "procs"))
+                        .default_open(servers.procs.len() <= 2)
+                        .show(ui, |ui| {
+                            for p in &servers.procs {
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{} (pid {})", p.name, p.pid))
+                                            .monospace()
+                                            .color(TEXT),
+                                    );
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(&p.cmdline).small().color(DIM)).truncate(),
+                                    )
+                                    .on_hover_text(format!("started by: {}", p.from));
+                                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                        kill_button(ui, p.pid, kill_armed, kill_request);
+                                    });
+                                });
+                            }
                         });
-                    }
-                    None => {
-                        ui.label(egui::RichText::new("· not listening").small().color(DIM));
-                    }
                 }
             });
-        }
-        if !servers.procs.is_empty() {
-            let header = egui::RichText::new(format!(
-                "⚙ {} background process{}",
-                servers.procs.len(),
-                if servers.procs.len() == 1 { "" } else { "es" }
-            ))
-            .small()
-            .color(SAND);
-            egui::CollapsingHeader::new(header)
-                .id_salt((&a.id, "procs"))
-                .default_open(servers.procs.len() <= 2)
-                .show(ui, |ui| {
-                    for p in &servers.procs {
-                        ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{} (pid {})", p.name, p.pid))
-                                    .monospace()
-                                    .color(TEXT),
-                            );
-                            ui.add(egui::Label::new(egui::RichText::new(&p.cmdline).small().color(DIM)).truncate())
-                                .on_hover_text(format!("started by: {}", p.from));
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                kill_button(ui, p.pid, kill_armed, kill_request);
-                            });
-                        });
-                    }
-                });
-        }
     }
     if !changes.is_empty() {
         ui.add_space(4.0);

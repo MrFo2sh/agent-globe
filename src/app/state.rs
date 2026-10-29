@@ -222,6 +222,8 @@ pub struct Store {
     pub reply_open: Option<(String, String)>,
     /// A ✕ was clicked once on this pid; a second click within three seconds ends the process.
     pub kill_armed: Option<(u32, std::time::Instant)>,
+    /// Container id armed for a kill (first click), like kill_armed but for Docker.
+    pub docker_armed: Option<(String, std::time::Instant)>,
     /// Cinematic mode: no panels, full-window scene.
     pub hide_ui: bool,
     /// Set by the UI; the camera system consumes it.
@@ -291,6 +293,7 @@ impl Store {
             show_usage: false,
             fold_groups: false,
             kill_armed: None,
+            docker_armed: None,
             reply_open: None,
             hide_ui: false,
             reset_view: false,

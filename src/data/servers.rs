@@ -147,6 +147,41 @@ pub fn session_targets(session: &Session) -> Targets {
     Targets { ports, needles }
 }
 
+/// A Docker container and the host ports it publishes.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Container {
+    pub id: String,
+    pub name: String,
+    /// True when the container is up; stopped ones can be started again.
+    pub running: bool,
+    pub host_ports: Vec<u16>,
+}
+
+static DOCKER_PORT: OnceLock<Regex> = OnceLock::new();
+
+/// Parse `docker ps -a --format '{{.ID}}|{{.Names}}|{{.State}}|{{.Ports}}'`.
+pub fn parse_docker_ps(text: &str) -> Vec<Container> {
+    let r = re(&DOCKER_PORT, r":(\d{2,5})->");
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let f: Vec<&str> = line.splitn(4, '|').collect();
+        if f.len() < 3 {
+            continue;
+        }
+        let ports = f.get(3).copied().unwrap_or("");
+        let mut host_ports: Vec<u16> = r.captures_iter(ports).filter_map(|c| c[1].parse().ok()).collect();
+        host_ports.sort_unstable();
+        host_ports.dedup();
+        out.push(Container {
+            id: f[0].trim().to_string(),
+            name: f[1].trim().to_string(),
+            running: f[2].trim().eq_ignore_ascii_case("running"),
+            host_ports,
+        });
+    }
+    out
+}
+
 /// `netstat -ano -p tcp` lines with LISTENING: local port -> owning pid.
 pub fn parse_netstat(text: &str) -> HashMap<u16, u32> {
     let mut out = HashMap::new();
@@ -211,6 +246,18 @@ mod tests {
             Some("CTF Watch".into())
         );
         assert_eq!(html_title("<p>no title</p>"), None);
+    }
+
+    #[test]
+    fn docker_ps_maps_containers_to_their_host_ports() {
+        let text = "3f28|ctf-watch|running|127.0.0.1:8080->8080/tcp, 127.0.0.1:8888->8888/tcp\nab12|old-app|exited|\nc9|db|running|0.0.0.0:5432->5432/tcp, :::5432->5432/tcp\n";
+        let c = parse_docker_ps(text);
+        assert_eq!(c.len(), 3);
+        assert_eq!(c[0].name, "ctf-watch");
+        assert!(c[0].running);
+        assert_eq!(c[0].host_ports, vec![8080, 8888]);
+        assert!(!c[1].running && c[1].host_ports.is_empty());
+        assert_eq!(c[2].host_ports, vec![5432], "dedup across v4 and v6 mappings");
     }
 
     #[test]

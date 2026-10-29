@@ -2,7 +2,7 @@
 //! them, what their index page is called, and which background processes the session spawned.
 //! Killing is one `taskkill` on the owning process tree.
 
-use agent_globe::data::servers::{Targets, html_title, parse_netstat};
+use agent_globe::data::servers::{Container, Targets, html_title, parse_docker_ps, parse_netstat};
 use bevy::prelude::*;
 use std::collections::HashMap;
 use std::process::Command;
@@ -17,8 +17,10 @@ pub struct ServerInfo {
     pub pid: Option<u32>,
     pub name: String,
     pub title: Option<String>,
-    /// Owned by Docker, the system or this app: shown, never killable from here.
+    /// Owned by Docker, the system or this app: no plain process kill.
     pub protected: bool,
+    /// The Docker container publishing this port, when the owner is Docker. Has its own controls.
+    pub container: Option<Container>,
 }
 
 /// Processes a ✕ must never reach: ending them would take Docker Desktop, Windows services or
@@ -144,6 +146,14 @@ impl Default for ServerWatch {
                         let listening = listeners();
                         let need_scan = !t.needles.is_empty() || t.ports.iter().any(|(p, _)| listening.contains_key(p));
                         let procs = if need_scan { processes() } else { Vec::new() };
+                        // Any of our ports owned by Docker? Then learn the containers behind them.
+                        let any_docker = t.ports.iter().any(|(p, _)| {
+                            listening
+                                .get(p)
+                                .and_then(|pid| by_pid_name(&procs, *pid))
+                                .is_some_and(|n| is_docker(&n))
+                        });
+                        let containers = if any_docker { docker_containers() } else { Vec::new() };
                         let by_pid: HashMap<u32, &WinProcess> = procs.iter().map(|p| (p.process_id, p)).collect();
                         let mut servers = Vec::new();
                         for (port, url) in &t.ports {
@@ -169,6 +179,11 @@ impl Default for ServerWatch {
                                 None
                             };
                             let protected = pid.is_some_and(|p| is_protected(&name, p));
+                            let container = if is_docker(&name) {
+                                containers.iter().find(|c| c.host_ports.contains(port)).cloned()
+                            } else {
+                                None
+                            };
                             servers.push(ServerInfo {
                                 port: *port,
                                 url: url.clone(),
@@ -177,6 +192,7 @@ impl Default for ServerWatch {
                                 name,
                                 title,
                                 protected,
+                                container,
                             });
                         }
                         let server_pids: Vec<u32> = servers.iter().filter_map(|s| s.pid).collect();
@@ -240,5 +256,38 @@ pub fn kill(pid: u32) -> String {
         Ok(o) if o.status.success() => format!("✖ process {pid} ended"),
         Ok(o) => format!("could not end {pid}: {}", String::from_utf8_lossy(&o.stderr).trim()),
         Err(e) => format!("could not run taskkill: {e}"),
+    }
+}
+
+fn by_pid_name(procs: &[WinProcess], pid: u32) -> Option<String> {
+    procs.iter().find(|p| p.process_id == pid).and_then(|p| p.name.clone())
+}
+
+fn docker_containers() -> Vec<Container> {
+    let out = quiet(Command::new("docker").args([
+        "ps",
+        "-a",
+        "--no-trunc",
+        "--format",
+        "{{.ID}}|{{.Names}}|{{.State}}|{{.Ports}}",
+    ]))
+    .output();
+    match out {
+        Ok(o) if o.status.success() => parse_docker_ps(&String::from_utf8_lossy(&o.stdout)),
+        _ => Vec::new(),
+    }
+}
+
+/// Act on a Docker container: `verb` is "stop", "start" or "kill". Returns the toast message.
+pub fn docker_action(verb: &str, id: &str, name: &str) -> String {
+    let out = quiet(Command::new("docker").args([verb, id])).output();
+    match out {
+        Ok(o) if o.status.success() => match verb {
+            "start" => format!("▶ started {name}"),
+            "stop" => format!("⏸ stopped {name}"),
+            _ => format!("✖ killed {name}"),
+        },
+        Ok(o) => format!("docker {verb} failed: {}", String::from_utf8_lossy(&o.stderr).trim()),
+        Err(e) => format!("could not run docker: {e}"),
     }
 }

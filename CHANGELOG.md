@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.13.0 - 2026-10-29
+- Docker servers get real controls: each one is matched to its container (docker ps), shown with its name and running/stopped state, with ⏸ stop when up, ▶ start when down, and ⛔ kill after a confirming second click. No more dead-end 'stop it from Docker' label for the user's own containers.
+- The whole SERVERS & PROCESSES section is collapsible, with a count of servers and processes in its header.
+
 ## 0.12.0 - 2026-10-29
 - ⌨ button next to the session name in the HUD opens a terminal in the session's root folder: Windows Terminal if installed, otherwise PowerShell.
 
