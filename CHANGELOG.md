@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.13.1 - 2026-10-29
+- '▴ fold all' now actually collapses every prompt group and the folding sticks; each group can be reopened individually afterwards. Before, the collapse lasted a single frame and sprang back open.
+
 ## 0.13.0 - 2026-10-29
 - Docker servers get real controls: each one is matched to its container (docker ps), shown with its name and running/stopped state, with ⏸ stop when up, ▶ start when down, and ⛔ kill after a confirming second click. No more dead-end 'stop it from Docker' label for the user's own containers.
 - The whole SERVERS & PROCESSES section is collapsible, with a count of servers and processes in its header.

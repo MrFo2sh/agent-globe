@@ -2336,7 +2336,19 @@ fn agent_panel(
                     *fold_all = true;
                 }
             });
-            let fold: Option<bool> = if *fold_all { Some(false) } else { None };
+            // On a "fold all" click, write the collapsed state into egui's memory for each group
+            // id (matching the CollapsingHeader ids below), so it sticks and can be reopened one by one.
+            if *fold_all {
+                let mut ids: Vec<egui::Id> = (0..a.turn_log.len())
+                    .map(|ti| ui.make_persistent_id((&a.id, ti)))
+                    .collect();
+                ids.push(ui.make_persistent_id((&a.id, "lead")));
+                for id in ids {
+                    let mut st = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
+                    st.set_open(false);
+                    st.store(ui.ctx());
+                }
+            }
             if !needle.is_empty() && hits.is_empty() {
                 ui.label(
                     egui::RichText::new(format!("nothing in this unit's history matches \"{}\"", history.trim()))
@@ -2361,7 +2373,6 @@ fn agent_panel(
                             .color(DIM),
                     )
                     .id_salt((&a.id, "lead"))
-                    .open(fold)
                     .default_open(false)
                     .show(ui, |ui| {
                         for i in lead {
@@ -2429,7 +2440,6 @@ fn agent_panel(
                         ui.set_width(ui.available_width());
                         egui::CollapsingHeader::new(header)
                             .id_salt((&a.id, ti))
-                            .open(fold)
                             .default_open((ti + 1 == n && !searching) || matched)
                             .show(ui, |ui| {
                                 ui.horizontal_wrapped(|ui| {
