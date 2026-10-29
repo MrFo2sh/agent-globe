@@ -1186,14 +1186,18 @@ pub fn draw(
                 ui.add(egui::Slider::new(&mut settings.bloom, 0.0..=0.6).text("bloom"));
                 ui.add(egui::Slider::new(&mut settings.ui_scale, 0.6..=1.8).text("ui scale"));
                 ui.checkbox(&mut settings.scanlines, "CRT scanlines");
-                ui.checkbox(&mut settings.title_bar, "native title bar")
-                    .on_hover_text("Windows' own title bar in windowed mode (F11 leaves full screen). Off: the app is all chrome.");
-                ui.checkbox(&mut settings.span_monitors, "span all monitors at start")
-                    .on_hover_text("One borderless window across every monitor. Off: full screen on one monitor. Takes effect at the next start.");
-                ui.label(egui::RichText::new("DOCK GRID").small().color(DIM))
-                    .on_hover_text("Drag a card by its title and drop it on a target to dock it. Drag a docked card's edge to resize it; neighbours follow.");
-                ui.add(egui::Slider::new(&mut settings.grid_rows, 1..=4).text("rows"))
-                    .on_hover_text("Columns follow the monitors: each monitor's free span is split in two.");
+                ui.separator();
+                ui.label(egui::RichText::new("LIGHT").small().color(DIM));
+                ui.add(egui::Slider::new(&mut settings.key_light, 0.0..=8000.0).text("key light"))
+                    .on_hover_text("The warm light from above right, in lux.");
+                ui.add(egui::Slider::new(&mut settings.fill_light, 0.0..=3000.0).text("fill light"))
+                    .on_hover_text("The cool light from the sky side, in lux.");
+                ui.add(egui::Slider::new(&mut settings.ambient_light, 0.0..=800.0).text("ambient"))
+                    .on_hover_text("Light from everywhere, in nits. Lifts the shadow side of the plastic.");
+                ui.add(egui::Slider::new(&mut settings.fog, 0.2..=3.0).text("fog"))
+                    .on_hover_text("Above one the fog closes in; below one it pulls back. One is the original.");
+                ui.separator();
+                ui.label(egui::RichText::new("SCENE").small().color(DIM));
                 ui.checkbox(&mut settings.narrator, "narrator line under each call");
                 ui.checkbox(&mut settings.progress_rings, "progress rings and hints under units");
                 ui.checkbox(
@@ -1231,9 +1235,26 @@ pub fn draw(
                         .color(DIM),
                 );
                 ui.separator();
+                ui.label(egui::RichText::new("WINDOW").small().color(DIM));
+                ui.checkbox(&mut settings.title_bar, "native title bar")
+                    .on_hover_text("Windows' own title bar in windowed mode (F11 leaves full screen). Off: the app is all chrome.");
+                ui.checkbox(&mut settings.span_monitors, "span all monitors at start")
+                    .on_hover_text("One borderless window across every monitor. Off: full screen on one monitor. Takes effect at the next start.");
+                ui.label(egui::RichText::new("DOCK GRID").small().color(DIM))
+                    .on_hover_text("Drag a card by its title and drop it on a target to dock it. Drag a docked card's edge to resize it; neighbours follow.");
+                ui.add(egui::Slider::new(&mut settings.grid_rows, 1..=4).text("rows"))
+                    .on_hover_text("Columns follow the monitors: each monitor's free span is split in two.");
+                ui.separator();
                 ui.horizontal(|ui| {
-                    if ui.button("reset defaults").clicked() {
+                    if ui
+                        .button("reset defaults")
+                        .on_hover_text("Everything back to the original values. Docked panes and the agent panel's width stay.")
+                        .clicked()
+                    {
+                        let keep = (settings.panes.clone(), settings.agent_panel_width);
                         *settings = Settings::default();
+                        settings.panes = keep.0;
+                        settings.agent_panel_width = keep.1;
                     }
                     ui.label(
                         egui::RichText::new(super::settings::path().display().to_string())

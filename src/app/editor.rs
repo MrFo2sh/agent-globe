@@ -255,18 +255,14 @@ pub fn draw_quick_open(ctx: &egui::Context, store: &mut Store, index: &mut FileI
         return;
     };
     index.ensure(&cwd, false);
-    let (esc, enter, up, down) = ctx.input(|i| {
-        let hit = |k: egui::Key| {
-            i.raw
-                .events
-                .iter()
-                .any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if *key == k))
-        };
+    // Taken before the box is drawn, so the box never moves its caret on them.
+    let (esc, enter, up, down) = ctx.input_mut(|i| {
+        let none = egui::Modifiers::NONE;
         (
-            hit(egui::Key::Escape),
-            hit(egui::Key::Enter),
-            hit(egui::Key::ArrowUp),
-            hit(egui::Key::ArrowDown),
+            i.consume_key(none, egui::Key::Escape),
+            i.consume_key(none, egui::Key::Enter),
+            i.consume_key(none, egui::Key::ArrowUp),
+            i.consume_key(none, egui::Key::ArrowDown),
         )
     });
     let query = store.quick_query.trim().to_string();
@@ -290,9 +286,21 @@ pub fn draw_quick_open(ctx: &egui::Context, store: &mut Store, index: &mut FileI
     let mut close = esc;
     let focus = std::mem::take(&mut store.quick_focus);
     let vr = ctx.viewport_rect();
+    // On a wall of monitors the palette sits on the monitor under the pointer, never on a seam.
+    let px = ctx.pointer_latest_pos().map(|p| p.x).unwrap_or(vr.min.x + 1.0);
+    let (mut lo, mut hi) = (vr.min.x, vr.max.x);
+    for s in &store.monitor_seams {
+        let s = vr.min.x + *s;
+        if s <= px {
+            lo = lo.max(s);
+        } else {
+            hi = hi.min(s);
+        }
+    }
+    let centre_x = (lo + hi) * 0.5;
     egui::Area::new(egui::Id::new("quick-open"))
         .order(egui::Order::Tooltip)
-        .fixed_pos(egui::pos2(vr.center().x - 330.0, vr.min.y + 70.0))
+        .fixed_pos(egui::pos2(centre_x - 330.0, vr.min.y + 70.0))
         .show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(egui::Color32::from_rgb(6, 12, 5))
@@ -352,7 +360,7 @@ pub fn draw_quick_open(ctx: &egui::Context, store: &mut Store, index: &mut FileI
                                 })
                                 .min_size(egui::vec2(ui.available_width(), 0.0)),
                         );
-                        if r.hovered() {
+                        if r.hovered() && ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
                             store.quick_sel = i;
                         }
                         if r.clicked() {

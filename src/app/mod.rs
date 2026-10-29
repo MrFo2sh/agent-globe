@@ -111,6 +111,7 @@ pub fn run(cfg: Config) {
                     scene::draw_file_beams,
                     camera::drive,
                     camera::apply_viewport,
+                    camera::apply_lights,
                     scene::project_badges,
                     scene::project_files,
                     alerts::update,

@@ -81,11 +81,13 @@ pub fn setup(mut commands: Commands, settings: Res<Settings>, mut egui_settings:
         },
     ));
 
-    // Plastic needs real light: a warm key light and a cool fill from the sky.
+    // Plastic needs real light: a warm key light and a cool fill from the sky. Their strength,
+    // the ambient and the fog follow the settings (see `apply_lights`).
     commands.spawn((
+        KeyLight,
         DirectionalLight {
             color: Color::srgb(1.0, 0.95, 0.85),
-            illuminance: 2_600.0,
+            illuminance: settings.key_light,
             shadow_maps_enabled: false,
             ..default()
         },
@@ -94,7 +96,7 @@ pub fn setup(mut commands: Commands, settings: Res<Settings>, mut egui_settings:
     commands.spawn((
         DirectionalLight {
             color: Color::srgb(0.6, 0.75, 1.0),
-            illuminance: 700.0,
+            illuminance: settings.fill_light,
             shadow_maps_enabled: false,
             ..default()
         },
@@ -103,9 +105,40 @@ pub fn setup(mut commands: Commands, settings: Res<Settings>, mut egui_settings:
 
     commands.insert_resource(GlobalAmbientLight {
         color: Color::srgb(0.70, 0.80, 0.65),
-        brightness: 160.0,
+        brightness: settings.ambient_light,
         ..default()
     });
+}
+
+/// The warm light from above right; the other directional light is the cool fill.
+#[derive(Component)]
+pub struct KeyLight;
+
+/// Light settings reach the scene the frame they change.
+pub fn apply_lights(
+    settings: Res<Settings>,
+    mut lights: Query<(&mut DirectionalLight, Has<KeyLight>)>,
+    mut ambient: ResMut<GlobalAmbientLight>,
+    mut fog: Query<&mut DistanceFog>,
+) {
+    if !settings.is_changed() {
+        return;
+    }
+    for (mut l, is_key) in &mut lights {
+        l.illuminance = if is_key {
+            settings.key_light
+        } else {
+            settings.fill_light
+        };
+    }
+    ambient.brightness = settings.ambient_light;
+    let k = settings.fog.max(0.05);
+    for mut f in &mut fog {
+        f.falloff = FogFalloff::Linear {
+            start: 45.0 / k,
+            end: 170.0 / k,
+        };
+    }
 }
 
 fn go_home(cam: &mut PanOrbitCamera, outer_depth: u32) {

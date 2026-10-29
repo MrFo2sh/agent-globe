@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.27.0 - 2026-10-29
+- Quick open: ↑ ↓ move the selection (the keys are taken before the search box can move its caret on them), hovering only moves it when the pointer moves, and on a wall of monitors the palette opens on the monitor under the pointer instead of on the seam.
+- Light settings: key light, fill light, ambient and fog, applied the frame they change. The settings page is in sections now: radio, camera, look, light, scene, window. Reset keeps your docked panes and the agent panel's width.
+
 ## 0.26.1 - 2026-10-29
 - Links between files are off by default; the ⛓ toggle in the top bar turns them on (focus or all).
 

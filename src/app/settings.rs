@@ -14,6 +14,11 @@ pub struct Settings {
     pub idle_orbit: bool,
     pub drift_speed: f32,
     pub bloom: f32,
+    /// The warm key light and the cool fill, in lux; the ambient in nits; fog as a multiplier.
+    pub key_light: f32,
+    pub fill_light: f32,
+    pub ambient_light: f32,
+    pub fog: f32,
     pub ui_scale: f32,
     pub scanlines: bool,
     /// Master switch for all audio.
@@ -86,6 +91,10 @@ impl Default for Settings {
             compact: false,
             desktop_notifications: false,
             title_bar: false,
+            key_light: 2_600.0,
+            fill_light: 700.0,
+            ambient_light: 160.0,
+            fog: 1.0,
             span_monitors: true,
             grid_cols: 4,
             grid_rows: 2,
