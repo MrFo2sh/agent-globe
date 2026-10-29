@@ -636,7 +636,7 @@ pub fn draw(
                 egui::RichText::new(if compact {
                     "drag · scroll · R home · F11"
                 } else {
-                    "drag rotate · scroll zoom · right-drag pan · click unit or file · R home · F11 full screen"
+                    "drag rotate · scroll zoom · right-drag pan · click unit or file · R home · F11 full screen · Ctrl +/- UI size"
                 })
                 .small()
                 .color(DIM),
@@ -1439,29 +1439,35 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) {
         .map(|b| egui::pos2(b.x + 28.0, b.y - 20.0));
     let vr = ctx.viewport_rect();
     let mut close = false;
+    let mut toggle_max = false;
+    let maxed = store.reply_max;
     let width = (vr.width() * 0.38).clamp(380.0, 640.0);
     let height = (vr.height() * 0.45).clamp(220.0, 520.0);
     let default_pos = anchor.unwrap_or_else(|| vr.center() - egui::vec2(width / 2.0, height / 2.0));
+    // Maximised: pinned to the screen with a margin. Floating: movable, with a drag corner to resize.
+    let margin = 16.0;
+    let max_size = vr.size() - egui::vec2(2.0 * margin + 24.0, 2.0 * margin + 24.0);
     // A Foreground area, drawn last, so the badges and file labels (also Foreground) stay behind it.
-    egui::Area::new(egui::Id::new("reply-card"))
-        .order(egui::Order::Foreground)
-        .default_pos(default_pos)
-        .movable(true)
-        .constrain(true)
-        .show(ctx, |ui| {
-            egui::Frame::NONE
-                .fill(egui::Color32::from_rgb(6, 12, 5))
-                .stroke(egui::Stroke::new(1.5, ACCENT))
-                .shadow(egui::epaint::Shadow {
-                    offset: [0, 4],
-                    blur: 18,
-                    spread: 0,
-                    color: egui::Color32::from_black_alpha(180),
-                })
-                .inner_margin(12.0)
-                .corner_radius(8.0)
-                .show(ui, |ui| {
-                    ui.set_width(width);
+    let area = egui::Area::new(egui::Id::new("reply-card")).order(egui::Order::Foreground);
+    let area = if maxed {
+        area.fixed_pos(vr.min + egui::vec2(margin, margin)).movable(false)
+    } else {
+        area.default_pos(default_pos).movable(true).constrain(true)
+    };
+    area.show(ctx, |ui| {
+        egui::Frame::NONE
+            .fill(egui::Color32::from_rgb(6, 12, 5))
+            .stroke(egui::Stroke::new(1.5, ACCENT))
+            .shadow(egui::epaint::Shadow {
+                offset: [0, 4],
+                blur: 18,
+                spread: 0,
+                color: egui::Color32::from_black_alpha(180),
+            })
+            .inner_margin(12.0)
+            .corner_radius(8.0)
+            .show(ui, |ui| {
+                let body = |ui: &mut egui::Ui, close: &mut bool, toggle_max: &mut bool| {
                     ui.horizontal(|ui| {
                         ui.label(egui::RichText::new("💬").size(16.0));
                         ui.label(
@@ -1477,7 +1483,18 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) {
                         );
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if ui.small_button("✕  (Esc)").clicked() {
-                                close = true;
+                                *close = true;
+                            }
+                            if ui
+                                .small_button(if maxed { "🗗 restore" } else { "⛶ full" })
+                                .on_hover_text(if maxed {
+                                    "Back to the floating card"
+                                } else {
+                                    "Fill the screen (or drag the bottom-right corner to resize)"
+                                })
+                                .clicked()
+                            {
+                                *toggle_max = true;
                             }
                             if ui
                                 .small_button("⧉ copy")
@@ -1489,19 +1506,32 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) {
                         });
                     });
                     ui.separator();
-                    egui::ScrollArea::vertical()
-                        .auto_shrink([false, false])
-                        .max_height(height)
-                        .show(ui, |ui| {
-                            ui.set_min_width(width - 8.0);
-                            if agent.last_said.trim().is_empty() {
-                                ui.label(egui::RichText::new("nothing said yet").color(DIM));
-                            } else {
-                                render_reply(ui, &agent.last_said);
-                            }
-                        });
-                });
-        });
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                        ui.set_min_width(ui.available_width() - 8.0);
+                        if agent.last_said.trim().is_empty() {
+                            ui.label(egui::RichText::new("nothing said yet").color(DIM));
+                        } else {
+                            render_reply(ui, &agent.last_said);
+                        }
+                    });
+                };
+                if maxed {
+                    ui.set_width(max_size.x);
+                    ui.set_height(max_size.y);
+                    body(ui, &mut close, &mut toggle_max);
+                } else {
+                    egui::Resize::default()
+                        .id_salt("reply-size")
+                        .default_size(egui::vec2(width, height))
+                        .min_size(egui::vec2(320.0, 160.0))
+                        .max_size(max_size)
+                        .show(ui, |ui| body(ui, &mut close, &mut toggle_max));
+                }
+            });
+    });
+    if toggle_max {
+        store.reply_max = !store.reply_max;
+    }
     if close {
         store.reply_open = None;
     }

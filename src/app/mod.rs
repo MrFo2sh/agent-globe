@@ -106,6 +106,7 @@ pub fn run(cfg: Config) {
                     settings::persist,
                     maximize_window,
                     toggle_fullscreen,
+                    zoom_keys,
                     window_icon,
                 )
                     .chain(),
@@ -140,6 +141,25 @@ fn toggle_fullscreen(keys: Res<ButtonInput<KeyCode>>, mut windows: Query<&mut Wi
             _ => WindowMode::Windowed,
         };
     }
+}
+
+/// Ctrl and + / - / 0 scale the whole UI, the same knob as the "ui scale" slider.
+fn zoom_keys(keys: Res<ButtonInput<KeyCode>>, mut settings: ResMut<settings::Settings>) {
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    if !ctrl {
+        return;
+    }
+    let step = if keys.just_pressed(KeyCode::Equal) || keys.just_pressed(KeyCode::NumpadAdd) {
+        0.1
+    } else if keys.just_pressed(KeyCode::Minus) || keys.just_pressed(KeyCode::NumpadSubtract) {
+        -0.1
+    } else if keys.just_pressed(KeyCode::Digit0) || keys.just_pressed(KeyCode::Numpad0) {
+        1.0 - settings.ui_scale
+    } else {
+        return;
+    };
+    let next = ((settings.ui_scale + step) * 10.0).round() / 10.0;
+    settings.ui_scale = next.clamp(0.6, 1.8);
 }
 
 /// Title-bar and taskbar icon for the running window (the exe resource covers Explorer).

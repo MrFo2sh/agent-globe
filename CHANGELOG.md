@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.15.0 - 2026-10-29
+- Ctrl and + / - scale the whole UI in steps of ten percent, Ctrl 0 resets; the same setting as the ui scale slider, remembered across runs.
+- The reply card can fill the screen (the full button, restore to go back) or be resized by dragging its bottom-right corner; the size is remembered.
+
 ## 0.14.0 - 2026-10-29
 - Every prompt group now carries the commander's reply: a 💬 row with the first line, expanding to the full answer with light Markdown. Conversation turns with no tool calls used to render as an empty '0 calls' group; now they show what was said. The history search also matches reply text.
 - Slash-command records (/model, /clear and friends) no longer appear as prompts.

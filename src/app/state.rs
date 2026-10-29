@@ -220,6 +220,8 @@ pub struct Store {
     pub fold_groups: bool,
     /// The reply card: (session, agent) whose last message is open for reading.
     pub reply_open: Option<(String, String)>,
+    /// The reply card fills the screen (⛶) instead of floating next to the unit.
+    pub reply_max: bool,
     /// A ✕ was clicked once on this pid; a second click within three seconds ends the process.
     pub kill_armed: Option<(u32, std::time::Instant)>,
     /// Container id armed for a kill (first click), like kill_armed but for Docker.
@@ -295,6 +297,7 @@ impl Store {
             kill_armed: None,
             docker_armed: None,
             reply_open: None,
+            reply_max: false,
             hide_ui: false,
             reset_view: false,
             expanded_calls: HashSet::new(),
