@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.28.2 - 2026-10-29
+- The screen follows the conversation: when a new session starts in the same folder as the one on screen (Claude Code restarting after an update, /clear, a fresh `claude`), the app moves to it, once. It used to stay on the old, silent session.
+
 ## 0.28.1 - 2026-10-29
 - Terminal scrollback works: rows from the history have negative line numbers and were dropped, so scrolling up blanked the screen from the bottom instead of moving it.
 - The wheel goes where a terminal sends it: to the program as mouse wheel events when it asked for mouse reports (Claude Code, vim with mouse on), as arrow keys when a full-screen program owns the alternate screen, and to our own scrollback otherwise.

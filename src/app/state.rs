@@ -339,6 +339,8 @@ pub struct Store {
     pub selected_file: Option<String>,
     /// A folder opened by hand: the file system to show when no session is on screen.
     pub workspace: Option<String>,
+    /// Sessions the screen already followed to once (see `drain_bridge`).
+    pub followed: HashSet<String>,
     /// Ask the host to hand the keyboard back to the app window (after the page asked for it).
     pub focus_app: bool,
     /// Where the WebView surface goes this frame, in physical pixels (x, y, w, h); None hides it.
@@ -457,6 +459,7 @@ impl Store {
             focus_file: None,
             selected_file: None,
             workspace: None,
+            followed: HashSet::new(),
             focus_app: false,
             webview_rect: None,
             webview_logged: false,
@@ -992,6 +995,28 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: 
         match msg {
             ToApp::Sessions(list) => {
                 store.session_list = list;
+                // Follow the conversation: a session that starts in the same folder after the
+                // one on screen went quiet (a restart, /clear, a new `claude`) takes the screen,
+                // once. Picking an older session by hand afterwards is respected.
+                if store.opened_once
+                    && let Some(cur) = store.current.clone()
+                    && let Some(cur_ref) = store.session_list.iter().find(|s| s.id == cur).cloned()
+                {
+                    let folder = cur_ref.path.parent().map(|p| p.to_path_buf());
+                    let newer = store
+                        .session_list
+                        .iter()
+                        .filter(|s| s.id != cur && s.path.parent().map(|p| p.to_path_buf()) == folder)
+                        .filter(|s| s.modified > cur_ref.modified + 15_000)
+                        .max_by_key(|s| s.modified)
+                        .cloned();
+                    if let Some(n) = newer
+                        && store.followed.insert(n.id.clone())
+                    {
+                        info!("following the conversation to session {}", n.id);
+                        store.open(&n, &bridge.0);
+                    }
+                }
                 if !store.opened_once {
                     let pick = match &store.preferred {
                         Some(p) => store

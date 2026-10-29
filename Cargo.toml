@@ -1,6 +1,6 @@
 [package]
 name = "agent-globe"
-version = "0.28.1"
+version = "0.28.2"
 edition = "2024"
 description = "GPU-rendered 3D globe of coding-agent sessions, subagents and their terminal executions, live."
 license = "MIT"
