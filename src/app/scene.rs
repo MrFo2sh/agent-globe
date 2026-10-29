@@ -7,6 +7,7 @@ use super::state::{SceneView, Store};
 use super::theme;
 use agent_globe::data::files::{self, FileStat};
 use agent_globe::data::layout::{self, Layout};
+use agent_globe::data::links::LinkKind;
 use agent_globe::data::model::{ROOT_AGENT, Status, now_millis};
 use bevy::picking::events::{PointerClick, PointerOut, PointerOver};
 use bevy::prelude::*;
@@ -65,12 +66,16 @@ pub struct FileScene {
     pub cold_depths: Vec<u32>,
     /// The outermost ring in use, for the home camera.
     pub outer_depth: u32,
+    /// Connections between files, absolute paths with forward slashes.
+    pub links: Vec<(String, String, LinkKind, u32)>,
 }
 
 /// How many files the ring shows, how long a touch keeps its beam, how long a node glows after an edit.
 pub const FILE_RING_MAX: usize = 24;
 /// How many files of the whole file system the outer rings show at most.
 pub const FILE_ALL_MAX: usize = 1_500;
+/// Cold files closer than this to the camera show their names.
+pub const LABEL_DISTANCE: f32 = 22.0;
 pub const BEAM_MS: i64 = 45_000;
 pub const FILE_GLOW_MS: i64 = 20_000;
 
@@ -389,6 +394,7 @@ pub fn sync_files(
         fscene.wedges.clear();
         fscene.cold_depths.clear();
         fscene.outer_depth = 0;
+        fscene.links.clear();
         return;
     };
     // The scene asks for the file index itself; the sidebar and the palette share it.
@@ -444,6 +450,15 @@ pub fn sync_files(
             // The whole file system, alphabetical so folders stay together, on the rings beyond
             // the hot ring, each ring holding as many nodes as its circumference allows.
             let cwd = session.cwd.replace('\\', "/");
+            fscene.links = if want_cold {
+                index
+                    .links_snapshot()
+                    .into_iter()
+                    .map(|l| (format!("{cwd}/{}", l.a), format!("{cwd}/{}", l.b), l.kind, l.weight))
+                    .collect()
+            } else {
+                Vec::new()
+            };
             let cold: Vec<String> = if want_cold {
                 index
                     .snapshot(FILE_ALL_MAX)
@@ -605,6 +620,60 @@ pub fn draw_file_beams(
 ) {
     let Some(current) = store.current.clone() else { return };
     let now = now_millis();
+    // Connections: lit for the hovered or open file, faint for all when asked. Straight lines:
+    // curvature costs readability and the scene has enough curves already.
+    if settings.file_links && (!fscene.links.is_empty() || !fscene.files.is_empty()) {
+        let norm = |p: &str| p.replace('\\', "/").to_ascii_lowercase();
+        let pos: HashMap<String, Vec3> = fscene.positions.iter().map(|(k, v)| (norm(k), *v)).collect();
+        let focus: Option<String> = store
+            .hovered_file
+            .clone()
+            .or_else(|| store.active_doc.and_then(|i| store.docs.get(i)).map(|d| d.path.clone()))
+            .map(|p| norm(&p));
+        let touch = theme::TOUCH.to_srgba();
+        for (a, b, kind, weight) in &fscene.links {
+            let (na, nb) = (norm(a), norm(b));
+            let (Some(pa), Some(pb)) = (pos.get(&na), pos.get(&nb)) else {
+                continue;
+            };
+            let lit = focus.as_deref().is_some_and(|f| f == na || f == nb);
+            if !lit && !settings.file_links_all {
+                continue;
+            }
+            let color = match kind {
+                LinkKind::Import => Color::srgba(touch.red, touch.green, touch.blue, if lit { 0.8 } else { 0.07 }),
+                LinkKind::CoChange => {
+                    let w = (*weight as f32).min(6.0) / 6.0;
+                    Color::srgba(0.95, 0.75, 0.40, if lit { 0.55 + 0.3 * w } else { 0.03 + 0.05 * w })
+                }
+            };
+            gizmos.line(*pa, *pb, color);
+        }
+        // Files the same unit touched in the same window: a signal only this app has.
+        let mut by_agent: HashMap<&str, Vec<Vec3>> = HashMap::new();
+        for f in &fscene.files {
+            let Some(p) = pos.get(&norm(&f.path)) else { continue };
+            for t in &f.touches {
+                if now - t.at <= BEAM_MS {
+                    by_agent.entry(t.agent_id.as_str()).or_default().push(*p);
+                }
+            }
+        }
+        for (_, pts) in by_agent {
+            let mut pts = pts;
+            pts.sort_by(|a, b| {
+                a.x.partial_cmp(&b.x)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.z.partial_cmp(&b.z).unwrap_or(std::cmp::Ordering::Equal))
+            });
+            pts.dedup_by(|a, b| a.distance(*b) < 0.01);
+            for i in 0..pts.len() {
+                for j in i + 1..pts.len() {
+                    gizmos.line(pts[i], pts[j], Color::srgba(1.0, 0.85, 0.45, 0.10));
+                }
+            }
+        }
+    }
     // The file system's guides: a faint ring per cold depth, a faint line at each wedge edge.
     if !fscene.cold_depths.is_empty() {
         let t = time.elapsed_secs();
@@ -676,15 +745,46 @@ pub fn project_files(
             ));
         }
     }
+    let norm = |p: &str| p.replace('\\', "/").to_ascii_lowercase();
+    let focus: Option<String> = hovered
+        .clone()
+        .or_else(|| store.active_doc.and_then(|i| store.docs.get(i)).map(|d| d.path.clone()))
+        .map(|p| norm(&p));
+    let neighbours: std::collections::HashSet<String> = match &focus {
+        Some(f) => fscene
+            .links
+            .iter()
+            .filter_map(|(a, b, _, _)| {
+                let (na, nb) = (norm(a), norm(b));
+                if na == *f {
+                    Some(nb)
+                } else if nb == *f {
+                    Some(na)
+                } else {
+                    None
+                }
+            })
+            .collect(),
+        None => Default::default(),
+    };
+    let cam_pos = cam_tf.translation();
+    let few = nodes.iter().filter(|(n, _)| n.cold).count() <= 160;
     for (node, tf) in &nodes {
         let hot = fscene.files.iter().find(|f| f.path == node.path);
+        let short = || {
+            let parts: Vec<&str> = node.path.rsplit(['/', '\\']).take(2).collect();
+            parts.iter().rev().copied().collect::<Vec<_>>().join("/")
+        };
+        let near = cam_pos.distance(tf.translation()) < LABEL_DISTANCE;
+        let np = norm(&node.path);
+        let wanted = hovered.as_deref() == Some(node.path.as_str())
+            || neighbours.contains(&np)
+            || focus.as_deref() == Some(np.as_str())
+            || near
+            || few;
         let (label, reads, edits) = match hot {
             Some(f) => (f.label.clone(), f.reads, f.edits),
-            None if hovered.as_deref() == Some(node.path.as_str()) => {
-                let parts: Vec<&str> = node.path.rsplit(['/', '\\']).take(2).collect();
-                let label = parts.iter().rev().copied().collect::<Vec<_>>().join("/");
-                (label, 0, 0)
-            }
+            None if wanted => (short(), 0, 0),
             None => continue,
         };
         if let Ok(p) = cam.world_to_viewport(cam_tf, tf.translation() - Vec3::Y * 0.2) {

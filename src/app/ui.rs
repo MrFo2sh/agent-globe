@@ -199,6 +199,9 @@ pub fn draw(
         if std::env::var("AGENT_GLOBE_MD_EDIT").is_ok() {
             store.md_preview = false;
         }
+        if std::env::var("AGENT_GLOBE_LINKS_ALL").is_ok() {
+            settings.file_links_all = true;
+        }
         store.open_doc(&p);
     }
     // AGENT_GLOBE_MD_TOGGLE=<secs>: flip the Markdown mode once after that many seconds (a dev aid).
@@ -1160,6 +1163,10 @@ pub fn draw(
                     &mut settings.files_ring,
                     "file ring: the session's hottest files with beams from the units touching them",
                 );
+                ui.checkbox(&mut settings.file_links, "links between files")
+                    .on_hover_text("Lines from the hovered or open file to the files it imports, the files that change with it in git, and the files the same unit touched in the same stretch.");
+                ui.checkbox(&mut settings.file_links_all, "all links, always")
+                    .on_hover_text("Every connection, faint. Busy on a big project.");
                 ui.label(
                     egui::RichText::new(
                         "approvals from any window: Ctrl+Alt+Y allows, Ctrl+Alt+N denies the oldest pending request",

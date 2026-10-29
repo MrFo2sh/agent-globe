@@ -2,7 +2,7 @@
   "name": "agent-globe",
   "one_liner": "A GPU-rendered 3D constellation of every coding-agent session, its subagents, and their terminal executions, live.",
   "blueprint": "desktop-app",
-  "version": "0.24.2",
+  "version": "0.25.0",
   "check": [
     "lint",
     "typecheck",

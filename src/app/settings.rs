@@ -32,6 +32,10 @@ pub struct Settings {
     pub satellites: bool,
     /// Outer ring of the session's hottest files, with beams from the units touching them.
     pub files_ring: bool,
+    /// Lines between connected files (imports, co-changes, same-turn touches) for the hovered or open file.
+    pub file_links: bool,
+    /// Every connection, faint, all the time (a lot of lines on a big project).
+    pub file_links_all: bool,
     /// Force the compact layout (it also turns on by itself under 1100 px of width).
     pub compact: bool,
     /// Windows notifications when the window is not focused (off by default: the radio is the alert).
@@ -77,6 +81,8 @@ impl Default for Settings {
             progress_rings: true,
             satellites: true,
             files_ring: true,
+            file_links: true,
+            file_links_all: false,
             compact: false,
             desktop_notifications: false,
             title_bar: false,

@@ -5,5 +5,6 @@ pub mod claude;
 pub mod files;
 pub mod hooks;
 pub mod layout;
+pub mod links;
 pub mod model;
 pub mod servers;

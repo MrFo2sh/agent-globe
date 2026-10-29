@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.25.0 - 2026-10-29
+- Connections between files, from three sources: imports read from the source (Rust mod/use, TypeScript and JavaScript import/require, Python import) resolved against the file list; temporal coupling from the last 500 commits (files that change together, commits touching more than 30 files skipped, pairs seen twice or more); and files the same unit touched in the same stretch. Hover a file node, or open a file, and its connections light up: cyan for imports, amber for co-changes, with the connected files named. A settings switch draws every connection faint, always.
+- File names: cold files show their names when the camera is within reach, when they are connected to the hovered or open file, and always on small projects.
+
 ## 0.24.2 - 2026-10-29
 - Folder captions read `src/  16`: the stencil font has no arrow glyph, so the arrow showed as a question mark.
 

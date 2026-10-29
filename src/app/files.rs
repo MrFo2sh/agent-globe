@@ -3,6 +3,7 @@
 //! the gitignore respected. Clicking a file opens it in the editor card; a right-click reveals it
 //! in VS Code.
 
+use agent_globe::data::links::{self, Link};
 use bevy::prelude::*;
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -80,6 +81,50 @@ pub fn language_of(path: &str) -> &'static str {
     }
 }
 
+/// Imports from the source (files up to 256 KB, the first 4,000 scannable ones) and co-change
+/// pairs from the last 500 commits, kept to pairs of files the index knows.
+fn connections(root: &Path, files: &[String]) -> Vec<Link> {
+    let scan: Vec<String> = files
+        .iter()
+        .filter(|p| links::scannable(p))
+        .take(4_000)
+        .cloned()
+        .collect();
+    let all: Vec<String> = files.to_vec();
+    let known: std::collections::HashSet<&str> = all.iter().map(|s| s.as_str()).collect();
+    let mut out = links::import_links(&all, |rel| {
+        if !scan.iter().any(|s| s == rel) {
+            return None;
+        }
+        let p = root.join(rel);
+        let len = std::fs::metadata(&p).ok()?.len();
+        if len > 262_144 {
+            return None;
+        }
+        std::fs::read_to_string(&p).ok()
+    });
+    let mut git = std::process::Command::new("git");
+    git.args(["log", "--name-only", "--format=%H", "-n", "500"])
+        .current_dir(root);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        git.creation_flags(0x0800_0000);
+    }
+    if let Ok(o) = git.output()
+        && o.status.success()
+    {
+        let log = String::from_utf8_lossy(&o.stdout);
+        out.extend(
+            links::co_change_links(&log, 30, 2)
+                .into_iter()
+                .filter(|l| known.contains(l.a.as_str()) && known.contains(l.b.as_str()))
+                .take(6_000),
+        );
+    }
+    out
+}
+
 /// Folders the tree and the index never enter: build output, dependencies, VCS internals.
 const SKIP: [&str; 9] = [
     ".git",
@@ -109,6 +154,8 @@ pub struct FileIndex {
     building: Arc<AtomicBool>,
     /// Bumped after every rebuild, so the scene knows when to lay the files out again.
     generation: Arc<AtomicU64>,
+    /// Connections between files: imports read from the source, and git co-change pairs.
+    links: Arc<Mutex<Vec<Link>>>,
     built: bool,
     dirs: HashMap<String, (Instant, Vec<Entry>)>,
     matcher: SkimMatcherV2,
@@ -128,6 +175,7 @@ impl FileIndex {
         self.dirs.clear();
         self.building.store(true, Ordering::Relaxed);
         let (entries, building, generation) = (self.entries.clone(), self.building.clone(), self.generation.clone());
+        let links = self.links.clone();
         let root = PathBuf::from(root);
         std::thread::Builder::new()
             .name("file-index".into())
@@ -152,12 +200,23 @@ impl FileIndex {
                 }
                 out.sort();
                 if let Ok(mut v) = entries.lock() {
-                    *v = out;
+                    *v = out.clone();
                 }
                 generation.fetch_add(1, Ordering::Relaxed);
                 building.store(false, Ordering::Relaxed);
+                // Connections come after the list, so the tree and the finder never wait for them.
+                let found = connections(&root, &out);
+                if let Ok(mut l) = links.lock() {
+                    *l = found;
+                }
+                generation.fetch_add(1, Ordering::Relaxed);
             })
             .expect("spawn file index");
+    }
+
+    /// The connections found by the last rebuild.
+    pub fn links_snapshot(&self) -> Vec<Link> {
+        self.links.lock().map(|l| l.clone()).unwrap_or_default()
     }
 
     pub fn generation(&self) -> u64 {
