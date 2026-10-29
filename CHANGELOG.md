@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.19.0 - 2026-10-29
+- The raid: a wave shooter in cinematic mode. Saucers spawn at the edge of the scene and fly at the units; click one to fire the turret under the camera; a saucer that lands drains data integrity, at zero the raid is over. Waves grow (3 + 2n ships), every third wave is a new level with tougher, faster ships. Score, kills and a best score. Controls in the bottom-left console and with P: start, pause, resume, replay, stop (stop clears the sky). Pause writes the raid to disk, ships included, so it survives closing the app; leaving cinematic mode pauses it.
+
 ## 0.18.1 - 2026-10-29
 - Terminal scrolling: the console's startup clear used to push a blank page into the history, so the wheel scrolled the prompt away into nothing. Blank-only history is dropped, a thin scrollbar shows where the screen sits, and a smoke test proves the console answers on this machine.
 

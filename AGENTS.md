@@ -28,6 +28,7 @@ running app themselves while you work: odd clicks in screenshots may be theirs.
 | `src/app/alerts.rs` | Tray icon moods, optional Windows toasts. |
 | `src/app/hotkeys.rs` | Global Ctrl+Alt+Y / Ctrl+Alt+N approval hotkeys (Win32 `RegisterHotKey` on its own thread). |
 | `src/app/winjump.rs` | Bring a session's VS Code window to front by title (skips our own process: asking our window for its title deadlocks). |
+| `src/app/raid.rs` | The cinematic-mode wave shooter: ships, turret beams, debris, waves and levels, pause persisted to `raid.json`. |
 | `src/app/gitinfo.rs`, `probe.rs`, `terminal.rs`, `settings.rs`, `theme.rs` | git branch/dirty/changes, URL liveness, ConPTY consoles per session (alacritty_terminal behind an egui cell grid), persisted settings (`%APPDATA%/agent-globe/settings.json`), palette and tuning constants. |
 
 Data flow: files/hooks → `bridge` threads → `ToApp` channel → `drain_bridge` applies events to

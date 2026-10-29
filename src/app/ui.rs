@@ -4,6 +4,7 @@
 
 use super::gitinfo::{FileChange, GitInfo, GitWatch};
 use super::probe::Probe;
+use super::raid;
 use super::servers::{self, ServerWatch, Snapshot};
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
@@ -131,6 +132,13 @@ fn tip(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>, help: &str) {
     ui.label(text).on_hover_text(help);
 }
 
+/// Bevy allows sixteen parameters per system; the newer resources ride together here.
+#[derive(bevy::ecs::system::SystemParam)]
+pub struct Side<'w> {
+    pub terms: ResMut<'w, Terminals>,
+    pub raid: ResMut<'w, raid::Raid>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn draw(
     mut contexts: EguiContexts,
@@ -144,7 +152,7 @@ pub fn draw(
     gitw: Res<GitWatch>,
     usage: Res<UsageWatch>,
     serverw: Res<ServerWatch>,
-    mut terms: ResMut<Terminals>,
+    mut side: Side,
     mut images: Local<HashMap<String, Option<egui::TextureHandle>>>,
     mut styled: Local<bool>,
     mut last_scale: Local<f32>,
@@ -186,8 +194,13 @@ pub fn draw(
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -12.0))
             .interactable(false)
             .show(ctx, |ui| {
-                ui.label(egui::RichText::new("Esc: back to the console").small().color(DIM));
+                ui.label(
+                    egui::RichText::new("Esc: back to the console · P: raid pause / resume")
+                        .small()
+                        .color(DIM),
+                );
             });
+        draw_raid(ctx, &mut side.raid);
         draw_badges(ctx, &mut store);
         draw_progress(ctx, &store, &settings, now);
         draw_satellites(ctx, &mut store, now);
@@ -196,7 +209,7 @@ pub fn draw(
         draw_viewer(ctx, &mut store, &mut images);
         let mut cards: Vec<egui::Rect> = Vec::new();
         cards.extend(draw_reply(ctx, &mut store));
-        cards.extend(draw_terminal(ctx, &mut store, &mut terms));
+        cards.extend(draw_terminal(ctx, &mut store, &mut side.terms));
         cards.extend(draw_turn_card(ctx, &mut store, settings.narrator));
         store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
         draw_toasts(ctx, &store);
@@ -1081,7 +1094,7 @@ pub fn draw(
     }
     let mut cards: Vec<egui::Rect> = Vec::new();
     cards.extend(draw_reply(ctx, &mut store));
-    cards.extend(draw_terminal(ctx, &mut store, &mut terms));
+    cards.extend(draw_terminal(ctx, &mut store, &mut side.terms));
     cards.extend(draw_turn_card(ctx, &mut store, settings.narrator));
     cards.extend(settings_rect);
     store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
@@ -1108,6 +1121,135 @@ pub fn draw(
         .map(|p| ui_rects.iter().any(|r| r.contains(p)))
         .unwrap_or(false);
     Ok(())
+}
+
+/// The raid's console, bottom-left in cinematic mode: phase, wave, level, score, data integrity,
+/// and the controls. A big wave banner flashes mid-screen when a message is live.
+fn draw_raid(ctx: &egui::Context, raid: &mut raid::Raid) {
+    use raid::{Phase, Request};
+    if let Some((msg, ttl)) = raid.message.clone() {
+        let alpha = (ttl / 0.6).clamp(0.0, 1.0);
+        egui::Area::new(egui::Id::new("raid-banner"))
+            .anchor(egui::Align2::CENTER_TOP, egui::vec2(0.0, 90.0))
+            .interactable(false)
+            .show(ctx, |ui| {
+                ui.label(
+                    egui::RichText::new(msg)
+                        .font(stencil(30.0))
+                        .color(AMBER.gamma_multiply(alpha)),
+                );
+            });
+    }
+    egui::Area::new(egui::Id::new("raid-hud"))
+        .anchor(egui::Align2::LEFT_BOTTOM, egui::vec2(16.0, -12.0))
+        .order(egui::Order::Foreground)
+        .show(ctx, |ui| {
+            let border = if raid.flash > 0.0 { RED } else { ACCENT };
+            egui::Frame::NONE
+                .fill(egui::Color32::from_rgba_unmultiplied(6, 12, 5, 215))
+                .stroke(egui::Stroke::new(1.0, border))
+                .inner_margin(10.0)
+                .corner_radius(8.0)
+                .show(ui, |ui| {
+                    ui.set_width(250.0);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("🛸 RAID").font(stencil(15.0)).color(SAND));
+                        let (tag, color) = match raid.phase {
+                            Phase::Idle => ("idle", DIM),
+                            Phase::Running => ("live", ACCENT),
+                            Phase::Paused => ("paused", AMBER),
+                            Phase::Over => ("over", RED),
+                        };
+                        ui.label(egui::RichText::new(tag).small().color(color));
+                    });
+                    match raid.phase {
+                        Phase::Idle => {
+                            ui.label(
+                                egui::RichText::new("Saucers come for the data. Click them before they land.")
+                                    .small()
+                                    .color(DIM),
+                            );
+                            if raid.best > 0 {
+                                ui.label(egui::RichText::new(format!("best {}", raid.best)).small().color(SAND));
+                            }
+                            if ui.button("▶ start raid  (P)").clicked() {
+                                raid.request = Some(Request::Start);
+                            }
+                        }
+                        Phase::Running | Phase::Paused => {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "wave {} · level {} · score {} · kills {}",
+                                    raid.wave, raid.level, raid.score, raid.kills
+                                ))
+                                .small()
+                                .monospace()
+                                .color(TEXT),
+                            );
+                            let pct = (raid.integrity * 100.0).round() as i32;
+                            let fill = if raid.integrity > 0.6 {
+                                egui::Color32::from_rgb(70, 130, 45)
+                            } else if raid.integrity > 0.3 {
+                                AMBER
+                            } else {
+                                RED
+                            };
+                            ui.add(
+                                egui::ProgressBar::new(raid.integrity)
+                                    .fill(fill)
+                                    .text(egui::RichText::new(format!("data integrity {pct}%")).small()),
+                            );
+                            let inbound = raid.alive + raid.to_spawn as usize;
+                            ui.label(
+                                egui::RichText::new(format!("{inbound} inbound · {} in the air", raid.alive))
+                                    .small()
+                                    .color(DIM),
+                            );
+                            ui.horizontal(|ui| {
+                                if raid.phase == Phase::Running {
+                                    if ui.button("⏸ pause").clicked() {
+                                        raid.request = Some(Request::Pause);
+                                    }
+                                } else {
+                                    if ui.button("▶ resume").clicked() {
+                                        raid.request = Some(Request::Resume);
+                                    }
+                                    if ui.button("⟲ replay").clicked() {
+                                        raid.request = Some(Request::Replay);
+                                    }
+                                }
+                                if ui
+                                    .button("■ stop")
+                                    .on_hover_text("End the raid and clear the sky")
+                                    .clicked()
+                                {
+                                    raid.request = Some(Request::Stop);
+                                }
+                            });
+                        }
+                        Phase::Over => {
+                            ui.label(egui::RichText::new("DATA LOST").font(stencil(14.0)).color(RED));
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "wave {} · score {} · kills {} · best {}",
+                                    raid.wave, raid.score, raid.kills, raid.best
+                                ))
+                                .small()
+                                .monospace()
+                                .color(TEXT),
+                            );
+                            ui.horizontal(|ui| {
+                                if ui.button("⟲ replay").clicked() {
+                                    raid.request = Some(Request::Replay);
+                                }
+                                if ui.button("■ stop").clicked() {
+                                    raid.request = Some(Request::Stop);
+                                }
+                            });
+                        }
+                    }
+                });
+        });
 }
 
 /// Notification badges floating above units: lamp for done, chat bubble for waiting, red for error.

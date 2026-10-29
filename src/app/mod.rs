@@ -5,6 +5,7 @@ mod camera;
 mod gitinfo;
 mod hotkeys;
 mod probe;
+mod raid;
 mod scene;
 mod servers;
 mod settings;
@@ -75,7 +76,10 @@ pub fn run(cfg: Config) {
         .init_resource::<terminal::Terminals>()
         .init_resource::<gitinfo::GitWatch>()
         .insert_resource(hotkeys::start())
-        .add_systems(Startup, (camera::setup, scene::setup, sounds::setup, alerts::setup))
+        .add_systems(
+            Startup,
+            (camera::setup, scene::setup, sounds::setup, alerts::setup, raid::setup),
+        )
         .add_systems(
             Update,
             // Bevy system tuples hold 20 at most: two chained halves keep the original order.
@@ -114,6 +118,7 @@ pub fn run(cfg: Config) {
                     window_icon,
                 )
                     .chain(),
+                (raid::tick, raid::fx).chain(),
             )
                 .chain(),
         )

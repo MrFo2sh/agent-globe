@@ -144,6 +144,8 @@ curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo"
 - **Alarms.** Same command three times, a call open for two minutes, or context near the model's
   limit: toast, sound, and the unit turns amber.
 - **Glossary.** Hover any counter for what it means.
+- **The raid (🛸).** In cinematic mode: saucers come for the data, click them before they land.
+  Waves and levels, pause and resume across restarts, replay, stop. P toggles it.
 
 ## Layout
 
