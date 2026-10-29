@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.27.3 - 2026-10-29
+- Two switches in settings decide what the file index admits: show hidden files (dotfiles and dot-folders) and show ignored files (what the gitignore excludes). Build and dependency folders stay out regardless. The rings, the tree and the finder follow.
+
 ## 0.27.2 - 2026-10-29
 - Quick open shows its selection: the highlighted row and a ▸ marker follow ↑ ↓. The rows are frameless buttons, which ignore their fill, so the selection never painted before.
 

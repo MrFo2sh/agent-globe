@@ -193,25 +193,42 @@ pub struct FileIndex {
     /// Connections between files: imports read from the source, and git co-change pairs.
     links: Arc<Mutex<Vec<Link>>>,
     built: bool,
+    /// Walk options: dotfiles and gitignored files in or out; the build was made with `built_with`.
+    show_hidden: bool,
+    show_ignored: bool,
+    built_with: (bool, bool),
     dirs: HashMap<String, (Instant, Vec<Entry>)>,
     matcher: SkimMatcherV2,
 }
 
 impl FileIndex {
     /// Point the index at a folder; a new folder (or `force`) rebuilds it in the background.
+    /// Which files the walk admits; a change rebuilds the index on the next `ensure`.
+    pub fn configure(&mut self, show_hidden: bool, show_ignored: bool) {
+        self.show_hidden = show_hidden;
+        self.show_ignored = show_ignored;
+    }
+
     pub fn ensure(&mut self, root: &str, force: bool) {
         if root.is_empty() {
             return;
         }
-        if self.root == root && (self.built || self.building.load(Ordering::Relaxed)) && !force {
+        let opts = (self.show_hidden, self.show_ignored);
+        if self.root == root
+            && self.built_with == opts
+            && (self.built || self.building.load(Ordering::Relaxed))
+            && !force
+        {
             return;
         }
         self.root = root.to_string();
         self.built = false;
+        self.built_with = opts;
         self.dirs.clear();
         self.building.store(true, Ordering::Relaxed);
         let (entries, building, generation) = (self.entries.clone(), self.building.clone(), self.generation.clone());
         let links = self.links.clone();
+        let (show_hidden, show_ignored) = opts;
         let root = PathBuf::from(root);
         std::thread::Builder::new()
             .name("file-index".into())
@@ -230,9 +247,9 @@ impl FileIndex {
                 let mut out: Vec<String> = Vec::new();
                 for (base, prefix) in &repos {
                     let walker = ignore::WalkBuilder::new(base)
-                        .hidden(true)
-                        .git_ignore(true)
-                        .git_exclude(true)
+                        .hidden(!show_hidden)
+                        .git_ignore(!show_ignored)
+                        .git_exclude(!show_ignored)
                         .max_depth(Some(14))
                         .filter_entry(|e| !e.file_name().to_str().is_some_and(|n| SKIP.contains(&n)))
                         .build();
@@ -325,7 +342,7 @@ impl FileIndex {
         if let Ok(rd) = std::fs::read_dir(dir) {
             for e in rd.flatten() {
                 let name = e.file_name().to_string_lossy().to_string();
-                if name.starts_with('.') || SKIP.contains(&name.as_str()) {
+                if (name.starts_with('.') && !self.show_hidden) || SKIP.contains(&name.as_str()) {
                     continue;
                 }
                 let is_dir = e.file_type().map(|t| t.is_dir()).unwrap_or(false);

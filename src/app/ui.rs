@@ -180,6 +180,8 @@ pub fn draw(
     }
     let now = now_millis();
     store.typing = ctx.memory(|m| m.focused().is_some());
+    side.index
+        .configure(settings.files_show_hidden, settings.files_show_ignored);
     // The editor surface is a native child window: once it has had the keyboard, Windows hands
     // the keyboard back to it whenever the window is activated, and egui's text fields look
     // disabled. A press on the app's own side, or a text field gaining focus, takes it back.
@@ -1216,6 +1218,10 @@ pub fn draw(
                     .on_hover_text("Lines from the hovered or open file to the files it imports, the files that change with it in git, and the files the same unit touched in the same stretch.");
                 ui.checkbox(&mut settings.file_links_all, "all links, always")
                     .on_hover_text("Every connection, faint. Busy on a big project.");
+                ui.checkbox(&mut settings.files_show_hidden, "show hidden files")
+                    .on_hover_text("Dotfiles and dot-folders (.github, .vscode, .claude) in the rings, the tree and the finder.");
+                ui.checkbox(&mut settings.files_show_ignored, "show ignored files")
+                    .on_hover_text("Files the gitignore excludes. Build and dependency folders (target, node_modules, dist) stay out regardless: they run to tens of thousands of files.");
                 ui.label(
                     egui::RichText::new(
                         "approvals from any window: Ctrl+Alt+Y allows, Ctrl+Alt+N denies the oldest pending request",

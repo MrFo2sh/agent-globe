@@ -41,6 +41,9 @@ pub struct Settings {
     pub file_links: bool,
     /// Every connection, faint, all the time (a lot of lines on a big project).
     pub file_links_all: bool,
+    /// The file index admits dotfiles and dot-folders / files the gitignore excludes.
+    pub files_show_hidden: bool,
+    pub files_show_ignored: bool,
     /// Force the compact layout (it also turns on by itself under 1100 px of width).
     pub compact: bool,
     /// Windows notifications when the window is not focused (off by default: the radio is the alert).
@@ -88,6 +91,8 @@ impl Default for Settings {
             files_ring: true,
             file_links: false,
             file_links_all: false,
+            files_show_hidden: false,
+            files_show_ignored: false,
             compact: false,
             desktop_notifications: false,
             title_bar: false,
