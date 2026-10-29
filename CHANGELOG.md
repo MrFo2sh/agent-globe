@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.8.4 - 2026-10-29
+- History search: matching prompt groups are a lit band with a border and their hit count; the other groups stay listed but dim and folded, so the matching ones stand out. Hits inside the prompt line are boxed.
+
 ## 0.8.3 - 2026-10-29
 - History search: a prompt group that holds hits is drawn in the accent colour with its hit count in the header, and hits inside the prompt line itself are boxed too.
 

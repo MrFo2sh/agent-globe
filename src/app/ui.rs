@@ -1720,9 +1720,8 @@ fn agent_panel(
                     let t = &a.turn_log[ti];
                     let range = a.turn_range(ti);
                     let idx: Vec<usize> = range.clone().filter(|i| hit_set.contains(i)).collect();
-                    if !needle.is_empty() && idx.is_empty() {
-                        continue;
-                    }
+                    let searching = !needle.is_empty();
+                    let matched = searching && !idx.is_empty();
                     let first_line: String = t
                         .prompt
                         .lines()
@@ -1737,10 +1736,9 @@ fn agent_panel(
                         .iter()
                         .filter(|c| c.tool == "Agent" || c.tool == "Task")
                         .count();
-                    // With a search active the group header carries its hit count and lights up.
-                    let title = if needle.is_empty() {
-                        format!("#{}  {}  {}", ti + 1, clock(t.started), first_line)
-                    } else {
+                    // With a search active: matching groups become a lit band with their hit count,
+                    // the others stay visible but dim and folded, so the eye lands on the hits.
+                    let title = if matched {
                         format!(
                             "#{}  {}  {}   · {} call{} match",
                             ti + 1,
@@ -1749,41 +1747,66 @@ fn agent_panel(
                             idx.len(),
                             if idx.len() == 1 { "" } else { "s" }
                         )
-                    };
-                    let header: egui::WidgetText = if needle.is_empty() {
-                        egui::RichText::new(title).color(SAND).into()
                     } else {
-                        highlighted(&title, &needle, egui::FontId::proportional(14.0), ACCENT).into()
+                        format!("#{}  {}  {}", ti + 1, clock(t.started), first_line)
                     };
-                    egui::CollapsingHeader::new(header)
-                        .id_salt((&a.id, ti))
-                        .default_open(ti + 1 == n || !needle.is_empty())
-                        .show(ui, |ui| {
-                            ui.horizontal_wrapped(|ui| {
-                                ui.label(
-                                    egui::RichText::new(format!(
-                                        "{} calls · {} units · {}",
-                                        range.len(),
-                                        units,
-                                        dur(took)
-                                    ))
-                                    .small()
-                                    .monospace()
-                                    .color(DIM),
-                                );
-                                if t.ended.is_none() {
-                                    ui.label(egui::RichText::new("● in progress").small().color(ACCENT));
+                    let header: egui::WidgetText = if matched {
+                        highlighted(
+                            &title,
+                            &needle,
+                            egui::FontId::proportional(14.0),
+                            egui::Color32::from_rgb(230, 255, 220),
+                        )
+                        .into()
+                    } else if searching {
+                        egui::RichText::new(title).color(DIM).into()
+                    } else {
+                        egui::RichText::new(title).color(SAND).into()
+                    };
+                    let band = if matched {
+                        egui::Frame::NONE
+                            .fill(egui::Color32::from_rgb(18, 58, 28))
+                            .stroke(egui::Stroke::new(1.0, ACCENT))
+                            .inner_margin(egui::Margin::symmetric(6, 2))
+                            .corner_radius(4.0)
+                    } else {
+                        egui::Frame::NONE
+                    };
+                    band.show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        egui::CollapsingHeader::new(header)
+                            .id_salt((&a.id, ti))
+                            .default_open((ti + 1 == n && !searching) || matched)
+                            .show(ui, |ui| {
+                                ui.horizontal_wrapped(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!(
+                                            "{} calls · {} units · {}",
+                                            range.len(),
+                                            units,
+                                            dur(took)
+                                        ))
+                                        .small()
+                                        .monospace()
+                                        .color(DIM),
+                                    );
+                                    if t.ended.is_none() {
+                                        ui.label(egui::RichText::new("● in progress").small().color(ACCENT));
+                                    }
+                                });
+                                if t.prompt.trim().len() > first_line.len() {
+                                    ui.collapsing(egui::RichText::new("full prompt").small().color(DIM), |ui| {
+                                        code_block(ui, &format!("{}:turn{ti}", a.id), &t.prompt, TEXT, expanded, "");
+                                    });
+                                }
+                                if searching && !matched {
+                                    ui.label(egui::RichText::new("no matches in this turn").small().color(DIM));
+                                }
+                                for i in idx {
+                                    call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
                                 }
                             });
-                            if t.prompt.trim().len() > first_line.len() {
-                                ui.collapsing(egui::RichText::new("full prompt").small().color(DIM), |ui| {
-                                    code_block(ui, &format!("{}:turn{ti}", a.id), &t.prompt, TEXT, expanded, "");
-                                });
-                            }
-                            for i in idx {
-                                call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
-                            }
-                        });
+                    });
                 }
             }
             if a.calls.is_empty() {
