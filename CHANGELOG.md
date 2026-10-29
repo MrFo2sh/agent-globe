@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.11.2 - 2026-10-29
+- The reply card is drawn on the top layer: badges and file labels no longer show through or over it. It is draggable, stays on screen, and scrolls.
+
 ## 0.11.1 - 2026-10-29
 - The reply card has a solid opaque background with a drop shadow, so the constellation and file labels behind it no longer bleed through the text.
 

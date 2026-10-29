@@ -187,12 +187,12 @@ pub fn draw(
                 ui.label(egui::RichText::new("Esc: back to the console").small().color(DIM));
             });
         draw_badges(ctx, &mut store);
-        draw_reply(ctx, &mut store);
         draw_progress(ctx, &store, &settings, now);
         draw_satellites(ctx, &mut store, now);
         draw_files(ctx, &mut store);
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
         draw_viewer(ctx, &mut store, &mut images);
+        draw_reply(ctx, &mut store);
         draw_toasts(ctx, &store);
         return Ok(());
     }
@@ -1063,7 +1063,6 @@ pub fn draw(
     }
 
     draw_badges(ctx, &mut store);
-    draw_reply(ctx, &mut store);
     draw_progress(ctx, &store, &settings, now);
     draw_satellites(ctx, &mut store, now);
     draw_files(ctx, &mut store);
@@ -1077,6 +1076,7 @@ pub fn draw(
     if let Some(rect) = draw_approvals(ctx, &mut store, &bridge.0, inset_top) {
         ui_rects.push(rect);
     }
+    draw_reply(ctx, &mut store);
     draw_toasts(ctx, &store);
 
     store.scene_insets = Some((inset_left, inset_top, inset_right, inset_bottom));
@@ -1374,68 +1374,69 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) {
         .map(|b| egui::pos2(b.x + 28.0, b.y - 20.0));
     let vr = ctx.viewport_rect();
     let mut close = false;
-    let mut win = egui::Window::new("reply")
-        .title_bar(false)
-        .resizable(true)
-        .collapsible(false)
-        .default_size(egui::vec2(
-            (vr.width() * 0.38).clamp(380.0, 640.0),
-            (vr.height() * 0.45).clamp(220.0, 520.0),
-        ))
-        .frame(
+    let width = (vr.width() * 0.38).clamp(380.0, 640.0);
+    let height = (vr.height() * 0.45).clamp(220.0, 520.0);
+    let default_pos = anchor.unwrap_or_else(|| vr.center() - egui::vec2(width / 2.0, height / 2.0));
+    // A Foreground area, drawn last, so the badges and file labels (also Foreground) stay behind it.
+    egui::Area::new(egui::Id::new("reply-card"))
+        .order(egui::Order::Foreground)
+        .default_pos(default_pos)
+        .movable(true)
+        .constrain(true)
+        .show(ctx, |ui| {
             egui::Frame::NONE
-                // Solid fill: the reply is text to read, the constellation behind must not bleed through.
                 .fill(egui::Color32::from_rgb(6, 12, 5))
                 .stroke(egui::Stroke::new(1.5, ACCENT))
                 .shadow(egui::epaint::Shadow {
                     offset: [0, 4],
                     blur: 18,
                     spread: 0,
-                    color: egui::Color32::from_black_alpha(160),
+                    color: egui::Color32::from_black_alpha(180),
                 })
                 .inner_margin(12.0)
-                .corner_radius(8.0),
-        );
-    if let Some(p) = anchor {
-        win = win.default_pos(p);
-    }
-    win.show(ctx, |ui| {
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("💬").size(16.0));
-            ui.label(
-                egui::RichText::new(format!("{project} · {}", agent_title(&agent)))
-                    .font(stencil(14.0))
-                    .color(SAND),
-            );
-            ui.label(
-                egui::RichText::new(clock(agent.last_activity))
-                    .small()
-                    .monospace()
-                    .color(DIM),
-            );
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.small_button("✕  (Esc)").clicked() {
-                    close = true;
-                }
-                if ui
-                    .small_button("⧉ copy")
-                    .on_hover_text("Copy the whole reply")
-                    .clicked()
-                {
-                    ctx.copy_text(agent.last_said.clone());
-                }
-            });
+                .corner_radius(8.0)
+                .show(ui, |ui| {
+                    ui.set_width(width);
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new("💬").size(16.0));
+                        ui.label(
+                            egui::RichText::new(format!("{project} · {}", agent_title(&agent)))
+                                .font(stencil(14.0))
+                                .color(SAND),
+                        );
+                        ui.label(
+                            egui::RichText::new(clock(agent.last_activity))
+                                .small()
+                                .monospace()
+                                .color(DIM),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("✕  (Esc)").clicked() {
+                                close = true;
+                            }
+                            if ui
+                                .small_button("⧉ copy")
+                                .on_hover_text("Copy the whole reply")
+                                .clicked()
+                            {
+                                ctx.copy_text(agent.last_said.clone());
+                            }
+                        });
+                    });
+                    ui.separator();
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .max_height(height)
+                        .show(ui, |ui| {
+                            ui.set_min_width(width - 8.0);
+                            if agent.last_said.trim().is_empty() {
+                                ui.label(egui::RichText::new("nothing said yet").color(DIM));
+                            } else {
+                                render_reply(ui, &agent.last_said);
+                            }
+                        });
+                });
         });
-        ui.separator();
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            ui.set_min_width(ui.available_width() - 8.0);
-            if agent.last_said.trim().is_empty() {
-                ui.label(egui::RichText::new("nothing said yet").color(DIM));
-            } else {
-                render_reply(ui, &agent.last_said);
-            }
-        });
-    });
     if close {
         store.reply_open = None;
     }
