@@ -341,6 +341,7 @@ pub fn draw(
     let mut open_term: Option<String> = None;
     let mut open_files = false;
     let mut cycle_view = false;
+    let mut cycle_links = false;
     let usage_state = usage.snapshot();
     let hud = egui::Panel::top("hud").show(&mut root, |ui| {
         ui.add_space(4.0);
@@ -391,6 +392,18 @@ pub fn draw(
                         };
                         if ui.small_button(label).on_hover_text(tip).clicked() {
                             cycle_view = true;
+                        }
+                    }
+                    {
+                        let (label, tip) = if !settings.file_links {
+                            ("⛓ off", "Links between files are off. Click: the hovered or open file's links.")
+                        } else if settings.file_links_all {
+                            ("⛓ all", "Every connection between files, faint. Click: off.")
+                        } else {
+                            ("⛓ focus", "The hovered or open file's imports, co-changes and same-turn touches. Click: every connection.")
+                        };
+                        if ui.small_button(label).on_hover_text(tip).clicked() {
+                            cycle_links = true;
                         }
                     }
                     if !s.cwd.is_empty() {
@@ -542,6 +555,18 @@ pub fn draw(
     }
     if cycle_view {
         store.scene_view = store.scene_view.next();
+    }
+    if cycle_links {
+        // off → focus → all → off
+        if !settings.file_links {
+            settings.file_links = true;
+            settings.file_links_all = false;
+        } else if !settings.file_links_all {
+            settings.file_links_all = true;
+        } else {
+            settings.file_links = false;
+            settings.file_links_all = false;
+        }
     }
     if let Some(sid) = open_term {
         store.terminal_open = if store.terminal_open.as_deref() == Some(sid.as_str()) {
