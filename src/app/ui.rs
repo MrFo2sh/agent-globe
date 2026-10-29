@@ -1802,10 +1802,20 @@ pub(super) fn begin_card(
 ) -> (CardState, Option<Pane>, DockGrid) {
     let cs = store.cards.remove(id).unwrap_or_default();
     let dock = settings.panes.remove(id);
+    // The dock area is the free space: right of both left sidebars, left of the agent panel,
+    // under the top bar, above the status bar. Panes are fractions of it, so they follow when a
+    // panel opens or closes.
     let vr = ctx.viewport_rect();
-    let (left, top, _, _) = store.scene_insets.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let (left, top, right, bottom) = store.scene_insets.unwrap_or((0.0, 0.0, 0.0, 0.0));
+    let mut area = egui::Rect::from_min_max(
+        egui::pos2(vr.min.x + left, vr.min.y + top),
+        egui::pos2(vr.max.x - right, vr.max.y - bottom),
+    );
+    if area.width() < 240.0 || area.height() < 160.0 {
+        area = vr;
+    }
     let grid = DockGrid {
-        rect: egui::Rect::from_min_max(egui::pos2(vr.min.x + left, vr.min.y + top), vr.max),
+        rect: area,
         cols: settings.grid_cols.clamp(1, 12) as usize,
         rows: settings.grid_rows.clamp(1, 6) as usize,
     };

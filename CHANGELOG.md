@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.22.1 - 2026-10-29
+- The dock area is exactly the free space: right of both left sidebars, left of the agent panel, under the top bar, above the status bar. Docked panes are fractions of it, so they give way when the agent panel or a sidebar opens and take the space back when it closes.
+
 ## 0.22.0 - 2026-10-29
 - The files tree is a second left sidebar beside the sessions, not a card: a strip with 🗂 when collapsed, a resizable panel with the finder box on top when expanded. Expanding it pushes the dock area and every docked card to the right, like the sessions sidebar. Ctrl+P expands it and focuses the finder; ⟨ collapses it.
 
