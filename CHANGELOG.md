@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.25.2 - 2026-10-29
+- Cards drag again. The motion check added for slow header clicks looked at egui's one-frame drag-start flag, which fires before the pointer has moved far enough, so no drag ever began. The check now watches the drag as it goes.
+
 ## 0.25.1 - 2026-10-29
 - A ⛓ toggle in the top bar for the file connections: off, the hovered or open file only, or all. Remembered across runs.
 

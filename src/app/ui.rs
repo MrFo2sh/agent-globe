@@ -1830,7 +1830,9 @@ pub(super) struct CardOut {
     pub close: bool,
     pub toggle_max: bool,
     pub rect: Option<egui::Rect>,
-    drag_started: bool,
+    /// The title is being dragged this frame (egui's one-frame start flag is not used: it fires
+    /// before the pointer has moved far enough to tell a drag from a slow click).
+    dragging: bool,
     drag_delta: egui::Vec2,
     drag_stopped: bool,
     /// An edge of a docked card being dragged: 0 left, 1 right, 2 top, 3 bottom, 4 corner.
@@ -2237,7 +2239,7 @@ pub(super) fn floating_card(
             let drag = ui
                 .interact(header_rect, egui::Id::new(id).with("drag"), egui::Sense::drag())
                 .on_hover_cursor(egui::CursorIcon::Grab);
-            out.drag_started = drag.drag_started();
+            out.dragging = drag.dragged();
             out.drag_delta = drag.drag_delta();
             out.drag_stopped = drag.drag_stopped();
         }
@@ -2369,7 +2371,7 @@ pub(super) fn floating_card(
             .zip(i.pointer.latest_pos())
             .is_some_and(|(a, b)| a.distance(b) > 6.0)
     });
-    if out.drag_started && moved {
+    if out.dragging && !cs.dragging && moved {
         ctx.move_to_top(layer);
         cs.dragging = true;
         if dock.is_some() {
