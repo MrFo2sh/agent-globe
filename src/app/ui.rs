@@ -2008,6 +2008,25 @@ fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab) {
             CursorShape::Hidden => {}
         }
     }
+    if frame.history > 0 {
+        // A thin scrollbar on the right: where the screen sits in the history.
+        let total = (frame.history + rows as usize) as f32;
+        let track = egui::Rect::from_min_max(
+            egui::pos2(rect.max.x - 5.0, rect.min.y + 3.0),
+            egui::pos2(rect.max.x - 2.0, rect.max.y - 3.0),
+        );
+        let thumb_h = (track.height() * rows as f32 / total).max(12.0);
+        let top_frac = (frame.history - frame.display_offset) as f32 / total;
+        let thumb = egui::Rect::from_min_size(
+            egui::pos2(
+                track.min.x,
+                track.min.y + top_frac * (track.height() - thumb_h) * total / (total - rows as f32).max(1.0),
+            ),
+            egui::vec2(track.width(), thumb_h),
+        );
+        painter.rect_filled(track, 1.5, egui::Color32::from_white_alpha(10));
+        painter.rect_filled(thumb.intersect(track), 1.5, egui::Color32::from_white_alpha(60));
+    }
     if frame.display_offset > 0 {
         let text = format!("▲ {} lines up · wheel or any key", frame.display_offset);
         let pos = rect.right_top() + egui::vec2(-8.0, 6.0);

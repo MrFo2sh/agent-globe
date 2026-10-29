@@ -88,6 +88,8 @@ pub struct Frame {
     pub cursor: Option<(usize, usize, CursorShape)>,
     /// Lines scrolled up from the bottom.
     pub display_offset: usize,
+    /// Lines of history above the screen.
+    pub history: usize,
     pub app_cursor: bool,
 }
 
@@ -99,6 +101,8 @@ pub struct PtyTab {
     pub cwd: String,
     cols: u16,
     rows: u16,
+    /// The console's startup clear pushes a blank page into the history; it is dropped once.
+    history_trimmed: bool,
 }
 
 impl PtyTab {
@@ -146,6 +150,7 @@ impl PtyTab {
             cwd: cwd.to_string(),
             cols,
             rows,
+            history_trimmed: false,
         })
     }
 
@@ -228,8 +233,27 @@ impl PtyTab {
     }
 
     /// The visible grid, colours resolved, ready to paint.
-    pub fn frame(&self) -> Frame {
-        let term = self.term.lock();
+    pub fn frame(&mut self) -> Frame {
+        let mut term = self.term.lock();
+        // Until something real has scrolled off, a history made only of blank lines is noise:
+        // the wheel would scroll the prompt away into nothing.
+        if !self.history_trimmed {
+            let grid = term.grid();
+            let hs = grid.history_size();
+            if hs > 0 {
+                let cols = grid.columns();
+                let blank = (grid.topmost_line().0..0).all(|l| {
+                    let row = &grid[Line(l)];
+                    (0..cols.min(row.len())).all(|c| row[Column(c)].c == ' ')
+                });
+                if blank {
+                    term.grid_mut().clear_history();
+                } else {
+                    self.history_trimmed = true;
+                }
+            }
+        }
+        let term = &*term;
         let content = term.renderable_content();
         let cols = term.grid().columns();
         let rows = term.grid().screen_lines();
@@ -276,6 +300,7 @@ impl PtyTab {
             cells,
             cursor,
             display_offset: content.display_offset,
+            history: term.grid().history_size(),
             app_cursor: content.mode.contains(TermMode::APP_CURSOR),
         }
     }
@@ -554,6 +579,26 @@ mod tests {
             key_bytes(egui::Key::Tab, egui::Modifiers::SHIFT, false),
             Some(b"\x1b[Z".to_vec())
         );
+    }
+
+    /// A real console on this machine: PowerShell answers through ConPTY.
+    #[test]
+    #[cfg(windows)]
+    fn console_runs_a_command() {
+        let tab = PtyTab::spawn("", 80, 24).expect("conpty");
+        tab.write(b"Write-Output (6*7)\r".to_vec());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            if tab.all_lines().iter().any(|l| l.trim() == "42") {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no answer from the console: {:?}",
+                tab.all_lines()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
     }
 
     #[test]

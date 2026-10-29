@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.18.1 - 2026-10-29
+- Terminal scrolling: the console's startup clear used to push a blank page into the history, so the wheel scrolled the prompt away into nothing. Blank-only history is dropped, a thin scrollbar shows where the screen sits, and a smoke test proves the console answers on this machine.
+
 ## 0.18.0 - 2026-10-29
 - A real terminal: each tab is a Windows pseudo console (ConPTY) running PowerShell, with alacritty's VT state machine behind a cell grid, 10,000 lines of scrollback, 256 and true colour, bold, underline, inverse, the program's own cursor shape, bracketed paste and app-cursor keys. Click the grid to type; PSReadLine, tab completion, Ctrl+C, `claude`, vim and other full-screen programs work as in a native window. The wheel scrolls the history, the card's search box switches to a text view of the scrollback with the hits lit, ⧉ copies it all, 🗑 runs cls, ⟲ restarts the tab. Replaces the line-based console.
 - Cinematic mode is for watching: clicks on units, files and other constellations do nothing there. Esc brings the console back.
