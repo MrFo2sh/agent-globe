@@ -13,7 +13,7 @@ use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 const OUTPUT_CAP: usize = 16 * 1024;
-const TEXT_CAP: usize = 2000;
+const TEXT_CAP: usize = 12_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionRef {

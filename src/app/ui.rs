@@ -186,7 +186,8 @@ pub fn draw(
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new("Esc: back to the console").small().color(DIM));
             });
-        draw_badges(ctx, &store);
+        draw_badges(ctx, &mut store);
+        draw_reply(ctx, &mut store);
         draw_progress(ctx, &store, &settings, now);
         draw_satellites(ctx, &mut store, now);
         draw_files(ctx, &mut store);
@@ -1061,7 +1062,8 @@ pub fn draw(
         }
     }
 
-    draw_badges(ctx, &store);
+    draw_badges(ctx, &mut store);
+    draw_reply(ctx, &mut store);
     draw_progress(ctx, &store, &settings, now);
     draw_satellites(ctx, &mut store, now);
     draw_files(ctx, &mut store);
@@ -1274,7 +1276,7 @@ fn session_card(ui: &mut egui::Ui, s: &Session, now: i64) {
     ui.label(egui::RichText::new("click to switch").small().color(DIM));
 }
 
-fn draw_badges(ctx: &egui::Context, store: &Store) {
+fn draw_badges(ctx: &egui::Context, store: &mut Store) {
     if store.badges.is_empty() || store.viewer.is_some() {
         return;
     }
@@ -1289,7 +1291,9 @@ fn draw_badges(ctx: &egui::Context, store: &Store) {
     let painter = ctx
         .layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("badges")))
         .with_clip_rect(scene);
-    for b in &store.badges {
+    let mut toggle_reply: Option<(String, String)> = None;
+    let badges = store.badges.clone();
+    for b in &badges {
         if !scene.contains(egui::pos2(b.x, b.y)) {
             continue;
         }
@@ -1306,6 +1310,23 @@ fn draw_badges(ctx: &egui::Context, store: &Store) {
         };
         let label: &str = question.as_deref().unwrap_or(label);
         let center = egui::pos2(b.x, b.y - 10.0 - 4.0 * (t * 2.0).sin());
+        if b.kind == BadgeKind::Waiting {
+            let key = (b.session_id.clone(), b.agent_id.clone());
+            let open = store.reply_open.as_ref() == Some(&key);
+            let resp = egui::Area::new(egui::Id::new(("reply-badge", &key)))
+                .fixed_pos(center - egui::vec2(16.0, 16.0))
+                .order(egui::Order::Foreground)
+                .show(ctx, |ui| {
+                    ui.allocate_response(egui::vec2(32.0, 32.0), egui::Sense::click())
+                })
+                .inner;
+            if resp
+                .on_hover_text(if open { "close the reply" } else { "read the reply" })
+                .clicked()
+            {
+                toggle_reply = Some(key);
+            }
+        }
         let glow = color.gamma_multiply(0.25 * pulse);
         painter.circle_filled(center, 22.0, glow);
         painter.circle_filled(center, 14.0, PANEL);
@@ -1325,7 +1346,192 @@ fn draw_badges(ctx: &egui::Context, store: &Store) {
             color.gamma_multiply(0.9),
         );
     }
+    if let Some(key) = toggle_reply {
+        store.reply_open = if store.reply_open.as_ref() == Some(&key) {
+            None
+        } else {
+            Some(key)
+        };
+    }
     ctx.request_repaint();
+}
+
+/// The reply card: the commander's last message, the one the editor shows as its answer, with
+/// light Markdown. Opened from the 💬 badge; Esc, ✕ or the badge again closes it.
+fn draw_reply(ctx: &egui::Context, store: &mut Store) {
+    let Some((sid, aid)) = store.reply_open.clone() else {
+        return;
+    };
+    let Some(agent) = store.sessions.get(&sid).and_then(|s| s.agent(&aid)).cloned() else {
+        store.reply_open = None;
+        return;
+    };
+    let project = store.sessions.get(&sid).map(|s| s.project.clone()).unwrap_or_default();
+    let anchor = store
+        .badges
+        .iter()
+        .find(|b| b.session_id == sid && b.agent_id == aid)
+        .map(|b| egui::pos2(b.x + 28.0, b.y - 20.0));
+    let vr = ctx.viewport_rect();
+    let mut close = false;
+    let mut win = egui::Window::new("reply")
+        .title_bar(false)
+        .resizable(true)
+        .collapsible(false)
+        .default_size(egui::vec2(
+            (vr.width() * 0.38).clamp(380.0, 640.0),
+            (vr.height() * 0.45).clamp(220.0, 520.0),
+        ))
+        .frame(
+            egui::Frame::NONE
+                .fill(PANEL)
+                .stroke(egui::Stroke::new(1.5, ACCENT))
+                .inner_margin(12.0)
+                .corner_radius(8.0),
+        );
+    if let Some(p) = anchor {
+        win = win.default_pos(p);
+    }
+    win.show(ctx, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("💬").size(16.0));
+            ui.label(
+                egui::RichText::new(format!("{project} · {}", agent_title(&agent)))
+                    .font(stencil(14.0))
+                    .color(SAND),
+            );
+            ui.label(
+                egui::RichText::new(clock(agent.last_activity))
+                    .small()
+                    .monospace()
+                    .color(DIM),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("✕  (Esc)").clicked() {
+                    close = true;
+                }
+                if ui
+                    .small_button("⧉ copy")
+                    .on_hover_text("Copy the whole reply")
+                    .clicked()
+                {
+                    ctx.copy_text(agent.last_said.clone());
+                }
+            });
+        });
+        ui.separator();
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.set_min_width(ui.available_width() - 8.0);
+            if agent.last_said.trim().is_empty() {
+                ui.label(egui::RichText::new("nothing said yet").color(DIM));
+            } else {
+                render_reply(ui, &agent.last_said);
+            }
+        });
+    });
+    if close {
+        store.reply_open = None;
+    }
+}
+
+/// Light Markdown for replies: headings, bullets, numbered lists, fenced code, inline code, bold.
+fn render_reply(ui: &mut egui::Ui, text: &str) {
+    let mut in_code = false;
+    let mut code = String::new();
+    for line in text.lines() {
+        if line.trim_start().starts_with("```") {
+            if in_code {
+                egui::Frame::NONE.fill(INK).inner_margin(6.0).show(ui, |ui| {
+                    ui.add(
+                        egui::Label::new(egui::RichText::new(code.trim_end_matches('\n')).monospace().color(TEXT))
+                            .selectable(true),
+                    );
+                });
+                code.clear();
+            }
+            in_code = !in_code;
+            continue;
+        }
+        if in_code {
+            code.push_str(line);
+            code.push('\n');
+            continue;
+        }
+        let t = line.trim_end();
+        if t.is_empty() {
+            ui.add_space(4.0);
+        } else if let Some(h) = t
+            .strip_prefix("### ")
+            .or_else(|| t.strip_prefix("## "))
+            .or_else(|| t.strip_prefix("# "))
+        {
+            ui.label(egui::RichText::new(h.trim()).font(stencil(14.0)).color(SAND));
+        } else if let Some(item) = t
+            .trim_start()
+            .strip_prefix("- ")
+            .or_else(|| t.trim_start().strip_prefix("* "))
+        {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("▸").color(SAND));
+                inline_reply(ui, item);
+            });
+        } else if t.trim_start().chars().next().is_some_and(|c| c.is_ascii_digit()) && t.trim_start().contains(". ") {
+            let (num, rest) = t.trim_start().split_once(". ").unwrap_or(("", t));
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new(format!("{num}.")).color(SAND));
+                inline_reply(ui, rest);
+            });
+        } else if t.starts_with('|') {
+            ui.label(egui::RichText::new(t).monospace().small().color(TEXT));
+        } else {
+            ui.horizontal_wrapped(|ui| inline_reply(ui, t));
+        }
+    }
+    if in_code && !code.is_empty() {
+        egui::Frame::NONE.fill(INK).inner_margin(6.0).show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(code.trim_end()).monospace().color(TEXT)).selectable(true));
+        });
+    }
+}
+
+/// Inline `code` and **bold** inside one line.
+fn inline_reply(ui: &mut egui::Ui, text: &str) {
+    ui.spacing_mut().item_spacing.x = 0.0;
+    let mut rest = text;
+    while !rest.is_empty() {
+        let code_at = rest.find('`');
+        let bold_at = rest.find("**");
+        match (code_at, bold_at) {
+            (Some(c), b) if b.is_none_or(|b| c <= b) => {
+                if c > 0 {
+                    ui.label(egui::RichText::new(&rest[..c]).color(TEXT));
+                }
+                if let Some(end) = rest[c + 1..].find('`') {
+                    ui.label(egui::RichText::new(&rest[c + 1..c + 1 + end]).monospace().color(ACCENT));
+                    rest = &rest[c + 2 + end..];
+                } else {
+                    ui.label(egui::RichText::new(&rest[c..]).color(TEXT));
+                    rest = "";
+                }
+            }
+            (_, Some(b)) => {
+                if b > 0 {
+                    ui.label(egui::RichText::new(&rest[..b]).color(TEXT));
+                }
+                if let Some(end) = rest[b + 2..].find("**") {
+                    ui.label(egui::RichText::new(&rest[b + 2..b + 2 + end]).strong().color(SAND));
+                    rest = &rest[b + 4 + end..];
+                } else {
+                    ui.label(egui::RichText::new(&rest[b..]).color(TEXT));
+                    rest = "";
+                }
+            }
+            _ => {
+                ui.label(egui::RichText::new(rest).color(TEXT));
+                rest = "";
+            }
+        }
+    }
 }
 
 fn draw_toasts(ctx: &egui::Context, store: &Store) {
@@ -1847,20 +2053,33 @@ fn agent_panel(
                 }
             });
         }
-        for p in &servers.procs {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("⚙").color(SAND));
-                ui.label(
-                    egui::RichText::new(format!("{} (pid {})", p.name, p.pid))
-                        .monospace()
-                        .color(TEXT),
-                );
-                ui.add(egui::Label::new(egui::RichText::new(&p.cmdline).small().color(DIM)).truncate())
-                    .on_hover_text(format!("started by: {}", p.from));
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    kill_button(ui, p.pid, kill_armed, kill_request);
+        if !servers.procs.is_empty() {
+            let header = egui::RichText::new(format!(
+                "⚙ {} background process{}",
+                servers.procs.len(),
+                if servers.procs.len() == 1 { "" } else { "es" }
+            ))
+            .small()
+            .color(SAND);
+            egui::CollapsingHeader::new(header)
+                .id_salt((&a.id, "procs"))
+                .default_open(servers.procs.len() <= 2)
+                .show(ui, |ui| {
+                    for p in &servers.procs {
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                egui::RichText::new(format!("{} (pid {})", p.name, p.pid))
+                                    .monospace()
+                                    .color(TEXT),
+                            );
+                            ui.add(egui::Label::new(egui::RichText::new(&p.cmdline).small().color(DIM)).truncate())
+                                .on_hover_text(format!("started by: {}", p.from));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                kill_button(ui, p.pid, kill_armed, kill_request);
+                            });
+                        });
+                    }
                 });
-            });
         }
     }
     if !changes.is_empty() {

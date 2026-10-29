@@ -218,6 +218,8 @@ pub struct Store {
     pub show_usage: bool,
     /// One-frame request from the "fold all" button: collapse every prompt group.
     pub fold_groups: bool,
+    /// The reply card: (session, agent) whose last message is open for reading.
+    pub reply_open: Option<(String, String)>,
     /// A ✕ was clicked once on this pid; a second click within three seconds ends the process.
     pub kill_armed: Option<(u32, std::time::Instant)>,
     /// Cinematic mode: no panels, full-window scene.
@@ -289,6 +291,7 @@ impl Store {
             show_usage: false,
             fold_groups: false,
             kill_armed: None,
+            reply_open: None,
             hide_ui: false,
             reset_view: false,
             expanded_calls: HashSet::new(),

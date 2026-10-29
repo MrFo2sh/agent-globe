@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.11.0 - 2026-10-29
+- Servers list shows only what is listening now; Windows services and Agent Globe's own ports are hidden as noise, Docker-owned ports are labelled and left for Docker to stop. Background processes collapse into one expandable line.
+- Click the 💬 badge to read the reply: a card next to the unit shows the commander's full last message, the text the editor shows as its answer, with light Markdown (headings, lists, code, bold), a copy button, and Esc, ✕ or the badge again to close. Works on satellites too. Replies are kept up to 12,000 characters.
+
 ## 0.10.1 - 2026-10-29
 - Servers owned by Docker, Windows services or Agent Globe itself are listed with their owner but get no ✕: ending those would take Docker Desktop or the app down with the port.
 - Usage readout keeps the last good numbers when a refresh fails, polls every 90 s, and waits five minutes after a 429 from the usage endpoint.

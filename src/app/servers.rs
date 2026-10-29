@@ -24,24 +24,36 @@ pub struct ServerInfo {
 /// Processes a ✕ must never reach: ending them would take Docker Desktop, Windows services or
 /// Agent Globe itself down with the port.
 pub fn is_protected(name: &str, pid: u32) -> bool {
+    system_owned(name, pid) || is_docker(name)
+}
+
+/// Windows services, the kernel, or Agent Globe itself: never a dev server the session started,
+/// so these are hidden entirely, not just unkillable.
+pub fn system_owned(name: &str, pid: u32) -> bool {
     if pid == std::process::id() || pid <= 4 {
         return true;
     }
     let n = name.to_ascii_lowercase();
     [
-        "com.docker",
-        "docker",
-        "wslrelay",
-        "wslhost",
-        "vmmem",
         "svchost",
         "system",
         "agent-globe",
         "lsass",
         "services",
+        "wininit",
+        "wslrelay",
+        "wslhost",
+        "vmmem",
     ]
     .iter()
     .any(|p| n.starts_with(p))
+}
+
+/// Docker's port proxy: shown as the user's own server, but not killable from here (the container
+/// would stay up and leak the port); stop it from Docker instead.
+pub fn is_docker(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.starts_with("com.docker") || n.starts_with("docker")
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -137,10 +149,13 @@ impl Default for ServerWatch {
                         for (port, url) in &t.ports {
                             let pid = listening.get(port).copied();
                             let alive = pid.is_some();
-                            let name = pid
-                                .and_then(|p| by_pid.get(&p))
-                                .and_then(|p| p.name.clone())
-                                .unwrap_or_default();
+                            // A port that is not listening is not a running server: do not show it.
+                            let Some(pid_num) = pid else { continue };
+                            let name = by_pid.get(&pid_num).and_then(|p| p.name.clone()).unwrap_or_default();
+                            // Windows services and our own ports are noise, not this session's work.
+                            if system_owned(&name, pid_num) {
+                                continue;
+                            }
                             let title = if alive {
                                 let fresh = titles
                                     .get(port)

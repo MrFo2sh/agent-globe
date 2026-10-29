@@ -655,7 +655,7 @@ impl Session {
                 a.waiting_for_user = false;
                 a.messages += 1;
                 if role == "assistant" && !text.trim().is_empty() {
-                    a.last_said = text.chars().take(400).collect();
+                    a.last_said = text.chars().take(12_000).collect();
                 }
                 if role == "assistant" {
                     // Tool calls of the same record were applied just before, with this timestamp.
