@@ -59,6 +59,17 @@ pub const FILE_RING_MAX: usize = 24;
 pub const BEAM_MS: i64 = 45_000;
 pub const FILE_GLOW_MS: i64 = 20_000;
 
+/// One of the two clickable circles around a satellite constellation: click to go there.
+#[derive(Component)]
+pub struct SatelliteRing {
+    pub session: String,
+    pub radius: f32,
+    pub tilt: f32,
+}
+
+#[derive(Resource, Default)]
+pub struct SatelliteRings(pub HashMap<String, Vec<Entity>>);
+
 #[derive(Component)]
 pub struct OrbitRing {
     pub session: String,
@@ -712,6 +723,7 @@ pub fn dress_rings(
     mut meshes: ResMut<Assets<Mesh>>,
     assets: Res<SceneAssets>,
     fresh: Query<(Entity, &OrbitRing), Without<Mesh3d>>,
+    fresh_sat: Query<(Entity, &SatelliteRing), Without<Mesh3d>>,
 ) {
     for (e, ring) in &fresh {
         let mesh = meshes.add(Torus {
@@ -721,6 +733,121 @@ pub fn dress_rings(
         commands
             .entity(e)
             .insert((Mesh3d(mesh), MeshMaterial3d(assets.ring_material.clone())));
+    }
+    for (e, ring) in &fresh_sat {
+        // Thick enough to hit with the pointer: these circles are the satellite's click target.
+        let mesh = meshes.add(Torus {
+            minor_radius: 0.09,
+            major_radius: ring.radius,
+        });
+        commands
+            .entity(e)
+            .insert((Mesh3d(mesh), MeshMaterial3d(assets.ring_material.clone())));
+    }
+}
+
+/// Two circles around every satellite constellation (never around the current one), spawned when a
+/// satellite appears and removed when it becomes current or leaves the scene.
+pub fn sync_satellite_rings(
+    mut commands: Commands,
+    store: Res<Store>,
+    settings: Res<Settings>,
+    scene: Res<SceneLayout>,
+    mut rings: ResMut<SatelliteRings>,
+) {
+    let now = now_millis();
+    let shown = store.shown_sessions(now, settings.satellites);
+    let satellites: Vec<&String> = shown.iter().skip(1).collect();
+    rings.0.retain(|sid, ents| {
+        let keep = satellites.contains(&sid);
+        if !keep {
+            for e in ents.drain(..) {
+                commands.entity(e).despawn();
+            }
+        }
+        keep
+    });
+    for sid in satellites {
+        if rings.0.contains_key(sid) {
+            continue;
+        }
+        let Some(sc) = scene.per.get(sid) else { continue };
+        let base = layout::ring_radius(sc.layout.max_depth.max(1)) + 1.4;
+        let mut ents = Vec::new();
+        for (radius, tilt) in [(base, 0.0_f32), (base + 0.7, 0.35)] {
+            let mut ec = commands.spawn((
+                SatelliteRing {
+                    session: sid.clone(),
+                    radius,
+                    tilt,
+                },
+                Transform::from_translation(sc.offset).with_scale(Vec3::splat(0.01)),
+                Visibility::default(),
+            ));
+            ec.observe(on_satellite_click)
+                .observe(on_satellite_over)
+                .observe(on_satellite_out);
+            ents.push(ec.id());
+        }
+        rings.0.insert(sid.clone(), ents);
+    }
+}
+
+/// Keep satellite rings on their constellation, spinning slowly, brighter while hovered.
+pub fn animate_satellite_rings(
+    time: Res<Time>,
+    store: Res<Store>,
+    assets: Res<SceneAssets>,
+    scene: Res<SceneLayout>,
+    mut rings: Query<(
+        &SatelliteRing,
+        &mut Transform,
+        Option<&mut MeshMaterial3d<StandardMaterial>>,
+    )>,
+) {
+    let t = time.elapsed_secs();
+    let dt = time.delta_secs();
+    for (ring, mut tf, mat) in rings.iter_mut() {
+        let Some(sc) = scene.per.get(&ring.session) else {
+            continue;
+        };
+        tf.translation = tf.translation.lerp(sc.offset, (dt * 4.0).min(1.0));
+        let s = tf.scale.x + (sc.scale - tf.scale.x) * (dt * 5.0).min(1.0);
+        tf.scale = Vec3::splat(s);
+        tf.rotation = Quat::from_rotation_y(t * 0.15) * Quat::from_rotation_x(ring.tilt);
+        if let Some(mut mat) = mat {
+            let hovered = store.hovered_session.as_deref() == Some(ring.session.as_str());
+            let want = if hovered {
+                &assets.halos[&HaloKey::Core]
+            } else {
+                &assets.ring_material
+            };
+            if mat.0 != *want {
+                mat.0 = want.clone();
+            }
+        }
+    }
+}
+
+fn on_satellite_click(ev: On<PointerClick>, rings: Query<&SatelliteRing>, mut store: ResMut<Store>) {
+    if let Ok(r) = rings.get(ev.entity) {
+        store.hide_ui = false;
+        store.pending_open = Some(r.session.clone());
+        store.pending_select = None;
+    }
+}
+
+fn on_satellite_over(ev: On<PointerOver>, rings: Query<&SatelliteRing>, mut store: ResMut<Store>) {
+    if let Ok(r) = rings.get(ev.entity) {
+        store.hovered_session = Some(r.session.clone());
+    }
+}
+
+fn on_satellite_out(ev: On<PointerOut>, rings: Query<&SatelliteRing>, mut store: ResMut<Store>) {
+    if let Ok(r) = rings.get(ev.entity)
+        && store.hovered_session.as_deref() == Some(r.session.as_str())
+    {
+        store.hovered_session = None;
     }
 }
 
@@ -986,8 +1113,9 @@ fn on_click(ev: On<PointerClick>, nodes: Query<&NodeAgent>, mut store: ResMut<St
         if store.current.as_deref() == Some(n.session.as_str()) {
             store.selected = Some(n.id.clone());
         } else {
+            // Another constellation: go there first; nothing is selected until you click again.
             store.pending_open = Some(n.session.clone());
-            store.pending_select = Some(n.id.clone());
+            store.pending_select = None;
         }
     }
 }

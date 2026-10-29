@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.9.0 - 2026-10-29
+- Satellites: every other constellation wears two slowly turning circles that brighten on hover; clicking a circle, a unit or the label navigates there and the camera flies home to frame it. A unit of another constellation is no longer selected from afar: go there first, then click it.
+
 ## 0.8.4 - 2026-10-29
 - History search: matching prompt groups are a lit band with a border and their hit count; the other groups stay listed but dim and folded, so the matching ones stand out. Hits inside the prompt line are boxed.
 

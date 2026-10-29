@@ -62,6 +62,7 @@ pub fn run(cfg: Config) {
         .init_resource::<scene::SceneLayout>()
         .init_resource::<scene::FileEntities>()
         .init_resource::<scene::FileScene>()
+        .init_resource::<scene::SatelliteRings>()
         .init_resource::<scene::NodeWorldPos>()
         .init_resource::<camera::CameraState>()
         .init_resource::<probe::Probe>()
@@ -77,9 +78,11 @@ pub fn run(cfg: Config) {
                     hotkeys::poll,
                     state::watch_stalls,
                     scene::sync_nodes,
+                    scene::sync_satellite_rings,
                     scene::sync_helmets,
                     scene::dress_rings,
                     scene::animate_nodes,
+                    scene::animate_satellite_rings,
                     scene::update_halos,
                     scene::animate_dust,
                     scene::sync_files,

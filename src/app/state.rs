@@ -691,6 +691,8 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: 
             store.show(&id);
         }
         store.selected = store.pending_select.take();
+        // Arriving at a constellation: the camera flies home to frame it.
+        store.reset_view = true;
     }
     while let Ok(msg) = bridge.0.to_app.try_recv() {
         match msg {
