@@ -17,6 +17,31 @@ pub struct ServerInfo {
     pub pid: Option<u32>,
     pub name: String,
     pub title: Option<String>,
+    /// Owned by Docker, the system or this app: shown, never killable from here.
+    pub protected: bool,
+}
+
+/// Processes a ✕ must never reach: ending them would take Docker Desktop, Windows services or
+/// Agent Globe itself down with the port.
+pub fn is_protected(name: &str, pid: u32) -> bool {
+    if pid == std::process::id() || pid <= 4 {
+        return true;
+    }
+    let n = name.to_ascii_lowercase();
+    [
+        "com.docker",
+        "docker",
+        "wslrelay",
+        "wslhost",
+        "vmmem",
+        "svchost",
+        "system",
+        "agent-globe",
+        "lsass",
+        "services",
+    ]
+    .iter()
+    .any(|p| n.starts_with(p))
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -128,6 +153,7 @@ impl Default for ServerWatch {
                                 titles.remove(port);
                                 None
                             };
+                            let protected = pid.is_some_and(|p| is_protected(&name, p));
                             servers.push(ServerInfo {
                                 port: *port,
                                 url: url.clone(),
@@ -135,6 +161,7 @@ impl Default for ServerWatch {
                                 pid,
                                 name,
                                 title,
+                                protected,
                             });
                         }
                         let server_pids: Vec<u32> = servers.iter().filter_map(|s| s.pid).collect();
@@ -151,7 +178,10 @@ impl Default for ServerWatch {
                                 }
                                 // powershell / cmd wrappers that merely mention the command are not it
                                 let name = p.name.clone().unwrap_or_default();
-                                if name.eq_ignore_ascii_case("powershell.exe") || name.eq_ignore_ascii_case("cmd.exe") {
+                                if name.eq_ignore_ascii_case("powershell.exe")
+                                    || name.eq_ignore_ascii_case("cmd.exe")
+                                    || is_protected(&name, p.process_id)
+                                {
                                     continue;
                                 }
                                 found.push(ProcInfo {

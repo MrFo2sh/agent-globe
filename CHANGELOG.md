@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.10.1 - 2026-10-29
+- Servers owned by Docker, Windows services or Agent Globe itself are listed with their owner but get no ✕: ending those would take Docker Desktop or the app down with the port.
+- Usage readout keeps the last good numbers when a refresh fails, polls every 90 s, and waits five minutes after a 429 from the usage endpoint.
+
 ## 0.10.0 - 2026-10-29
 - Servers & processes: the commander's panel lists the servers this session runs (from the local URLs it printed and the server-like or background commands it ran) with a live dot, the index page's title, the URL (click to open), the owning process and pid, plus the background processes it spawned with their command line. ✕ ends a process tree after a second confirming click. The HUD shows "⚡ n" while servers are listening; click it to open the panel. The app asks Windows every five seconds (netstat, the process list) and reads each index page once a minute.
 - Tool calls remember whether they were started in the background.

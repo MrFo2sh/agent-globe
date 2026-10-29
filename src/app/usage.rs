@@ -8,7 +8,9 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 const USAGE_URL: &str = "https://api.anthropic.com/api/oauth/usage";
-const POLL: Duration = Duration::from_secs(60);
+const POLL: Duration = Duration::from_secs(90);
+/// After a 429 the endpoint wants a longer pause.
+const BACKOFF: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Limit {
@@ -183,13 +185,21 @@ impl UsageWatch {
             .spawn(move || {
                 loop {
                     let next = fetch(&claude_dir);
+                    let mut wait = POLL;
                     if let UsageState::Error(e) = &next {
                         warn!("usage: {e}");
+                        if e.contains("429") {
+                            wait = BACKOFF;
+                        }
                     }
                     if let Ok(mut s) = shared.lock() {
-                        *s = Some(next);
+                        // A passing error keeps the last good reading on screen.
+                        let keep_old = matches!(next, UsageState::Error(_)) && matches!(*s, Some(UsageState::Ready(_)));
+                        if !keep_old {
+                            *s = Some(next);
+                        }
                     }
-                    std::thread::sleep(POLL);
+                    std::thread::sleep(wait);
                 }
             })
             .expect("spawn usage");

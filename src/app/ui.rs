@@ -1819,6 +1819,18 @@ fn agent_panel(
                     });
                 }
                 match srv.pid {
+                    Some(pid) if srv.protected => {
+                        let lower = srv.name.to_ascii_lowercase();
+                        let owner = if lower.contains("docker") || lower.contains("wsl") {
+                            "docker".to_string()
+                        } else {
+                            srv.name.clone()
+                        };
+                        ui.label(egui::RichText::new(format!("· {owner} (pid {pid})")).small().color(DIM))
+                            .on_hover_text(
+                                "Owned by Docker, the system or Agent Globe itself: stop it from there, not here.",
+                            );
+                    }
                     Some(pid) => {
                         ui.label(
                             egui::RichText::new(format!("· {} (pid {pid})", srv.name))
