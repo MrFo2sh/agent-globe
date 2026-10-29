@@ -16,7 +16,6 @@ use super::state::{BadgeKind, BridgeRes, EditorCmd, SceneView, Store, ToastKind,
 use super::terminal::{self, Terminals};
 use super::theme;
 use super::usage::{self, UsageState, UsageWatch};
-use super::winjump;
 use agent_globe::bridge::Bridge;
 use agent_globe::data::artifacts::{Artifact, ArtifactKind};
 use agent_globe::data::claude::SessionRef;
@@ -169,7 +168,6 @@ pub fn draw(
     mut last_scale: Local<f32>,
     mut last_panel: Local<Option<String>>,
 ) -> Result {
-    let mut jump: Option<String> = None;
     let ctx = contexts.ctx_mut()?;
     if style_once(ctx, &mut styled) {
         return Ok(());
@@ -180,6 +178,28 @@ pub fn draw(
     }
     let now = now_millis();
     store.typing = ctx.memory(|m| m.focused().is_some());
+    // Files asked to open from chips and lists land in the editor card.
+    let queued: Vec<String> = OPEN_QUEUE
+        .lock()
+        .map(|mut q| std::mem::take(&mut *q))
+        .unwrap_or_default();
+    for p in queued {
+        let full = if std::path::Path::new(&p).is_absolute() {
+            p
+        } else {
+            match store.root_dir() {
+                Some(r) => std::path::Path::new(&r).join(&p).display().to_string(),
+                None => p,
+            }
+        };
+        store.open_doc_pinned(&full);
+    }
+    // Ctrl+` opens or closes the terminal, from anywhere (the terminal itself included).
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Backtick))
+        && let Some(sid) = store.current.clone()
+    {
+        store.terminal_open = if store.terminal_open.is_some() { None } else { Some(sid) };
+    }
     side.index
         .configure(settings.files_show_hidden, settings.files_show_ignored);
     // The editor surface is a native child window: once it has had the keyboard, Windows hands
@@ -395,9 +415,6 @@ pub fn draw(
                             .color(SAND)
                             .monospace(),
                     );
-                    if jump_button(ui).clicked() {
-                        jump = Some(winjump::needle_for(&s.cwd, &s.project));
-                    }
                     if !s.cwd.is_empty()
                         && ui
                             .small_button("🗂")
@@ -707,10 +724,6 @@ pub fn draw(
                             if row.clicked() {
                                 go = Some((a.session_id.clone(), a.agent_id.clone()));
                             }
-                            if jump_button(ui).clicked() {
-                                let cwd = store.sessions.get(&a.session_id).map(|s| s.cwd.clone()).unwrap_or_default();
-                                jump = Some(winjump::needle_for(&cwd, &a.project));
-                            }
                         });
                     }
                     ui.separator();
@@ -765,10 +778,6 @@ pub fn draw(
                                 ui.horizontal(|ui| {
                                     if ui.selectable_label(is_current, rt).clicked() {
                                         open = Some(s.clone());
-                                    }
-                                    if (is_current || store.watched.contains(&s.id)) && jump_button(ui).clicked() {
-                                        let cwd = store.sessions.get(&s.id).map(|x| x.cwd.clone()).unwrap_or_default();
-                                        jump = Some(winjump::needle_for(&cwd, &s.project));
                                     }
                                 });
                                 if is_current && let Some(session) = store.sessions.get(&s.id) {
@@ -890,11 +899,6 @@ pub fn draw(
             store.pending_open = Some(sid);
             store.pending_select = Some(aid);
         }
-    }
-    if let Some(needle) = jump.take()
-        && !winjump::focus(&needle)
-    {
-        store.toast(ToastKind::Warn, format!("no editor window titled \"{needle}\" found"));
     }
 
     // ---- bottom: status ----
@@ -1620,11 +1624,6 @@ fn usage_color(pct: f32) -> egui::Color32 {
     } else {
         ACCENT
     }
-}
-
-fn jump_button(ui: &mut egui::Ui) -> egui::Response {
-    ui.small_button("🖥")
-        .on_hover_text("Bring this session's editor window (VS Code) to the front")
 }
 
 /// Open a terminal in the session's root folder: Windows Terminal if present, else PowerShell.
@@ -4116,7 +4115,7 @@ fn agent_panel(
                                             .frame(false)
                                             .truncate(),
                                     )
-                                    .on_hover_text("open in VS Code")
+                                    .on_hover_text("open in the editor")
                                     .clicked()
                                 {
                                     open_in_editor(cwd, &c.path);
@@ -4130,7 +4129,7 @@ fn agent_panel(
                     });
             });
         cr.header_response.on_hover_text(
-            "Files the working tree changed against the last commit. Click one to open it in VS Code; ✎ counts edits this session made to it.",
+            "Files the working tree changed against the last commit. Click one to open it in the editor; ✎ counts edits this session made to it.",
         );
     }
     ui.separator();
@@ -4504,18 +4503,21 @@ fn dedup_artifacts(list: &[Artifact]) -> Vec<(&Artifact, usize)> {
     out
 }
 
+/// Files asked to open from places that have no access to the store (chips, lists): drained
+/// into the editor card each frame.
+static OPEN_QUEUE: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+/// Open a file in our editor card (relative paths resolve against `cwd`, or the session's folder).
 pub(super) fn open_in_editor(cwd: &str, path: &str) {
-    let full = std::path::Path::new(cwd).join(path).display().to_string();
-    std::thread::spawn(move || {
-        let mut cmd = std::process::Command::new("cmd");
-        cmd.args(["/C", "code", "-g", &full]);
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            cmd.creation_flags(0x0800_0000);
-        }
-        let _ = cmd.status();
-    });
+    let p = std::path::Path::new(path);
+    let full = if p.is_absolute() || cwd.is_empty() {
+        path.to_string()
+    } else {
+        std::path::Path::new(cwd).join(path).display().to_string()
+    };
+    if let Ok(mut q) = OPEN_QUEUE.lock() {
+        q.push(full);
+    }
 }
 
 fn artifact_chip(
@@ -4539,7 +4541,7 @@ fn artifact_chip(
     }
     let hover = match a.kind {
         ArtifactKind::Url | ArtifactKind::Pr => format!("open {}", a.target),
-        ArtifactKind::File => format!("open in VS Code: {}", a.target),
+        ArtifactKind::File => format!("open: {}", a.target),
         ArtifactKind::Image => format!("open {}", a.target),
         ArtifactKind::Commit => format!("commit {}", a.target),
         ArtifactKind::Test => "test result".to_string(),
@@ -4593,19 +4595,7 @@ fn open_artifact(ctx: &egui::Context, a: &Artifact, git: Option<&GitInfo>) -> Op
                 let _ = open::that(&t);
             });
         }
-        ArtifactKind::File => {
-            let t = a.target.clone();
-            std::thread::spawn(move || {
-                let mut cmd = std::process::Command::new("cmd");
-                cmd.args(["/c", "code", "-g", &t]);
-                #[cfg(windows)]
-                {
-                    use std::os::windows::process::CommandExt;
-                    cmd.creation_flags(0x0800_0000);
-                }
-                let _ = cmd.spawn();
-            });
-        }
+        ArtifactKind::File => open_in_editor("", &a.target),
         ArtifactKind::Commit => match git.and_then(GitInfo::web_url) {
             Some(web) => {
                 let url = format!("{web}/commit/{}", a.target);
@@ -4679,7 +4669,7 @@ fn draw_bubbles(
                         let what = match art.kind {
                             ArtifactKind::Url => "serving, click to open",
                             ArtifactKind::Pr => "pull request",
-                            ArtifactKind::File => "written, click to open in VS Code",
+                            ArtifactKind::File => "written, click to open",
                             ArtifactKind::Image => "looked at this",
                             ArtifactKind::Commit => "committed",
                             ArtifactKind::Test => "test run",
@@ -4767,7 +4757,10 @@ fn draw_approvals(ctx: &egui::Context, store: &mut Store, bridge: &Bridge, inset
                 {
                     decision = Some("deny");
                 }
-                if ui.button(egui::RichText::new("↪ Ask in VS Code").color(DIM)).clicked() {
+                if ui
+                    .button(egui::RichText::new("↪ Ask in Claude Code").color(DIM))
+                    .clicked()
+                {
                     decision = Some("ask");
                 }
                 if pending > 1 {

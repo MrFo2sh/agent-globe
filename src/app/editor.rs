@@ -5,7 +5,7 @@
 use super::files::{DocKind, FileIndex, kind_of};
 use super::settings::Settings;
 use super::state::{EditorCmd, Store};
-use super::ui::{ACCENT, AMBER, DIM, INK, SAND, TEXT, begin_card, end_card, floating_card, open_in_editor, stencil};
+use super::ui::{ACCENT, AMBER, DIM, INK, SAND, TEXT, begin_card, end_card, floating_card, stencil};
 use bevy_egui::egui;
 use std::collections::HashSet;
 
@@ -84,7 +84,7 @@ fn tree(
                         .frame(false),
                     )
                     .on_hover_text(format!(
-                        "{}\nclick: select · click again: open · double-click: keep open · right-click: VS Code",
+                        "{}\nclick: select · click again: open · double-click or right-click: keep open",
                         e.path
                     ));
                 if r.double_clicked() {
@@ -112,7 +112,7 @@ pub struct FilesActions {
 
 /// The files sidebar's content: the session folder as a tree, with a finder box on top (Ctrl+P
 /// from anywhere expands the sidebar and focuses it). Click opens a file in the editor card;
-/// right-click reveals it in VS Code.
+/// right-click opens it pinned.
 pub fn files_body(
     ui: &mut egui::Ui,
     ctx: &egui::Context,
@@ -188,9 +188,9 @@ pub fn files_body(
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width() - 8.0);
                 for (p, idx) in &hits {
-                    let r = ui.add(egui::Button::new(hit_label(p, idx)).frame(false)).on_hover_text(
-                        "click: select · click again: open · double-click: keep open · right-click: VS Code",
-                    );
+                    let r = ui
+                        .add(egui::Button::new(hit_label(p, idx)).frame(false))
+                        .on_hover_text("click: select · click again: open · double-click or right-click: keep open");
                     if r.double_clicked() {
                         open_path = Some((format!("{cwd}/{p}"), false));
                     } else if r.clicked() {
@@ -243,7 +243,7 @@ pub fn files_body(
         }
     }
     if let Some(p) = reveal {
-        open_in_editor("", &p);
+        store.open_doc_pinned(&p);
     }
     act
 }
@@ -420,7 +420,6 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
     let mut close: Option<usize> = None;
     let mut save = false;
     let mut toggle_preview = false;
-    let mut reveal = false;
     let mut surface: Option<egui::Rect> = None;
     let ppp = ctx.pixels_per_point();
     let vr = ctx.viewport_rect();
@@ -459,9 +458,6 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
                         .clicked()
                 {
                     save = true;
-                }
-                if ui.small_button("🖥").on_hover_text("Open in VS Code").clicked() {
-                    reveal = true;
                 }
             }
         },
@@ -518,8 +514,9 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
         },
     );
     end_card(store, settings, "editor-card", cs, dock, &out.sash);
+    // A native surface paints above everything: it steps aside while the palette is up.
     store.webview_rect = surface
-        .filter(|_| !docs.is_empty())
+        .filter(|_| !docs.is_empty() && !store.quick_open)
         .map(|r| [r.min.x * ppp, r.min.y * ppp, r.width() * ppp, r.height() * ppp]);
     if store.webview_rect.is_some() && !store.webview_logged {
         store.webview_logged = true;
@@ -545,9 +542,6 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
         store.md_preview = !store.md_preview;
         let preview = store.md_preview;
         store.editor_cmds.push(EditorCmd::Mode { preview });
-    }
-    if reveal && let Some(d) = &active_doc {
-        open_in_editor("", &d.path);
     }
     if out.toggle_max {
         store.editor_max = !store.editor_max;

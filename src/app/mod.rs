@@ -18,7 +18,6 @@ mod theme;
 mod ui;
 mod usage;
 mod webview;
-mod winjump;
 
 use agent_globe::bridge::{self, BridgeConfig};
 use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
