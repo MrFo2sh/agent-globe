@@ -1,0 +1,162 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Agent Globe editor</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.8.1/github-markdown-dark.min.css">
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #060c05; color: #bee4b4; font-family: Consolas, "Cascadia Mono", monospace; overflow: hidden; }
+  #editor { position: absolute; inset: 0; display: none; }
+  #preview { position: absolute; inset: 0; overflow: auto; display: none; padding: 24px 32px; box-sizing: border-box; }
+  #preview .markdown-body { background: transparent; color: #d8f0cf; max-width: 980px; margin: 0 auto; }
+  #preview .markdown-body h1, #preview .markdown-body h2 { border-bottom-color: #244a1e; }
+  #preview .markdown-body a { color: #a0e86e; }
+  #preview .markdown-body code { background: #0b1a09; color: #e6ffdc; }
+  #preview .markdown-body pre { background: #0b1a09; border: 1px solid #244a1e; }
+  #preview .markdown-body table tr { background: transparent; }
+  #preview .markdown-body table tr:nth-child(2n) { background: #0b1a09; }
+  #preview .markdown-body blockquote { color: #8fb985; border-left-color: #3d7a32; }
+  #preview .mermaid { background: #0b1a09; border-radius: 6px; padding: 8px; }
+  #preview img { max-width: 100%; }
+  #image { position: absolute; inset: 0; display: none; align-items: center; justify-content: center; background: #060c05; }
+  #image img { max-width: 100%; max-height: 100%; object-fit: contain; image-rendering: auto; }
+  #status { position: absolute; left: 0; right: 0; bottom: 0; font-size: 12px; color: #6f8f66; padding: 2px 8px; background: #040803; display: none; }
+  #empty { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #4c6a46; font-size: 14px; }
+</style>
+</head>
+<body>
+<div id="empty">open a file from the files card · Ctrl+P</div>
+<div id="editor"></div>
+<div id="preview"><article class="markdown-body" id="md"></article></div>
+<div id="image"><img id="img" alt=""></div>
+<div id="status"></div>
+<script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
+<script>
+(function () {
+  const post = (m) => { try { window.ipc.postMessage(JSON.stringify(m)); } catch (e) {} };
+  const $ = (id) => document.getElementById(id);
+  const show = (which) => {
+    for (const id of ['editor', 'preview', 'image', 'empty']) $(id).style.display = 'none';
+    $(which).style.display = which === 'image' || which === 'empty' ? 'flex' : 'block';
+    if (editor && which === 'editor') editor.layout();
+  };
+  const status = (t) => { const s = $('status'); s.textContent = t; s.style.display = t ? 'block' : 'none'; };
+  let editor = null, current = null, mode = 'edit';
+  const models = {};
+  const dirty = {};
+
+  if (window.mermaid) mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
+
+  async function renderPreview() {
+    if (!current) return;
+    const text = models[current.path] ? models[current.path].getValue() : (current.content || '');
+    const html = marked.parse(text, { gfm: true, breaks: false });
+    $('md').innerHTML = html;
+    // fenced ```mermaid blocks become diagrams
+    const blocks = $('md').querySelectorAll('pre > code.language-mermaid');
+    let i = 0;
+    for (const code of blocks) {
+      const pre = code.parentElement;
+      const div = document.createElement('div');
+      div.className = 'mermaid';
+      div.textContent = code.textContent;
+      div.id = 'mm-' + (i++);
+      pre.replaceWith(div);
+    }
+    if (window.mermaid && i > 0) {
+      try { await mermaid.run({ nodes: $('md').querySelectorAll('.mermaid') }); } catch (e) { status('mermaid: ' + e.message); }
+    }
+    show('preview');
+  }
+
+  window.agMode = (m) => {
+    mode = m;
+    if (!current) return;
+    if (current.kind === 'md' && m === 'preview') renderPreview();
+    else if (current.kind === 'code' || current.kind === 'md') show('editor');
+  };
+
+  window.agOpen = (doc) => {
+    current = doc;
+    status('');
+    if (doc.kind === 'image') {
+      $('img').src = 'data:' + doc.mime + ';base64,' + doc.b64;
+      show('image');
+      return;
+    }
+    if (doc.kind === 'docx') {
+      const bin = atob(doc.b64);
+      const buf = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+      mammoth.convertToHtml({ arrayBuffer: buf.buffer })
+        .then((r) => { $('md').innerHTML = r.value; show('preview'); if (r.messages.length) status(r.messages.length + ' conversion notes'); })
+        .catch((e) => { $('md').textContent = 'could not read this document: ' + e.message; show('preview'); });
+      return;
+    }
+    if (!editor) { pending = doc; return; }
+    let model = models[doc.path];
+    if (!model) {
+      model = monaco.editor.createModel(doc.content, doc.lang);
+      models[doc.path] = model;
+      model.onDidChangeContent(() => {
+        if (!dirty[doc.path]) { dirty[doc.path] = true; post({ type: 'dirty', path: doc.path, dirty: true }); }
+      });
+    } else if (!dirty[doc.path] && model.getValue() !== doc.content) {
+      model.setValue(doc.content);
+    }
+    editor.setModel(model);
+    if (doc.kind === 'md' && (doc.preview || mode === 'preview')) renderPreview(); else show('editor');
+    editor.focus();
+  };
+
+  window.agSave = () => {
+    if (!current || !models[current.path]) return;
+    post({ type: 'save', path: current.path, content: models[current.path].getValue() });
+    dirty[current.path] = false;
+  };
+
+  window.agClose = (path) => {
+    if (models[path]) { models[path].dispose(); delete models[path]; delete dirty[path]; }
+    if (current && current.path === path) { current = null; show('empty'); }
+  };
+
+  window.agSaved = (path) => { dirty[path] = false; status('saved ' + path); setTimeout(() => status(''), 1500); };
+
+  let pending = null;
+  require.config({ paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs' } });
+  window.MonacoEnvironment = { getWorkerUrl: () => URL.createObjectURL(new Blob([
+    "self.MonacoEnvironment={baseUrl:'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/'};importScripts('https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/base/worker/workerMain.js');"
+  ], { type: 'text/javascript' })) };
+  require(['vs/editor/editor.main'], () => {
+    monaco.editor.defineTheme('phosphor', {
+      base: 'vs-dark', inherit: true,
+      rules: [
+        { token: 'comment', foreground: '6f8f66', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'e0c77a' },
+        { token: 'string', foreground: 'a0e86e' },
+        { token: 'number', foreground: 'f0d890' },
+        { token: 'type', foreground: '8fd9c8' },
+      ],
+      colors: {
+        'editor.background': '#060c05', 'editor.foreground': '#d8f0cf',
+        'editor.lineHighlightBackground': '#0b1a09', 'editorLineNumber.foreground': '#4c6a46',
+        'editorCursor.foreground': '#a0e86e', 'editor.selectionBackground': '#244a1e',
+        'editorIndentGuide.background': '#132611', 'minimap.background': '#040803',
+      },
+    });
+    editor = monaco.editor.create($('editor'), {
+      theme: 'phosphor', automaticLayout: true, fontSize: 13, fontFamily: 'Consolas, "Cascadia Mono", monospace',
+      minimap: { enabled: true }, scrollBeyondLastLine: false, renderWhitespace: 'selection', smoothScrolling: true,
+    });
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => window.agSave());
+    post({ type: 'ready' });
+    if (pending) { const d = pending; pending = null; window.agOpen(d); }
+  });
+})();
+</script>
+</body>
+</html>

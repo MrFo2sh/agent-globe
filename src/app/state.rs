@@ -1,6 +1,7 @@
 //! App-side state, the system that drains the bridge once per frame, and the alarms
 //! (loops, context bloat, stalls) that turn raw events into "look here" moments.
 
+use super::files::DocKind;
 use super::settings::Settings;
 use super::sounds::Sfx;
 use super::theme;
@@ -178,6 +179,23 @@ pub struct Badge {
     pub y: f32,
 }
 
+/// A file open in the editor card.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Doc {
+    pub path: String,
+    pub kind: DocKind,
+    pub dirty: bool,
+}
+
+/// What the UI asks the editor page to do; `webview.rs` carries it out on the main thread.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EditorCmd {
+    Open { path: String },
+    Mode { preview: bool },
+    Save,
+    Close { path: String },
+}
+
 /// A card's floating position (None: its default) and whether its title is being dragged.
 #[derive(Debug, Clone, Default)]
 pub struct CardState {
@@ -243,6 +261,22 @@ pub struct Store {
     pub turn_query: String,
     /// Per-card floating position and drag state, by card id.
     pub cards: HashMap<String, CardState>,
+    /// The files card: the session folder as a tree plus the finder.
+    pub files_open: bool,
+    pub files_max: bool,
+    pub files_query: String,
+    pub files_focus_search: bool,
+    pub files_open_dirs: HashSet<String>,
+    /// The editor card: open documents, the active one, what to tell the page next.
+    pub editor_open: bool,
+    pub editor_max: bool,
+    pub docs: Vec<Doc>,
+    pub active_doc: Option<usize>,
+    pub editor_cmds: Vec<EditorCmd>,
+    /// Markdown opens rendered (true) or as source.
+    pub md_preview: bool,
+    /// Where the WebView surface goes this frame, in physical pixels (x, y, w, h); None hides it.
+    pub webview_rect: Option<[f32; 4]>,
     /// An egui text field has the keyboard: scene shortcuts (R, Esc) stay out of the way.
     pub typing: bool,
     /// Screen rects of the open cards this frame (min x, min y, max x, max y): badges under
@@ -333,6 +367,18 @@ impl Store {
             terminal_query: String::new(),
             turn_query: String::new(),
             cards: HashMap::new(),
+            files_open: false,
+            files_max: false,
+            files_query: String::new(),
+            files_focus_search: false,
+            files_open_dirs: HashSet::new(),
+            editor_open: false,
+            editor_max: false,
+            docs: Vec::new(),
+            active_doc: None,
+            editor_cmds: Vec::new(),
+            md_preview: true,
+            webview_rect: None,
             typing: false,
             card_rects: Vec::new(),
             hide_ui: false,
@@ -488,6 +534,43 @@ impl Store {
         self.seen
             .get(session_id)
             .is_some_and(|t| t.elapsed().as_secs_f32() > HISTORY_GRACE_S)
+    }
+
+    /// Open a file in the editor card: focus it if it is already open, otherwise add a tab.
+    pub fn open_doc(&mut self, path: &str) {
+        let path = path.replace('/', "\\");
+        if let Some(i) = self.docs.iter().position(|d| d.path == path) {
+            self.active_doc = Some(i);
+        } else {
+            self.docs.push(Doc {
+                path: path.clone(),
+                kind: super::files::kind_of(&path),
+                dirty: false,
+            });
+            self.active_doc = Some(self.docs.len() - 1);
+        }
+        self.editor_open = true;
+        self.editor_cmds.push(EditorCmd::Open { path });
+    }
+
+    /// Close a tab; the neighbour becomes active.
+    pub fn close_doc(&mut self, i: usize) {
+        if i >= self.docs.len() {
+            return;
+        }
+        let d = self.docs.remove(i);
+        self.editor_cmds.push(EditorCmd::Close { path: d.path });
+        self.active_doc = if self.docs.is_empty() {
+            None
+        } else {
+            Some(i.min(self.docs.len() - 1))
+        };
+        if let Some(a) = self.active_doc
+            && let Some(d) = self.docs.get(a)
+        {
+            let path = d.path.clone();
+            self.editor_cmds.push(EditorCmd::Open { path });
+        }
     }
 
     pub fn current_session(&self) -> Option<&Session> {

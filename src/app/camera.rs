@@ -154,6 +154,11 @@ pub fn drive(
             store.turn_open = None;
         } else if store.terminal_open.is_some() {
             store.terminal_open = None;
+        } else if store.editor_open {
+            store.editor_open = false;
+            store.webview_rect = None;
+        } else if store.files_open {
+            store.files_open = false;
         } else if store.reply_open.is_some() {
             store.reply_open = None;
         } else if store.show_settings {

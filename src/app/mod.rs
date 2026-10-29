@@ -2,6 +2,8 @@
 
 mod alerts;
 mod camera;
+mod editor;
+mod files;
 mod gitinfo;
 mod hotkeys;
 mod probe;
@@ -15,6 +17,7 @@ mod terminal;
 mod theme;
 mod ui;
 mod usage;
+mod webview;
 mod winjump;
 
 use agent_globe::bridge::{self, BridgeConfig};
@@ -74,6 +77,8 @@ pub fn run(cfg: Config) {
         .init_resource::<probe::Probe>()
         .init_resource::<servers::ServerWatch>()
         .init_resource::<terminal::Terminals>()
+        .init_resource::<files::FileIndex>()
+        .insert_non_send(webview::WebViews::default())
         .init_resource::<gitinfo::GitWatch>()
         .insert_resource(hotkeys::start())
         .add_systems(
@@ -118,7 +123,7 @@ pub fn run(cfg: Config) {
                     window_icon,
                 )
                     .chain(),
-                (raid::tick, raid::fx).chain(),
+                (raid::tick, raid::fx, webview::sync).chain(),
             )
                 .chain(),
         )

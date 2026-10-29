@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.21.0 - 2026-10-29
+- Files card (🗂 in the HUD, or Ctrl+P anywhere): the session folder as a lazy tree, hidden and build folders skipped, and the card's search box as a fuzzy finder over an index built in the background with the gitignore respected. Click opens a file in the editor; right-click reveals it in VS Code; Enter opens the first match.
+- Editor card: a WebView2 surface inside the card chrome, so it floats, docks and fills the screen like every card. Monaco for code with the phosphor theme and Ctrl+S saving through the app; Markdown rendered with Mermaid diagrams and GitHub styling, with an edit/preview switch; Word documents converted in the page; images; PDFs in Edge's own viewer. Tabs for open files with unsaved marks. Monaco and the Markdown tools load from the internet.
+
 ## 0.20.1 - 2026-10-29
 - Dock targets for halves and whole monitors, not only quarters: ¼ at each region's centre, ½ between two regions, 1 at a monitor's centre. The block lights up before you drop.
 - The dock area excludes the left sidebar and the top bar, like an editor's workbench: docked cards never cover them.

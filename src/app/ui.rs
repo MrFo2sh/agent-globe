@@ -2,6 +2,8 @@
 //! hover card, settings and terminal cards. Reports whether the pointer is over any of these so
 //! the camera can ignore input that belongs to the UI.
 
+use super::editor;
+use super::files;
 use super::gitinfo::{FileChange, GitInfo, GitWatch};
 use super::probe::Probe;
 use super::raid;
@@ -27,19 +29,19 @@ use bevy_panorbit_camera::PanOrbitCamera;
 use std::collections::{HashMap, HashSet};
 
 // Army palette.
-const ACCENT: egui::Color32 = egui::Color32::from_rgb(160, 232, 110); // light plastic
-const DIM: egui::Color32 = egui::Color32::from_rgb(120, 140, 95);
+pub(super) const ACCENT: egui::Color32 = egui::Color32::from_rgb(160, 232, 110); // light plastic
+pub(super) const DIM: egui::Color32 = egui::Color32::from_rgb(120, 140, 95);
 const GREEN: egui::Color32 = egui::Color32::from_rgb(190, 240, 140);
-const RED: egui::Color32 = egui::Color32::from_rgb(255, 100, 80);
-const AMBER: egui::Color32 = egui::Color32::from_rgb(255, 185, 70);
-const SAND: egui::Color32 = egui::Color32::from_rgb(222, 200, 135);
-const TEXT: egui::Color32 = egui::Color32::from_rgb(222, 226, 200);
+pub(super) const RED: egui::Color32 = egui::Color32::from_rgb(255, 100, 80);
+pub(super) const AMBER: egui::Color32 = egui::Color32::from_rgb(255, 185, 70);
+pub(super) const SAND: egui::Color32 = egui::Color32::from_rgb(222, 200, 135);
+pub(super) const TEXT: egui::Color32 = egui::Color32::from_rgb(222, 226, 200);
 const PANEL: egui::Color32 = egui::Color32::from_rgba_premultiplied(8, 14, 5, 228);
-const INK: egui::Color32 = egui::Color32::from_rgb(4, 8, 3);
+pub(super) const INK: egui::Color32 = egui::Color32::from_rgb(4, 8, 3);
 const SCANLINE: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 60);
 const MAX_LINES: usize = 10;
 
-fn stencil(size: f32) -> egui::FontId {
+pub(super) fn stencil(size: f32) -> egui::FontId {
     egui::FontId::new(size, egui::FontFamily::Name("stencil".into()))
 }
 
@@ -139,6 +141,7 @@ fn tip(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>, help: &str) {
 pub struct Side<'w> {
     pub terms: ResMut<'w, Terminals>,
     pub raid: ResMut<'w, raid::Raid>,
+    pub index: ResMut<'w, files::FileIndex>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -171,6 +174,10 @@ pub fn draw(
     }
     let now = now_millis();
     store.typing = ctx.memory(|m| m.focused().is_some());
+    if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::P)) && !store.typing && !store.hide_ui {
+        store.files_open = true;
+        store.files_focus_search = true;
+    }
     let compact = settings.compact || ctx.viewport_rect().width() < 1100.0;
     if let Some(s) = store.current_session() {
         gitw.watch(&s.cwd);
@@ -192,6 +199,7 @@ pub fn draw(
     if store.hide_ui {
         store.scene_insets = Some((0.0, 0.0, 0.0, 0.0));
         store.pointer_over_ui = false;
+        store.webview_rect = None;
         egui::Area::new(egui::Id::new("cinematic-hint"))
             .anchor(egui::Align2::RIGHT_BOTTOM, egui::vec2(-16.0, -12.0))
             .interactable(false)
@@ -236,6 +244,7 @@ pub fn draw(
     let mut toggle_usage = false;
     let mut pick_root = false;
     let mut open_term: Option<String> = None;
+    let mut open_files = false;
     let usage_state = usage.snapshot();
     let hud = egui::Panel::top("hud").show(&mut root, |ui| {
         ui.add_space(4.0);
@@ -269,6 +278,14 @@ pub fn draw(
                     );
                     if jump_button(ui).clicked() {
                         jump = Some(winjump::needle_for(&s.cwd, &s.project));
+                    }
+                    if !s.cwd.is_empty()
+                        && ui
+                            .small_button("🗂")
+                            .on_hover_text("Files: the session folder as a tree, with a fuzzy finder (Ctrl+P)")
+                            .clicked()
+                    {
+                        open_files = true;
                     }
                     if !s.cwd.is_empty() {
                         let r = ui.small_button("⌨").on_hover_text(format!(
@@ -413,6 +430,9 @@ pub fn draw(
     }
     if pick_root {
         store.selected = Some(ROOT_AGENT.to_string());
+    }
+    if open_files {
+        store.files_open = !store.files_open;
     }
     if let Some(sid) = open_term {
         store.terminal_open = if store.terminal_open.as_deref() == Some(sid.as_str()) {
@@ -1111,6 +1131,8 @@ pub fn draw(
     cards.extend(draw_terminal(ctx, &mut store, &mut settings, &mut side.terms));
     let narrator = settings.narrator;
     cards.extend(draw_turn_card(ctx, &mut store, &mut settings, narrator));
+    cards.extend(editor::draw_files_card(ctx, &mut store, &mut settings, &mut side.index));
+    cards.extend(editor::draw_editor_card(ctx, &mut store, &mut settings));
     cards.extend(settings_rect);
     store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
     ui_rects.extend(cards);
@@ -1570,10 +1592,10 @@ fn draw_badges(ctx: &egui::Context, store: &mut Store) {
 /// What a floating card reports back: header buttons pressed, where it ended up, and what the
 /// pointer did to its title row and edges this frame.
 #[derive(Default)]
-struct CardOut {
-    close: bool,
-    toggle_max: bool,
-    rect: Option<egui::Rect>,
+pub(super) struct CardOut {
+    pub close: bool,
+    pub toggle_max: bool,
+    pub rect: Option<egui::Rect>,
     drag_started: bool,
     drag_delta: egui::Vec2,
     drag_stopped: bool,
@@ -1585,7 +1607,7 @@ struct CardOut {
 /// block of cells; dropping a card on a cell's target docks it there; dragging a docked card's
 /// edge grows or shrinks it by whole cells.
 #[derive(Clone, Copy)]
-struct DockGrid {
+pub(super) struct DockGrid {
     rect: egui::Rect,
     cols: usize,
     rows: usize,
@@ -1715,7 +1737,7 @@ impl DockGrid {
 
 /// Take a card's state out of the store and settings for the frame (so the card's closures can
 /// borrow those freely), and the grid it docks into.
-fn begin_card(
+pub(super) fn begin_card(
     store: &mut Store,
     settings: &mut Settings,
     id: &str,
@@ -1733,7 +1755,7 @@ fn begin_card(
     (cs, dock, grid)
 }
 
-fn end_card(store: &mut Store, settings: &mut Settings, id: &str, cs: CardState, dock: Option<Dock>) {
+pub(super) fn end_card(store: &mut Store, settings: &mut Settings, id: &str, cs: CardState, dock: Option<Dock>) {
     store.cards.insert(id.to_string(), cs);
     if let Some(d) = dock {
         settings.docks.insert(id.to_string(), d);
@@ -1806,7 +1828,7 @@ fn draw_dock_zones(ctx: &egui::Context, grid: DockGrid, pointer: egui::Pos2) {
 /// lowercase text the body receives, a corner to resize when floating, edges that snap to the
 /// grid when docked, or pinned to fill the screen.
 #[allow(clippy::too_many_arguments)]
-fn floating_card(
+pub(super) fn floating_card(
     ctx: &egui::Context,
     id: &str,
     maxed: bool,
@@ -1876,6 +1898,7 @@ fn floating_card(
                     }
                     let resp = ui.add(
                         egui::TextEdit::singleline(q)
+                            .id(egui::Id::new((id, "search")))
                             .desired_width(180.0)
                             .font(egui::TextStyle::Monospace)
                             .hint_text("🔍 search  (Ctrl+F)"),
@@ -3886,7 +3909,7 @@ fn dedup_artifacts(list: &[Artifact]) -> Vec<(&Artifact, usize)> {
     out
 }
 
-fn open_in_editor(cwd: &str, path: &str) {
+pub(super) fn open_in_editor(cwd: &str, path: &str) {
     let full = std::path::Path::new(cwd).join(path).display().to_string();
     std::thread::spawn(move || {
         let mut cmd = std::process::Command::new("cmd");
