@@ -6,8 +6,10 @@ use super::gitinfo::{FileChange, GitInfo, GitWatch};
 use super::probe::Probe;
 use super::raid;
 use super::servers::{self, ServerWatch, Snapshot};
+use super::settings::Dock;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
+use super::state::CardState;
 use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer, clock_hm};
 use super::terminal::{self, Terminals};
 use super::theme;
@@ -208,9 +210,10 @@ pub fn draw(
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
         draw_viewer(ctx, &mut store, &mut images);
         let mut cards: Vec<egui::Rect> = Vec::new();
-        cards.extend(draw_reply(ctx, &mut store));
-        cards.extend(draw_terminal(ctx, &mut store, &mut side.terms));
-        cards.extend(draw_turn_card(ctx, &mut store, settings.narrator));
+        cards.extend(draw_reply(ctx, &mut store, &mut settings));
+        cards.extend(draw_terminal(ctx, &mut store, &mut settings, &mut side.terms));
+        let narrator = settings.narrator;
+        cards.extend(draw_turn_card(ctx, &mut store, &mut settings, narrator));
         store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
         draw_toasts(ctx, &store);
         return Ok(());
@@ -859,10 +862,14 @@ pub fn draw(
     let mut settings_rect: Option<egui::Rect> = None;
     if store.show_settings {
         let maxed = store.settings_max;
+        let (mut cs, mut dock, grid) = begin_card(&mut store, &mut settings, "settings-card", ctx);
         let out = floating_card(
             ctx,
             "settings-card",
             maxed,
+            &mut cs,
+            &mut dock,
+            grid,
             egui::pos2(260.0, 80.0),
             egui::vec2(440.0, 600.0),
             None,
@@ -952,6 +959,12 @@ pub fn draw(
                 ui.checkbox(&mut settings.scanlines, "CRT scanlines");
                 ui.checkbox(&mut settings.title_bar, "native title bar")
                     .on_hover_text("Windows' own title bar in windowed mode (F11 leaves full screen). Off: the app is all chrome.");
+                ui.checkbox(&mut settings.span_monitors, "span all monitors at start")
+                    .on_hover_text("One borderless window across every monitor. Off: full screen on one monitor. Takes effect at the next start.");
+                ui.label(egui::RichText::new("DOCK GRID").small().color(DIM))
+                    .on_hover_text("Drag a card by its title and drop it on a cell's target to dock it. Drag a docked card's edge to grow it. Two columns per monitor reads well.");
+                ui.add(egui::Slider::new(&mut settings.grid_cols, 1..=8).text("columns"));
+                ui.add(egui::Slider::new(&mut settings.grid_rows, 1..=4).text("rows"));
                 ui.checkbox(&mut settings.narrator, "narrator line under each call");
                 ui.checkbox(&mut settings.progress_rings, "progress rings and hints under units");
                 ui.checkbox(
@@ -998,6 +1011,7 @@ pub fn draw(
                     });
             },
         );
+        end_card(&mut store, &mut settings, "settings-card", cs, dock);
         settings_rect = out.rect;
         if let Some(r) = out.rect {
             ui_rects.push(r);
@@ -1093,9 +1107,10 @@ pub fn draw(
         ui_rects.push(rect);
     }
     let mut cards: Vec<egui::Rect> = Vec::new();
-    cards.extend(draw_reply(ctx, &mut store));
-    cards.extend(draw_terminal(ctx, &mut store, &mut side.terms));
-    cards.extend(draw_turn_card(ctx, &mut store, settings.narrator));
+    cards.extend(draw_reply(ctx, &mut store, &mut settings));
+    cards.extend(draw_terminal(ctx, &mut store, &mut settings, &mut side.terms));
+    let narrator = settings.narrator;
+    cards.extend(draw_turn_card(ctx, &mut store, &mut settings, narrator));
     cards.extend(settings_rect);
     store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
     ui_rects.extend(cards);
@@ -1552,22 +1567,187 @@ fn draw_badges(ctx: &egui::Context, store: &mut Store) {
 }
 
 /// The reply card: the commander's last message, the one the editor shows as its answer, with
-/// What a floating card reports back: header buttons pressed, and where it ended up on screen.
+/// What a floating card reports back: header buttons pressed, where it ended up, and what the
+/// pointer did to its title row and edges this frame.
+#[derive(Default)]
 struct CardOut {
     close: bool,
     toggle_max: bool,
     rect: Option<egui::Rect>,
+    drag_started: bool,
+    drag_delta: egui::Vec2,
+    drag_stopped: bool,
+    /// An edge of a docked card being dragged: 0 left, 1 right, 2 top, 3 bottom.
+    edge: Option<u8>,
+}
+
+/// The dock grid: the window cut into cells, two per monitor by default. A docked card fills a
+/// block of cells; dropping a card on a cell's target docks it there; dragging a docked card's
+/// edge grows or shrinks it by whole cells.
+#[derive(Clone, Copy)]
+struct DockGrid {
+    rect: egui::Rect,
+    cols: usize,
+    rows: usize,
+}
+
+impl DockGrid {
+    fn cell_w(&self) -> f32 {
+        self.rect.width() / self.cols as f32
+    }
+
+    fn cell_h(&self) -> f32 {
+        self.rect.height() / self.rows as f32
+    }
+
+    /// A block clamped to this grid (the grid may have shrunk since the dock was saved).
+    fn clamp(&self, d: Dock) -> Dock {
+        let cols = self.cols as u8;
+        let rows = self.rows as u8;
+        let c0 = d.c0.min(cols - 1);
+        let r0 = d.r0.min(rows - 1);
+        Dock {
+            c0,
+            c1: d.c1.clamp(c0 + 1, cols),
+            r0,
+            r1: d.r1.clamp(r0 + 1, rows),
+        }
+    }
+
+    fn block(&self, d: Dock) -> egui::Rect {
+        let d = self.clamp(d);
+        let m = 6.0;
+        egui::Rect::from_min_max(
+            egui::pos2(
+                self.rect.min.x + d.c0 as f32 * self.cell_w() + m,
+                self.rect.min.y + d.r0 as f32 * self.cell_h() + m,
+            ),
+            egui::pos2(
+                self.rect.min.x + d.c1 as f32 * self.cell_w() - m,
+                self.rect.min.y + d.r1 as f32 * self.cell_h() - m,
+            ),
+        )
+    }
+
+    fn cell_rect(&self, c: usize, r: usize) -> egui::Rect {
+        egui::Rect::from_min_size(
+            egui::pos2(
+                self.rect.min.x + c as f32 * self.cell_w(),
+                self.rect.min.y + r as f32 * self.cell_h(),
+            ),
+            egui::vec2(self.cell_w(), self.cell_h()),
+        )
+    }
+
+    /// The drop target in the middle of a cell.
+    fn target_rect(&self, c: usize, r: usize) -> egui::Rect {
+        egui::Rect::from_center_size(self.cell_rect(c, r).center(), egui::vec2(130.0, 76.0))
+    }
+
+    fn target_at(&self, p: egui::Pos2) -> Option<(u8, u8)> {
+        for r in 0..self.rows {
+            for c in 0..self.cols {
+                if self.target_rect(c, r).contains(p) {
+                    return Some((c as u8, r as u8));
+                }
+            }
+        }
+        None
+    }
+
+    fn col_line(&self, x: f32) -> u8 {
+        ((x - self.rect.min.x) / self.cell_w())
+            .round()
+            .clamp(0.0, self.cols as f32) as u8
+    }
+
+    fn row_line(&self, y: f32) -> u8 {
+        ((y - self.rect.min.y) / self.cell_h())
+            .round()
+            .clamp(0.0, self.rows as f32) as u8
+    }
+}
+
+/// Take a card's state out of the store and settings for the frame (so the card's closures can
+/// borrow those freely), and the grid it docks into.
+fn begin_card(
+    store: &mut Store,
+    settings: &mut Settings,
+    id: &str,
+    ctx: &egui::Context,
+) -> (CardState, Option<Dock>, DockGrid) {
+    let cs = store.cards.remove(id).unwrap_or_default();
+    let dock = settings.docks.remove(id);
+    let grid = DockGrid {
+        rect: ctx.viewport_rect(),
+        cols: settings.grid_cols.clamp(1, 12) as usize,
+        rows: settings.grid_rows.clamp(1, 6) as usize,
+    };
+    (cs, dock, grid)
+}
+
+fn end_card(store: &mut Store, settings: &mut Settings, id: &str, cs: CardState, dock: Option<Dock>) {
+    store.cards.insert(id.to_string(), cs);
+    if let Some(d) = dock {
+        settings.docks.insert(id.to_string(), d);
+    }
+}
+
+/// While a title is dragged: the grid, faint, and a drop target in every cell; the one under the
+/// pointer lights up. Dropping anywhere else leaves the card floating where it is.
+fn draw_dock_zones(ctx: &egui::Context, grid: DockGrid, pointer: egui::Pos2) {
+    let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dock-zones")));
+    let hot = grid.target_at(pointer);
+    for r in 0..grid.rows {
+        for c in 0..grid.cols {
+            let cell = grid.cell_rect(c, r).shrink(3.0);
+            painter.rect_stroke(
+                cell,
+                4.0,
+                egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.35)),
+                egui::StrokeKind::Inside,
+            );
+            let t = grid.target_rect(c, r);
+            let lit = hot == Some((c as u8, r as u8));
+            painter.rect_filled(
+                t,
+                6.0,
+                if lit {
+                    ACCENT.gamma_multiply(0.75)
+                } else {
+                    egui::Color32::from_rgba_unmultiplied(6, 12, 5, 190)
+                },
+            );
+            painter.rect_stroke(
+                t,
+                6.0,
+                egui::Stroke::new(1.5, if lit { SAND } else { ACCENT }),
+                egui::StrokeKind::Inside,
+            );
+            painter.text(
+                t.center(),
+                egui::Align2::CENTER_CENTER,
+                if lit { "dock here" } else { "⊞" },
+                egui::FontId::proportional(if lit { 14.0 } else { 22.0 }),
+                if lit { INK } else { SAND },
+            );
+        }
+    }
 }
 
 /// The chrome shared by every card (reply, terminal, turn, settings): a Tooltip-order area above
-/// the badges and labels, solid frame, a title row that drags the card even over its text, ✕ and
-/// ⛶, an optional search box (Ctrl+F) whose lowercase text the body receives, a corner to resize
-/// when floating, or pinned to fill the screen.
+/// the badges and labels, solid frame, a title row that drags the card (drop it on a dock target
+/// to dock it, drag it again to undock), ✕ and ⛶, an optional search box (Ctrl+F) whose
+/// lowercase text the body receives, a corner to resize when floating, edges that snap to the
+/// grid when docked, or pinned to fill the screen.
 #[allow(clippy::too_many_arguments)]
 fn floating_card(
     ctx: &egui::Context,
     id: &str,
     maxed: bool,
+    cs: &mut CardState,
+    dock: &mut Option<Dock>,
+    grid: DockGrid,
     default_pos: egui::Pos2,
     default_size: egui::Vec2,
     query: Option<&mut String>,
@@ -1576,23 +1756,37 @@ fn floating_card(
 ) -> CardOut {
     let vr = ctx.viewport_rect();
     let margin = 16.0;
-    let max_size = vr.size() - egui::vec2(2.0 * margin + 24.0, 2.0 * margin + 24.0);
-    let mut out = CardOut {
-        close: false,
-        toggle_max: false,
-        rect: None,
-    };
-    let area = egui::Area::new(egui::Id::new(id)).order(egui::Order::Tooltip);
-    let area = if maxed {
-        area.fixed_pos(vr.min + egui::vec2(margin, margin)).movable(false)
+    let pad = 24.0; // the frame's inner margin, both sides
+    let max_size = vr.size() - egui::vec2(2.0 * margin + pad, 2.0 * margin + pad);
+    let docked: Option<egui::Rect> = if maxed { None } else { dock.map(|d| grid.block(d)) };
+    let floating_pos = cs.pos.map(|p| egui::pos2(p[0], p[1])).unwrap_or(default_pos);
+    let (pos, fixed_size) = if maxed {
+        (vr.min + egui::vec2(margin, margin), Some(max_size))
+    } else if let Some(r) = docked {
+        (r.min, Some(r.size()))
     } else {
-        area.default_pos(default_pos).movable(true).constrain(true)
+        (floating_pos, None)
     };
+    let mut out = CardOut::default();
     let find =
         ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) && ctx.memory(|m| m.focused().is_none());
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new(id));
+    let can_drag = !maxed;
     let content = |ui: &mut egui::Ui, out: &mut CardOut| {
+        // The title row is the drag handle, declared first so the buttons drawn over it win clicks.
+        let row_h = 24.0;
+        let header_rect = egui::Rect::from_min_size(ui.cursor().min, egui::vec2(ui.available_width(), row_h));
+        if can_drag {
+            let drag = ui
+                .interact(header_rect, egui::Id::new(id).with("drag"), egui::Sense::drag())
+                .on_hover_cursor(egui::CursorIcon::Grab);
+            out.drag_started = drag.drag_started();
+            out.drag_delta = drag.drag_delta();
+            out.drag_stopped = drag.drag_stopped();
+        }
         let mut q_lower = String::new();
         ui.horizontal(|ui| {
+            ui.set_min_height(row_h);
             // Title text does not select, so a drag anywhere on this row moves the card.
             ui.style_mut().interaction.selectable_labels = false;
             header(ui);
@@ -1603,9 +1797,9 @@ fn floating_card(
                 if ui
                     .small_button(if maxed { "🗗 restore" } else { "⛶ full" })
                     .on_hover_text(if maxed {
-                        "Back to the floating card"
+                        "Back to the card"
                     } else {
-                        "Fill the screen (or drag the bottom-right corner to resize)"
+                        "Fill the screen. Floating: drag the corner to resize. Docked: drag an edge."
                     })
                     .clicked()
                 {
@@ -1631,34 +1825,129 @@ fn floating_card(
         ui.separator();
         body(ui, &q_lower);
     };
-    let resp = area.show(ctx, |ui| {
-        egui::Frame::NONE
-            .fill(egui::Color32::from_rgb(6, 12, 5))
-            .stroke(egui::Stroke::new(1.5, ACCENT))
-            .shadow(egui::epaint::Shadow {
-                offset: [0, 4],
-                blur: 18,
-                spread: 0,
-                color: egui::Color32::from_black_alpha(180),
-            })
-            .inner_margin(12.0)
-            .corner_radius(8.0)
-            .show(ui, |ui| {
-                if maxed {
-                    ui.set_width(max_size.x);
-                    ui.set_height(max_size.y);
-                    content(ui, &mut out);
-                } else {
-                    egui::Resize::default()
-                        .id_salt((id, "size"))
-                        .default_size(default_size)
-                        .min_size(egui::vec2(320.0, 160.0))
-                        .max_size(max_size)
-                        .show(ui, |ui| content(ui, &mut out));
-                }
-            });
-    });
+    let resp = egui::Area::new(egui::Id::new(id))
+        .order(egui::Order::Tooltip)
+        .fixed_pos(pos)
+        .movable(false)
+        .constrain(true)
+        .show(ctx, |ui| {
+            egui::Frame::NONE
+                .fill(egui::Color32::from_rgb(6, 12, 5))
+                .stroke(egui::Stroke::new(1.5, if cs.dragging { SAND } else { ACCENT }))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 4],
+                    blur: 18,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(180),
+                })
+                .inner_margin(12.0)
+                .corner_radius(8.0)
+                .show(ui, |ui| {
+                    if let Some(size) = fixed_size {
+                        ui.set_width(size.x - pad);
+                        ui.set_height(size.y - pad);
+                        content(ui, &mut out);
+                    } else {
+                        egui::Resize::default()
+                            .id_salt((id, "size"))
+                            .default_size(default_size)
+                            .min_size(egui::vec2(320.0, 160.0))
+                            .max_size(max_size)
+                            .show(ui, |ui| content(ui, &mut out));
+                    }
+                    // Edges of a docked card: drag to grow or shrink by whole cells.
+                    if docked.is_some() && !maxed {
+                        let r = ui.min_rect().expand(12.0);
+                        let t = 8.0;
+                        let strips = [
+                            (
+                                0u8,
+                                egui::Rect::from_min_max(r.left_top(), egui::pos2(r.min.x + t, r.max.y)),
+                                egui::CursorIcon::ResizeHorizontal,
+                            ),
+                            (
+                                1u8,
+                                egui::Rect::from_min_max(egui::pos2(r.max.x - t, r.min.y), r.right_bottom()),
+                                egui::CursorIcon::ResizeHorizontal,
+                            ),
+                            (
+                                2u8,
+                                egui::Rect::from_min_max(r.left_top(), egui::pos2(r.max.x, r.min.y + t)),
+                                egui::CursorIcon::ResizeVertical,
+                            ),
+                            (
+                                3u8,
+                                egui::Rect::from_min_max(egui::pos2(r.min.x, r.max.y - t), r.right_bottom()),
+                                egui::CursorIcon::ResizeVertical,
+                            ),
+                        ];
+                        for (side, strip, cursor) in strips {
+                            let e = ui
+                                .interact(strip, egui::Id::new(id).with(("edge", side)), egui::Sense::drag())
+                                .on_hover_cursor(cursor);
+                            if e.dragged() {
+                                out.edge = Some(side);
+                            }
+                        }
+                    }
+                });
+        });
     out.rect = Some(resp.response.rect);
+    let pointer = ctx.input(|i| i.pointer.latest_pos()).unwrap_or(pos);
+
+    // ---- the title drag: float it, move it, dock it on a target
+    if out.drag_started {
+        ctx.move_to_top(layer);
+        cs.dragging = true;
+        if dock.is_some() {
+            *dock = None;
+            cs.pos = Some([pointer.x - default_size.x * 0.5, pointer.y - 12.0]);
+        } else if cs.pos.is_none() {
+            cs.pos = Some([pos.x, pos.y]);
+        }
+    }
+    if cs.dragging {
+        if let Some(p) = cs.pos.as_mut() {
+            p[0] = (p[0] + out.drag_delta.x).clamp(vr.min.x, vr.max.x - 160.0);
+            p[1] = (p[1] + out.drag_delta.y).clamp(vr.min.y, vr.max.y - 48.0);
+        }
+        draw_dock_zones(ctx, grid, pointer);
+        let released = out.drag_stopped || !ctx.input(|i| i.pointer.primary_down());
+        if released {
+            cs.dragging = false;
+            if let Some((c, r)) = grid.target_at(pointer) {
+                *dock = Some(Dock {
+                    c0: c,
+                    c1: c + 1,
+                    r0: r,
+                    r1: r + 1,
+                });
+            }
+        }
+    }
+
+    // ---- edges of a docked card snap to the nearest grid line
+    if let (Some(side), Some(d)) = (out.edge, dock.as_mut()) {
+        let cur = grid.clamp(*d);
+        *d = match side {
+            0 => Dock {
+                c0: grid.col_line(pointer.x).min(cur.c1 - 1),
+                ..cur
+            },
+            1 => Dock {
+                c1: grid.col_line(pointer.x).max(cur.c0 + 1),
+                ..cur
+            },
+            2 => Dock {
+                r0: grid.row_line(pointer.y).min(cur.r1 - 1),
+                ..cur
+            },
+            _ => Dock {
+                r1: grid.row_line(pointer.y).max(cur.r0 + 1),
+                ..cur
+            },
+        };
+    }
     out
 }
 
@@ -1692,7 +1981,7 @@ fn search_lines(ui: &mut egui::Ui, text: &str, q_lower: &str, mono: bool) {
 
 /// The reply card: the commander's last message, the one the editor shows as its answer, with
 /// light Markdown. Opened from the 💬 badge; Esc, ✕ or the badge again closes it.
-fn draw_reply(ctx: &egui::Context, store: &mut Store) -> Option<egui::Rect> {
+fn draw_reply(ctx: &egui::Context, store: &mut Store, settings: &mut Settings) -> Option<egui::Rect> {
     let (sid, aid) = store.reply_open.clone()?;
     let Some(agent) = store.sessions.get(&sid).and_then(|s| s.agent(&aid)).cloned() else {
         store.reply_open = None;
@@ -1709,11 +1998,15 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) -> Option<egui::Rect> {
     let height = (vr.height() * 0.45).clamp(220.0, 520.0);
     let default_pos = anchor.unwrap_or_else(|| vr.center() - egui::vec2(width / 2.0, height / 2.0));
     let maxed = store.reply_max;
+    let (mut cs, mut dock, grid) = begin_card(store, settings, "reply-card", ctx);
     let mut query = std::mem::take(&mut store.reply_query);
     let out = floating_card(
         ctx,
         "reply-card",
         maxed,
+        &mut cs,
+        &mut dock,
+        grid,
         default_pos,
         egui::vec2(width, height),
         Some(&mut query),
@@ -1752,6 +2045,7 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) -> Option<egui::Rect> {
         },
     );
     store.reply_query = query;
+    end_card(store, settings, "reply-card", cs, dock);
     if out.toggle_max {
         store.reply_max = !store.reply_max;
     }
@@ -1765,7 +2059,12 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) -> Option<egui::Rect> {
 /// the reply. Click the grid and keys go straight to the shell, so PSReadLine, Claude Code and
 /// full-screen programs work. The card's search box switches to a text view of the scrollback
 /// with the hits lit. Ctrl+T / Ctrl+W open and close tabs while nothing has the keyboard.
-fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) -> Option<egui::Rect> {
+fn draw_terminal(
+    ctx: &egui::Context,
+    store: &mut Store,
+    settings: &mut Settings,
+    terms: &mut Terminals,
+) -> Option<egui::Rect> {
     let sid = store.terminal_open.clone()?;
     let Some((project, cwd)) = store.sessions.get(&sid).map(|s| (s.project.clone(), s.cwd.clone())) else {
         store.terminal_open = None;
@@ -1779,6 +2078,7 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
         (vr.max.y - height - 56.0).max(vr.min.y + 56.0),
     );
     let maxed = store.terminal_max;
+    let (mut cs, mut dock, grid) = begin_card(store, settings, "terminal-card", ctx);
     let mut query = std::mem::take(&mut store.terminal_query);
     let spawn_error = terms.error.clone();
     let mut restart = false;
@@ -1799,6 +2099,9 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
             ctx,
             "terminal-card",
             maxed,
+            &mut cs,
+            &mut dock,
+            grid,
             default_pos,
             egui::vec2(width, height),
             None,
@@ -1827,6 +2130,9 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
                 ctx,
                 "terminal-card",
                 maxed,
+                &mut cs,
+                &mut dock,
+                grid,
                 default_pos,
                 egui::vec2(width, height),
                 Some(&mut query),
@@ -1950,6 +2256,7 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
         store.terminal_open = None;
     }
     store.terminal_query = query;
+    end_card(store, settings, "terminal-card", cs, dock);
     if out.toggle_max {
         store.terminal_max = !store.terminal_max;
     }
@@ -2204,7 +2511,12 @@ fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab) {
 /// A prompt group as a card, opened by double-clicking its header: the conversation (your prompt
 /// and the commander's reply) and the details (that turn's tool calls, with the narrator lines).
 /// The search box lights hits in whichever segment is showing.
-fn draw_turn_card(ctx: &egui::Context, store: &mut Store, narrator: bool) -> Option<egui::Rect> {
+fn draw_turn_card(
+    ctx: &egui::Context,
+    store: &mut Store,
+    settings: &mut Settings,
+    narrator: bool,
+) -> Option<egui::Rect> {
     let (sid, aid, ti) = store.turn_open.clone()?;
     let Some(agent) = store.sessions.get(&sid).and_then(|s| s.agent(&aid)).cloned() else {
         store.turn_open = None;
@@ -2221,6 +2533,7 @@ fn draw_turn_card(ctx: &egui::Context, store: &mut Store, narrator: bool) -> Opt
     let mut query = std::mem::take(&mut store.turn_query);
     let mut tab = store.turn_tab;
     let maxed = store.turn_max;
+    let (mut cs, mut dock, grid) = begin_card(store, settings, "turn-card", ctx);
     let vr = ctx.viewport_rect();
     let width = (vr.width() * 0.5).clamp(480.0, 960.0);
     let height = (vr.height() * 0.6).clamp(300.0, 720.0);
@@ -2238,6 +2551,9 @@ fn draw_turn_card(ctx: &egui::Context, store: &mut Store, narrator: bool) -> Opt
         ctx,
         "turn-card",
         maxed,
+        &mut cs,
+        &mut dock,
+        grid,
         default_pos,
         egui::vec2(width, height),
         Some(&mut query),
@@ -2334,6 +2650,7 @@ fn draw_turn_card(ctx: &egui::Context, store: &mut Store, narrator: bool) -> Opt
     store.expanded_calls = expanded;
     store.turn_query = query;
     store.turn_tab = tab;
+    end_card(store, settings, "turn-card", cs, dock);
     if out.toggle_max {
         store.turn_max = !store.turn_max;
     }
@@ -4194,5 +4511,56 @@ mod tests {
         c.stderr = "warning: unused import".into();
         assert!(call_matches(&c, "unused"));
         assert!(contains_ci("Héllo", "héllo"), "non-ascii bytes compare exactly");
+    }
+}
+
+#[cfg(test)]
+mod dock_tests {
+    use super::*;
+
+    #[test]
+    fn dock_grid_math() {
+        let grid = DockGrid {
+            rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(3400.0, 900.0)),
+            cols: 4,
+            rows: 2,
+        };
+        // a block saved on a bigger grid is pulled back inside this one
+        let wild = Dock {
+            c0: 9,
+            c1: 12,
+            r0: 5,
+            r1: 9,
+        };
+        assert_eq!(
+            grid.clamp(wild),
+            Dock {
+                c0: 3,
+                c1: 4,
+                r0: 1,
+                r1: 2
+            }
+        );
+        // the full left monitor: two columns, both rows
+        let left = grid.block(Dock {
+            c0: 0,
+            c1: 2,
+            r0: 0,
+            r1: 2,
+        });
+        assert!((left.width() - (1700.0 - 12.0)).abs() < 0.5 && (left.height() - (900.0 - 12.0)).abs() < 0.5);
+        // drop targets sit in cell centres; the gap between them leaves a card floating
+        assert_eq!(grid.target_at(egui::pos2(425.0, 225.0)), Some((0, 0)));
+        assert_eq!(grid.target_at(egui::pos2(3000.0, 700.0)), Some((3, 1)));
+        assert_eq!(
+            grid.target_at(egui::pos2(850.0, 450.0)),
+            None,
+            "a corner between cells is not a target"
+        );
+        // edges snap to the nearest grid line
+        assert_eq!(grid.col_line(1690.0), 2);
+        assert_eq!(grid.col_line(1300.0), 2);
+        assert_eq!(grid.col_line(1000.0), 1);
+        assert_eq!(grid.row_line(440.0), 1);
     }
 }

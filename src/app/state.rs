@@ -178,6 +178,13 @@ pub struct Badge {
     pub y: f32,
 }
 
+/// A card's floating position (None: its default) and whether its title is being dragged.
+#[derive(Debug, Clone, Default)]
+pub struct CardState {
+    pub pos: Option<[f32; 2]>,
+    pub dragging: bool,
+}
+
 #[derive(Resource)]
 pub struct Store {
     pub claude_dir: PathBuf,
@@ -234,6 +241,8 @@ pub struct Store {
     pub reply_query: String,
     pub terminal_query: String,
     pub turn_query: String,
+    /// Per-card floating position and drag state, by card id.
+    pub cards: HashMap<String, CardState>,
     /// An egui text field has the keyboard: scene shortcuts (R, Esc) stay out of the way.
     pub typing: bool,
     /// Screen rects of the open cards this frame (min x, min y, max x, max y): badges under
@@ -323,6 +332,7 @@ impl Store {
             reply_query: String::new(),
             terminal_query: String::new(),
             turn_query: String::new(),
+            cards: HashMap::new(),
             typing: false,
             card_rects: Vec::new(),
             hide_ui: false,

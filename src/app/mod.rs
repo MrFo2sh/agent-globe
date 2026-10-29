@@ -22,7 +22,7 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::picking::mesh_picking::MeshPickingPlugin;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
-use bevy::window::{MonitorSelection, WindowMode};
+use bevy::window::{MonitorSelection, WindowMode, WindowPosition};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use std::path::PathBuf;
@@ -127,15 +127,45 @@ pub fn run(cfg: Config) {
 }
 
 /// Fit the screen whatever its size; a fixed resolution can hang off the bottom on small displays.
-fn maximize_window(mut windows: Query<&mut Window, With<PrimaryWindow>>, mut done: Local<u32>) {
+fn maximize_window(
+    settings: Res<settings::Settings>,
+    mut windows: Query<&mut Window, With<PrimaryWindow>>,
+    mut done: Local<u32>,
+) {
     if *done >= 3 {
         return;
     }
     *done += 1;
     for mut w in &mut windows {
-        w.set_maximized(true);
-        // Start full screen on the monitor the window opened on; F11 toggles back to a window.
-        w.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Current);
+        if settings.span_monitors {
+            // One borderless window across the whole virtual desktop: every monitor is the wall.
+            #[cfg(windows)]
+            {
+                use windows_sys::Win32::UI::WindowsAndMessaging::{
+                    GetSystemMetrics, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+                };
+                let (x, y, cx, cy) = unsafe {
+                    (
+                        GetSystemMetrics(SM_XVIRTUALSCREEN),
+                        GetSystemMetrics(SM_YVIRTUALSCREEN),
+                        GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                        GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                    )
+                };
+                if cx > 0 && cy > 0 {
+                    w.mode = WindowMode::Windowed;
+                    w.decorations = settings.title_bar;
+                    w.position = WindowPosition::At(IVec2::new(x, y));
+                    w.resolution.set_physical_resolution(cx as u32, cy as u32);
+                    continue;
+                }
+            }
+            w.set_maximized(true);
+        } else {
+            w.set_maximized(true);
+            // Full screen on the monitor the window opened on; F11 toggles back to a window.
+            w.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Current);
+        }
     }
 }
 

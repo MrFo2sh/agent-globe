@@ -127,7 +127,8 @@ curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo"
 - **Terminal (⌨).** Real consoles (ConPTY) in the session's folder, inside the app: PowerShell with
   PSReadLine, colours, full-screen programs, `claude` itself. Tabs with Ctrl+T / Ctrl+W, wheel for
   history, ⟲ restart. Right-click ⌨ for a native window instead. Every card (reply, turn, terminal, settings) moves, resizes, fills the screen and searches
-  its own content with Ctrl+F.
+  its own content with Ctrl+F. Drag a card's title onto a region target to dock it; drag a docked
+  edge to grow it over more regions; the window spans every monitor at start.
 
 ## Radio, narrator, alarms
 

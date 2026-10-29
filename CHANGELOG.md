@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.20.0 - 2026-10-29
+- Docking. The window is a grid of regions (two columns per monitor by default, set in settings). Drag any card by its title: targets appear in every region; drop on one and the card fills that region. Drag a docked card's edge to grow or shrink it by whole regions; drag its title to float it again. Dropping anywhere else leaves the card floating. Where each card is docked is remembered across runs. Works for the reply, terminal, turn and settings cards, and every card to come.
+- The window opens borderless across every monitor at start (one wall), instead of full screen on one. A settings switch restores the single-monitor full screen; F11 still toggles.
+
 ## 0.19.1 - 2026-10-29
 - Terminal Ctrl+C works. Windows children inherit an "ignore Ctrl+C" flag from any parent started as its own process group (shells and cargo do that), so nothing in the console could be interrupted. The flag is cleared before each console is created; a test interrupts a running ping to prove it.
 - The last terminal tab has a close button too: closing it closes the card. Tabs no longer show PowerShell's exe path as their title.
