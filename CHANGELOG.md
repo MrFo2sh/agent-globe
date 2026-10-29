@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.8.3 - 2026-10-29
+- History search: a prompt group that holds hits is drawn in the accent colour with its hit count in the header, and hits inside the prompt line itself are boxed too.
+
 ## 0.8.2 - 2026-10-29
 - F11 toggles borderless full screen on the current monitor; the status strip mentions it.
 

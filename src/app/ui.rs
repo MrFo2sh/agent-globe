@@ -1737,8 +1737,25 @@ fn agent_panel(
                         .iter()
                         .filter(|c| c.tool == "Agent" || c.tool == "Task")
                         .count();
-                    let title = format!("#{}  {}  {}", ti + 1, clock(t.started), first_line);
-                    egui::CollapsingHeader::new(egui::RichText::new(title).color(SAND))
+                    // With a search active the group header carries its hit count and lights up.
+                    let title = if needle.is_empty() {
+                        format!("#{}  {}  {}", ti + 1, clock(t.started), first_line)
+                    } else {
+                        format!(
+                            "#{}  {}  {}   · {} call{} match",
+                            ti + 1,
+                            clock(t.started),
+                            first_line,
+                            idx.len(),
+                            if idx.len() == 1 { "" } else { "s" }
+                        )
+                    };
+                    let header: egui::WidgetText = if needle.is_empty() {
+                        egui::RichText::new(title).color(SAND).into()
+                    } else {
+                        highlighted(&title, &needle, egui::FontId::proportional(14.0), ACCENT).into()
+                    };
+                    egui::CollapsingHeader::new(header)
                         .id_salt((&a.id, ti))
                         .default_open(ti + 1 == n || !needle.is_empty())
                         .show(ui, |ui| {
