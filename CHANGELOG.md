@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.24.2 - 2026-10-29
+- Folder captions read `src/  16`: the stencil font has no arrow glyph, so the arrow showed as a question mark.
+
 ## 0.24.1 - 2026-10-29
 - The file system reads as one: cold files are cool-tinted and a touch bigger, apart from the warm dust; each cold ring has a faint guide circle and each folder wedge a faint edge line; every folder carries a caption on its wedge (name and file count) that opens it in the files sidebar. All cold rings drift together so the wedges never shear. The home camera takes the outermost ring in.
 - The agent panel opens at the width you last dragged it to, this run and the next.
