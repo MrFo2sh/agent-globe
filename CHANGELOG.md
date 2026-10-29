@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.9.3 - 2026-10-29
+- Clicking anywhere on a satellite constellation navigates to it: an invisible sphere wraps each satellite as the click target, with a faint glow while hovered; the two circles stay as the visual cue.
+
 ## 0.9.2 - 2026-10-29
 - Navigating to another constellation keeps the one you came from as a satellite: the last three visited sessions stay watched and shown even when idle, so you can always go back.
 

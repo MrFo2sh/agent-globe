@@ -65,6 +65,8 @@ pub struct SatelliteRing {
     pub session: String,
     pub radius: f32,
     pub tilt: f32,
+    /// The invisible sphere over the whole constellation: the click target. Rings are the visual.
+    pub hull: bool,
 }
 
 #[derive(Resource, Default)]
@@ -160,6 +162,8 @@ pub struct SceneAssets {
     file_mesh: Handle<Mesh>,
     file_material: Handle<StandardMaterial>,
     file_hot_material: Handle<StandardMaterial>,
+    hull_material: Handle<StandardMaterial>,
+    hull_hover_material: Handle<StandardMaterial>,
 }
 
 /// Toy plastic: glossy, lit, with an emissive push for the glowing states.
@@ -262,6 +266,20 @@ pub fn setup(
     let file_mesh = meshes.add(Cuboid::new(0.22, 0.22, 0.22));
     let file_material = materials.add(plastic(theme::KHAKI, 6.0));
     let file_hot_material = materials.add(plastic(theme::PLASTIC_LIGHT, 60.0));
+    // Fully transparent but still picked by the pointer; a faint glow while hovered.
+    let hull_material = materials.add(StandardMaterial {
+        base_color: Color::NONE,
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    let hull_hover_material = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.87, 0.78, 0.52, 0.06),
+        emissive: LinearRgba::new(0.6, 0.5, 0.2, 1.0),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
     let star_mesh = meshes.add(Cuboid::new(0.14, 0.14, 0.14));
     let star_mat = materials.add(light(theme::STAR, 28.0));
     let mut rng = XorShift(0x9E37_79B9);
@@ -318,6 +336,8 @@ pub fn setup(
         file_mesh,
         file_material,
         file_hot_material,
+        hull_material,
+        hull_hover_material,
     });
 }
 
@@ -735,14 +755,22 @@ pub fn dress_rings(
             .insert((Mesh3d(mesh), MeshMaterial3d(assets.ring_material.clone())));
     }
     for (e, ring) in &fresh_sat {
-        // Thick enough to hit with the pointer: these circles are the satellite's click target.
-        let mesh = meshes.add(Torus {
-            minor_radius: 0.09,
-            major_radius: ring.radius,
-        });
-        commands
-            .entity(e)
-            .insert((Mesh3d(mesh), MeshMaterial3d(assets.ring_material.clone())));
+        if ring.hull {
+            let mesh = meshes.add(Sphere::new(ring.radius).mesh().ico(2).unwrap());
+            commands
+                .entity(e)
+                .insert((Mesh3d(mesh), MeshMaterial3d(assets.hull_material.clone())));
+        } else {
+            let mesh = meshes.add(Torus {
+                minor_radius: 0.05,
+                major_radius: ring.radius,
+            });
+            commands.entity(e).insert((
+                Mesh3d(mesh),
+                MeshMaterial3d(assets.ring_material.clone()),
+                Pickable::IGNORE,
+            ));
+        }
     }
 }
 
@@ -774,12 +802,18 @@ pub fn sync_satellite_rings(
         let Some(sc) = scene.per.get(sid) else { continue };
         let base = layout::ring_radius(sc.layout.max_depth.max(1)) + 1.4;
         let mut ents = Vec::new();
-        for (radius, tilt) in [(base, 0.0_f32), (base + 0.7, 0.35)] {
+        // two visible circles plus one invisible hull that catches clicks anywhere on the constellation
+        for (radius, tilt, hull) in [
+            (base, 0.0_f32, false),
+            (base + 0.7, 0.35, false),
+            (base + 0.9, 0.0, true),
+        ] {
             let mut ec = commands.spawn((
                 SatelliteRing {
                     session: sid.clone(),
                     radius,
                     tilt,
+                    hull,
                 },
                 Transform::from_translation(sc.offset).with_scale(Vec3::splat(0.01)),
                 Visibility::default(),
@@ -817,10 +851,11 @@ pub fn animate_satellite_rings(
         tf.rotation = Quat::from_rotation_y(t * 0.15) * Quat::from_rotation_x(ring.tilt);
         if let Some(mut mat) = mat {
             let hovered = store.hovered_session.as_deref() == Some(ring.session.as_str());
-            let want = if hovered {
-                &assets.halos[&HaloKey::Core]
-            } else {
-                &assets.ring_material
+            let want = match (ring.hull, hovered) {
+                (true, true) => &assets.hull_hover_material,
+                (true, false) => &assets.hull_material,
+                (false, true) => &assets.halos[&HaloKey::Core],
+                (false, false) => &assets.ring_material,
             };
             if mat.0 != *want {
                 mat.0 = want.clone();
