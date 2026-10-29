@@ -19,6 +19,7 @@ use bevy::diagnostic::FrameTimeDiagnosticsPlugin;
 use bevy::picking::mesh_picking::MeshPickingPlugin;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
+use bevy::window::{MonitorSelection, WindowMode};
 use bevy_egui::{EguiPlugin, EguiPrimaryContextPass};
 use bevy_panorbit_camera::PanOrbitCameraPlugin;
 use std::path::PathBuf;
@@ -96,6 +97,7 @@ pub fn run(cfg: Config) {
                     sounds::play,
                     settings::persist,
                     maximize_window,
+                    toggle_fullscreen,
                     window_icon,
                 )
                     .chain(),
@@ -114,6 +116,19 @@ fn maximize_window(mut windows: Query<&mut Window, With<PrimaryWindow>>, mut don
     *done += 1;
     for mut w in &mut windows {
         w.set_maximized(true);
+    }
+}
+
+/// F11 toggles borderless full screen on the monitor the window is on.
+fn toggle_fullscreen(keys: Res<ButtonInput<KeyCode>>, mut windows: Query<&mut Window, With<PrimaryWindow>>) {
+    if !keys.just_pressed(KeyCode::F11) {
+        return;
+    }
+    for mut w in &mut windows {
+        w.mode = match w.mode {
+            WindowMode::Windowed => WindowMode::BorderlessFullscreen(MonitorSelection::Current),
+            _ => WindowMode::Windowed,
+        };
     }
 }
 

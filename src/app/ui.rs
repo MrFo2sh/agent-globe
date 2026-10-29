@@ -548,9 +548,9 @@ pub fn draw(
             ui.separator();
             ui.label(
                 egui::RichText::new(if compact {
-                    "drag · scroll · R home"
+                    "drag · scroll · R home · F11"
                 } else {
-                    "drag rotate · scroll zoom · right-drag pan · click unit or file · R home"
+                    "drag rotate · scroll zoom · right-drag pan · click unit or file · R home · F11 full screen"
                 })
                 .small()
                 .color(DIM),

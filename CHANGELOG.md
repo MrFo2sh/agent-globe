@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.8.2 - 2026-10-29
+- F11 toggles borderless full screen on the current monitor; the status strip mentions it.
+
 ## 0.8.1 - 2026-10-29
 - History search highlights every hit in the accent colour: in call headers, narrator lines, commands and outputs. Capped outputs show the lines around the hits (with ⋯ where lines are skipped) instead of the first ten lines while a search is active.
 
