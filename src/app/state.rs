@@ -200,6 +200,8 @@ pub struct Store {
     pub pointer_over_ui: bool,
     pub show_settings: bool,
     pub show_debrief: bool,
+    /// The plan-usage window (session, weekly, per-model limits).
+    pub show_usage: bool,
     /// Cinematic mode: no panels, full-window scene.
     pub hide_ui: bool,
     /// Set by the UI; the camera system consumes it.
@@ -265,6 +267,7 @@ impl Store {
             pointer_over_ui: false,
             show_settings: false,
             show_debrief: false,
+            show_usage: false,
             hide_ui: false,
             reset_view: false,
             expanded_calls: HashSet::new(),

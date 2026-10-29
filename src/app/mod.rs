@@ -12,6 +12,7 @@ mod sounds;
 mod state;
 mod theme;
 mod ui;
+mod usage;
 mod winjump;
 
 use agent_globe::bridge::{self, BridgeConfig};
@@ -55,6 +56,7 @@ pub fn run(cfg: Config) {
             FrameTimeDiagnosticsPlugin::default(),
         ))
         .insert_resource(settings::load())
+        .insert_resource(usage::UsageWatch::start(cfg.claude_dir.clone()))
         .insert_resource(state::Store::new(cfg.session, cfg.claude_dir, cfg.http_port))
         .insert_resource(state::BridgeRes(bridge))
         .init_resource::<scene::NodeEntities>()

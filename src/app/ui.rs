@@ -9,6 +9,7 @@ use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
 use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer, clock_hm};
 use super::theme;
+use super::usage::{self, UsageState, UsageWatch};
 use super::winjump;
 use agent_globe::bridge::Bridge;
 use agent_globe::data::artifacts::{Artifact, ArtifactKind};
@@ -139,6 +140,7 @@ pub fn draw(
     sounds: Res<Sounds>,
     probe: Res<Probe>,
     gitw: Res<GitWatch>,
+    usage: Res<UsageWatch>,
     mut images: Local<HashMap<String, Option<egui::TextureHandle>>>,
     mut styled: Local<bool>,
     mut last_scale: Local<f32>,
@@ -203,6 +205,8 @@ pub fn draw(
     let mut go_home = false;
     let mut cinematic = false;
     let mut toggle_sound = false;
+    let mut toggle_usage = false;
+    let usage_state = usage.snapshot();
     let hud = egui::Panel::top("hud").show(&mut root, |ui| {
         ui.add_space(4.0);
         ui.horizontal(|ui| {
@@ -301,6 +305,49 @@ pub fn draw(
                 {
                     toggle_debrief = true;
                 }
+                // Plan usage, left of the debrief button: the same numbers the editor shows.
+                ui.separator();
+                match &usage_state {
+                    Some(UsageState::Ready(u)) => {
+                        let shown = if compact { 1 } else { u.limits.len().min(3) };
+                        for l in u.limits.iter().take(shown).rev() {
+                            let frac = l.utilization / 100.0;
+                            let color = usage_color(l.utilization);
+                            let resp = ui
+                                .horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{} {:.0}%", usage::short_label(&l.key), l.utilization))
+                                            .monospace()
+                                            .color(color),
+                                    );
+                                    ui.add(
+                                        egui::ProgressBar::new(frac)
+                                            .desired_width(54.0)
+                                            .desired_height(7.0)
+                                            .fill(color),
+                                    );
+                                })
+                                .response;
+                            let tip_text = format!("{}: {:.0}% used. {}", l.label, l.utilization, usage::resets_text(l.resets_at, now));
+                            if resp.on_hover_text(tip_text).interact(egui::Sense::click()).clicked() {
+                                toggle_usage = true;
+                            }
+                        }
+                        if ui.small_button("📊").on_hover_text("Usage: session, weekly and per-model limits").clicked() {
+                            toggle_usage = true;
+                        }
+                    }
+                    Some(UsageState::NoLogin) => {
+                        ui.label(egui::RichText::new("usage: no login").small().color(DIM))
+                            .on_hover_text("No Claude Code login found on this machine. Run `claude` once and sign in; the usage shows here within a minute.");
+                    }
+                    Some(UsageState::Error(e)) => {
+                        ui.label(egui::RichText::new("usage: ?").small().color(AMBER)).on_hover_text(e);
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("usage…").small().color(DIM));
+                    }
+                }
             });
         });
         ui.add_space(4.0);
@@ -312,6 +359,9 @@ pub fn draw(
     }
     if toggle_debrief {
         store.show_debrief = !store.show_debrief;
+    }
+    if toggle_usage {
+        store.show_usage = !store.show_usage;
     }
     if go_home {
         store.selected = None;
@@ -835,6 +885,74 @@ pub fn draw(
         }
     }
 
+    // ---- usage window ----
+    if store.show_usage {
+        let mut open = true;
+        let win = egui::Window::new("📊 usage")
+            .open(&mut open)
+            .resizable(false)
+            .default_width(300.0)
+            .default_pos(egui::pos2(ctx.viewport_rect().width() - 360.0, 80.0))
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new("USAGE").font(stencil(16.0)).color(SAND));
+                ui.add_space(4.0);
+                match &usage_state {
+                    Some(UsageState::Ready(u)) => {
+                        for l in &u.limits {
+                            let color = usage_color(l.utilization);
+                            ui.horizontal(|ui| {
+                                ui.label(egui::RichText::new(&l.label).size(16.0).color(TEXT));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(
+                                        egui::RichText::new(format!("{:.0}%", l.utilization))
+                                            .size(16.0)
+                                            .color(color),
+                                    );
+                                });
+                            });
+                            ui.add(
+                                egui::ProgressBar::new(l.utilization / 100.0)
+                                    .desired_width(280.0)
+                                    .desired_height(10.0)
+                                    .fill(color),
+                            );
+                            ui.label(
+                                egui::RichText::new(usage::resets_text(l.resets_at, now))
+                                    .small()
+                                    .color(DIM),
+                            );
+                            ui.add_space(8.0);
+                        }
+                        ui.label(
+                            egui::RichText::new(format!("fetched {} ago · refreshes every minute", age(u.fetched_at)))
+                                .small()
+                                .color(DIM),
+                        );
+                    }
+                    Some(UsageState::NoLogin) => {
+                        ui.label(
+                            egui::RichText::new(
+                                "No Claude Code login found on this machine. Run `claude` once and sign in.",
+                            )
+                            .color(DIM),
+                        );
+                    }
+                    Some(UsageState::Error(e)) => {
+                        ui.label(egui::RichText::new(e).color(AMBER));
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("fetching…").color(DIM));
+                    }
+                }
+            });
+        if let Some(w) = win {
+            ui_rects.push(w.response.rect);
+        }
+        if !open {
+            store.show_usage = false;
+        }
+    }
+
     // ---- debrief window ----
     if store.show_debrief {
         let mut open = true;
@@ -942,6 +1060,17 @@ fn badge_style(kind: BadgeKind) -> (&'static str, egui::Color32, &'static str) {
         BadgeKind::Error => ("⚠", RED, "failed call"),
         BadgeKind::Approval => ("🛡", AMBER, "authorization needed"),
         BadgeKind::Stalled => ("⏳", AMBER, "stalled"),
+    }
+}
+
+/// Green until two thirds, amber until ninety percent, red after.
+fn usage_color(pct: f32) -> egui::Color32 {
+    if pct >= 90.0 {
+        RED
+    } else if pct >= 66.0 {
+        AMBER
+    } else {
+        ACCENT
     }
 }
 
