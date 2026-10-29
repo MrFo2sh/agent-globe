@@ -1185,16 +1185,123 @@ fn draw_toasts(ctx: &egui::Context, store: &Store) {
 }
 
 /// Monospace block capped at `MAX_LINES` with a per-block expand toggle, to keep the panel quiet.
-fn code_block(ui: &mut egui::Ui, key: &str, text: &str, color: egui::Color32, expanded: &mut HashSet<String>) {
+/// Byte ranges of every non-overlapping, case-insensitive (ASCII) occurrence of `needle_lower`.
+fn match_ranges(hay: &str, needle_lower: &str) -> Vec<(usize, usize)> {
+    let n = needle_lower.as_bytes();
+    if n.is_empty() || hay.len() < n.len() {
+        return Vec::new();
+    }
+    let h = hay.as_bytes();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i + n.len() <= h.len() {
+        if hay.is_char_boundary(i) && h[i..i + n.len()].eq_ignore_ascii_case(n) && hay.is_char_boundary(i + n.len()) {
+            out.push((i, i + n.len()));
+            i += n.len();
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Text with every search hit boxed in the accent colour, ready for a label.
+fn highlighted(text: &str, needle_lower: &str, font: egui::FontId, color: egui::Color32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    let plain = egui::TextFormat {
+        font_id: font.clone(),
+        color,
+        ..Default::default()
+    };
+    let hit = egui::TextFormat {
+        font_id: font,
+        color: INK,
+        background: ACCENT,
+        ..Default::default()
+    };
+    let mut last = 0;
+    for (a, b) in match_ranges(text, needle_lower) {
+        if a > last {
+            job.append(&text[last..a], 0.0, plain.clone());
+        }
+        job.append(&text[a..b], 0.0, hit.clone());
+        last = b;
+    }
+    if last < text.len() {
+        job.append(&text[last..], 0.0, plain);
+    }
+    job
+}
+
+/// A text label; with a search active the hits are highlighted.
+fn text_label(text: &str, needle_lower: &str, font: egui::FontId, color: egui::Color32) -> egui::Label {
+    if needle_lower.is_empty() || match_ranges(text, needle_lower).is_empty() {
+        egui::Label::new(egui::RichText::new(text).font(font).color(color))
+    } else {
+        egui::Label::new(highlighted(text, needle_lower, font, color))
+    }
+}
+
+/// Which lines of a capped block to show: with a search active, the lines around the hits
+/// (joined with "⋯" where lines were skipped); otherwise the first `max` lines.
+fn preview_lines(lines: &[&str], needle_lower: &str, max: usize) -> String {
+    if lines.len() <= max {
+        return lines.join("\n");
+    }
+    if needle_lower.is_empty() {
+        return lines[..max].join("\n");
+    }
+    let hits: Vec<usize> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, l)| !match_ranges(l, needle_lower).is_empty())
+        .map(|(i, _)| i)
+        .collect();
+    if hits.is_empty() {
+        return lines[..max].join("\n");
+    }
+    let mut keep: Vec<usize> = Vec::new();
+    for h in hits {
+        for i in h.saturating_sub(1)..=(h + 1).min(lines.len() - 1) {
+            if keep.last().is_none_or(|&k| k < i) {
+                keep.push(i);
+            }
+        }
+        if keep.len() >= max {
+            break;
+        }
+    }
+    keep.truncate(max);
+    let mut out = String::new();
+    let mut prev: Option<usize> = None;
+    for i in keep {
+        if prev.is_some_and(|p| p + 1 < i) {
+            out.push_str("⋯\n");
+        }
+        out.push_str(lines[i]);
+        out.push('\n');
+        prev = Some(i);
+    }
+    out.trim_end_matches('\n').to_string()
+}
+
+fn code_block(
+    ui: &mut egui::Ui,
+    key: &str,
+    text: &str,
+    color: egui::Color32,
+    expanded: &mut HashSet<String>,
+    needle: &str,
+) {
     let lines: Vec<&str> = text.lines().collect();
     let is_open = expanded.contains(key);
     let shown = if lines.len() > MAX_LINES && !is_open {
-        lines[..MAX_LINES].join("\n")
+        preview_lines(&lines, needle, MAX_LINES)
     } else {
         text.to_string()
     };
     ui.add(
-        egui::Label::new(egui::RichText::new(shown).monospace().color(color))
+        text_label(&shown, needle, egui::FontId::monospace(14.0), color)
             .wrap()
             .selectable(true),
     );
@@ -1222,6 +1329,7 @@ fn call_row(
     stalled: &HashSet<String>,
     narrator: bool,
     expanded: &mut HashSet<String>,
+    needle: &str,
 ) {
     let open = c.ended.is_none();
     let mark = if c.is_error {
@@ -1238,21 +1346,14 @@ fn call_row(
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new(clock(c.started)).small().monospace().color(DIM));
         ui.label(mark);
-        ui.add(egui::Label::new(egui::RichText::new(header).monospace()).truncate());
+        ui.add(text_label(&header, needle, egui::FontId::monospace(14.0), TEXT).truncate());
         ui.label(egui::RichText::new(took).small().color(DIM));
     });
     if narrator && !c.note.is_empty() {
         ui.horizontal(|ui| {
             ui.add_space(26.0);
-            ui.add(
-                egui::Label::new(
-                    egui::RichText::new(format!("“{}”", c.note))
-                        .italics()
-                        .small()
-                        .color(SAND),
-                )
-                .wrap(),
-            );
+            let note = format!("“{}”", c.note);
+            ui.add(text_label(&note, needle, egui::FontId::proportional(12.0), SAND).wrap());
         });
     }
     if let Some(cmd) = &c.command {
@@ -1261,17 +1362,18 @@ fn call_row(
             .stroke(egui::Stroke::new(1.0, egui::Color32::from_rgb(50, 90, 35)))
             .inner_margin(6.0)
             .show(ui, |ui| {
-                ui.label(egui::RichText::new(format!("$ {cmd}")).monospace().color(ACCENT));
+                let line = format!("$ {cmd}");
+                ui.add(text_label(&line, needle, egui::FontId::monospace(14.0), ACCENT).wrap());
                 if !c.stdout.is_empty() {
-                    code_block(ui, &c.id, &c.stdout, TEXT, expanded);
+                    code_block(ui, &c.id, &c.stdout, TEXT, expanded, needle);
                 }
                 if !c.stderr.is_empty() {
-                    code_block(ui, &format!("{}:err", c.id), &c.stderr, RED, expanded);
+                    code_block(ui, &format!("{}:err", c.id), &c.stderr, RED, expanded, needle);
                 }
             });
     } else if !c.stdout.is_empty() {
         egui::Frame::NONE.fill(INK).inner_margin(6.0).show(ui, |ui| {
-            code_block(ui, &c.id, &c.stdout, DIM, expanded);
+            code_block(ui, &c.id, &c.stdout, DIM, expanded, needle);
         });
     }
     ui.add_space(4.0);
@@ -1579,7 +1681,7 @@ fn agent_panel(
         .show(ui, |ui| {
             if !a.prompt.is_empty() && needle.is_empty() && a.turn_log.is_empty() {
                 ui.collapsing(egui::RichText::new("orders (prompt)").color(SAND), |ui| {
-                    code_block(ui, &format!("{}:prompt", a.id), &a.prompt, TEXT, expanded);
+                    code_block(ui, &format!("{}:prompt", a.id), &a.prompt, TEXT, expanded, "");
                 });
             }
             ui.label(egui::RichText::new("TOOL CALLS").small().color(DIM));
@@ -1591,7 +1693,7 @@ fn agent_panel(
             }
             if a.turn_log.is_empty() {
                 for i in hits.iter().copied() {
-                    call_row(ui, i, &a.calls[i], stalled, narrator, expanded);
+                    call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
                 }
             } else {
                 // Grouped by your prompts: each turn folds its calls, units and time.
@@ -1610,7 +1712,7 @@ fn agent_panel(
                     .default_open(false)
                     .show(ui, |ui| {
                         for i in lead {
-                            call_row(ui, i, &a.calls[i], stalled, narrator, expanded);
+                            call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
                         }
                     });
                 }
@@ -1658,11 +1760,11 @@ fn agent_panel(
                             });
                             if t.prompt.trim().len() > first_line.len() {
                                 ui.collapsing(egui::RichText::new("full prompt").small().color(DIM), |ui| {
-                                    code_block(ui, &format!("{}:turn{ti}", a.id), &t.prompt, TEXT, expanded);
+                                    code_block(ui, &format!("{}:turn{ti}", a.id), &t.prompt, TEXT, expanded, "");
                                 });
                             }
                             for i in idx {
-                                call_row(ui, i, &a.calls[i], stalled, narrator, expanded);
+                                call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
                             }
                         });
                 }
@@ -2444,6 +2546,33 @@ mod tests {
         assert_eq!(folded.len(), 2);
         assert_eq!((folded[0].0.label.as_str(), folded[0].1), ("check passed", 3));
         assert_eq!((folded[1].0.label.as_str(), folded[1].1), ("a.rs", 2));
+    }
+
+    #[test]
+    fn search_hits_are_found_and_previewed_around_matches() {
+        assert_eq!(
+            match_ranges("Password: x, password!", "password"),
+            vec![(0, 8), (13, 21)]
+        );
+        assert_eq!(match_ranges("héllo wörld", "wörld"), vec![(7, 13)]);
+        assert!(match_ranges("abc", "").is_empty());
+        let lines: Vec<&str> = (1..=30)
+            .map(|i| if i == 20 { "hit here" } else { "noise" })
+            .collect::<Vec<_>>();
+        let p = preview_lines(&lines, "hit", 10);
+        assert!(p.starts_with("noise\nhit here\nnoise"), "{p}");
+        assert!(!p.contains("⋯"), "one cluster, no gap marker: {p}");
+        let lines2: Vec<&str> = (1..=30)
+            .map(|i| if i == 3 || i == 25 { "hit" } else { "noise" })
+            .collect();
+        let p2 = preview_lines(&lines2, "hit", 10);
+        assert!(p2.contains("⋯"), "two clusters show a gap: {p2}");
+        assert_eq!(
+            preview_lines(&lines, "", 10).lines().count(),
+            10,
+            "no search: first ten lines"
+        );
+        assert_eq!(preview_lines(&["a", "b"], "zzz", 10), "a\nb");
     }
 
     #[test]
