@@ -1,6 +1,6 @@
 [package]
 name = "agent-globe"
-version = "0.27.6"
+version = "0.28.0"
 edition = "2024"
 description = "GPU-rendered 3D globe of coding-agent sessions, subagents and their terminal executions, live."
 license = "MIT"
@@ -39,6 +39,7 @@ wry = "0.57.1"
 ignore = "0.4.34"
 fuzzy-matcher = "0.3.7"
 base64 = "0.23.1"
+rfd = "0.15"
 
 [target.'cfg(windows)'.dependencies]
 raw-window-handle = "0.6"

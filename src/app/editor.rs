@@ -107,6 +107,7 @@ fn tree(
 #[derive(Default)]
 pub struct FilesActions {
     pub collapse: bool,
+    pub pick_folder: bool,
 }
 
 /// The files sidebar's content: the session folder as a tree, with a finder box on top (Ctrl+P
@@ -145,6 +146,9 @@ pub fn files_body(
             }
             if ui.small_button("↻").on_hover_text("Rebuild the file index").clicked() {
                 refresh = true;
+            }
+            if ui.small_button("📁").on_hover_text("Open a folder").clicked() {
+                act.pick_folder = true;
             }
         });
     });
@@ -250,7 +254,7 @@ pub fn draw_quick_open(ctx: &egui::Context, store: &mut Store, index: &mut FileI
     if !store.quick_open {
         return;
     }
-    let Some(cwd) = store.current_session().map(|s| s.cwd.clone()).filter(|c| !c.is_empty()) else {
+    let Some(cwd) = store.root_dir() else {
         store.quick_open = false;
         return;
     };

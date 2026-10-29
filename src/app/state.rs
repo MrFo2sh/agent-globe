@@ -337,6 +337,8 @@ pub struct Store {
     pub focus_file: Option<String>,
     /// The file picked with one click: lit, its connections shown; a second click opens it.
     pub selected_file: Option<String>,
+    /// A folder opened by hand: the file system to show when no session is on screen.
+    pub workspace: Option<String>,
     /// Ask the host to hand the keyboard back to the app window (after the page asked for it).
     pub focus_app: bool,
     /// Where the WebView surface goes this frame, in physical pixels (x, y, w, h); None hides it.
@@ -454,6 +456,7 @@ impl Store {
             hovered_file: None,
             focus_file: None,
             selected_file: None,
+            workspace: None,
             focus_app: false,
             webview_rect: None,
             webview_logged: false,
@@ -684,6 +687,14 @@ impl Store {
             let path = d.path.clone();
             self.editor_cmds.push(EditorCmd::Open { path });
         }
+    }
+
+    /// The folder the file system follows: the session's, else the one opened by hand.
+    pub fn root_dir(&self) -> Option<String> {
+        self.current_session()
+            .map(|s| s.cwd.clone())
+            .filter(|c| !c.is_empty())
+            .or_else(|| self.workspace.clone())
     }
 
     pub fn current_session(&self) -> Option<&Session> {

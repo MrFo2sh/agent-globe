@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.28.0 - 2026-10-29
+- One constellation: other sessions no longer appear as satellites unless the switch in settings is on. Switch sessions from the sidebar.
+- Open a folder: a native folder picker (📁 in the files sidebar, or on its strip when no session is on screen) makes that folder the file system: its files fill the rings, the tree, the finder and the connections. A session's own folder takes precedence while one is on screen; the opened folder is remembered.
+
 ## 0.27.6 - 2026-10-29
 - Terminal text selection: drag to select, Ctrl+C with a selection copies (without one it still interrupts), Ctrl+Shift+C always copies, right-click copies, a plain click or typing clears.
 - A `claude` started inside the terminal is its own session: the shell no longer inherits the session markers of a Claude Code that launched the app, which made it a child session with transcript saving off and invisible to the constellation.

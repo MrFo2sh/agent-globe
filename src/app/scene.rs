@@ -383,7 +383,8 @@ pub fn sync_files(
     let now = now_millis();
     let show_files = settings.files_ring && store.scene_view != SceneView::Agents;
     let session = if show_files { store.current_session() } else { None };
-    let Some(session) = session else {
+    let root = if show_files { store.root_dir() } else { None };
+    let Some(root) = root else {
         for (_, e) in fents.0.drain() {
             commands.entity(e).despawn();
         }
@@ -398,8 +399,11 @@ pub fn sync_files(
         return;
     };
     // The scene asks for the file index itself; the sidebar and the palette share it.
-    index.ensure(&session.cwd, false);
-    let max_depth = scene.per.get(&session.id).map(|e| e.layout.max_depth).unwrap_or(0);
+    index.ensure(&root, false);
+    let max_depth = session
+        .and_then(|s| scene.per.get(&s.id))
+        .map(|e| e.layout.max_depth)
+        .unwrap_or(0);
     let hot_depth = max_depth + 1;
     let spawn = |commands: &mut Commands, fents: &mut FileEntities, path: &str, angle: f32, depth: u32, cold: bool| {
         let mut ec = commands.spawn((
@@ -422,13 +426,15 @@ pub fn sync_files(
     };
     if t >= fscene.next_rebuild {
         fscene.next_rebuild = t + 1.0;
-        fscene.files = files::hot_files(session, FILE_RING_MAX, now, BEAM_MS);
+        fscene.files = session
+            .map(|s| files::hot_files(s, FILE_RING_MAX, now, BEAM_MS))
+            .unwrap_or_default();
         // A touched path that exists nowhere (a fixture name, a path relative to somewhere else)
         // is a phantom: it gets no node.
-        let base = std::path::Path::new(&session.cwd);
+        let base = std::path::Path::new(&root);
         fscene.files.retain(|f| {
             let p = std::path::Path::new(&f.path);
-            p.is_absolute() && p.exists() || (!session.cwd.is_empty() && base.join(p).exists())
+            p.is_absolute() && p.exists() || base.join(p).exists()
         });
         fscene.depth = hot_depth;
         // Angles follow the alphabetical order of the chosen set, so nodes do not jump as heat shifts.
@@ -450,13 +456,13 @@ pub fn sync_files(
             }
         }
         // Hot nodes that cooled off go, unless the file system view still wants them as cold.
-        let want_cold = store.scene_view != SceneView::Agents && !session.cwd.is_empty();
-        let key = (index.generation(), session.id.clone(), want_cold);
+        let want_cold = store.scene_view != SceneView::Agents;
+        let key = (index.generation(), root.clone(), want_cold);
         if fscene.cold_key.as_ref() != Some(&key) {
             fscene.cold_key = Some(key);
             // The whole file system, alphabetical so folders stay together, on the rings beyond
             // the hot ring, each ring holding as many nodes as its circumference allows.
-            let cwd = session.cwd.replace('\\', "/");
+            let cwd = root.replace('\\', "/");
             fscene.links = if want_cold {
                 index
                     .links_snapshot()

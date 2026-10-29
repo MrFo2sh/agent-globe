@@ -786,12 +786,45 @@ pub fn draw(
         store.sidebar_open = !store.sidebar_open;
     }
     // ---- files sidebar: beside the sessions, collapsible to a strip, pushing the dock area ----
-    let files_ctx = store
-        .current_session()
-        .map(|s| (s.cwd.clone(), s.project.clone()))
-        .filter(|(cwd, _)| !cwd.is_empty());
+    if store.workspace.is_none() && !settings.workspace.is_empty() {
+        store.workspace = Some(settings.workspace.clone());
+    }
+    let files_ctx = store.root_dir().map(|cwd| {
+        let project = store
+            .current_session()
+            .filter(|s| !s.cwd.is_empty())
+            .map(|s| s.project.clone())
+            .unwrap_or_else(|| {
+                cwd.rsplit(['\\', '/'])
+                    .find(|p| !p.is_empty())
+                    .unwrap_or("folder")
+                    .to_string()
+            });
+        (cwd, project)
+    });
     let mut files_w = 0.0_f32;
     let mut files_toggle = false;
+    let mut pick_folder = false;
+    if files_ctx.is_none() {
+        // No session on screen and no folder opened: the strip offers the picker.
+        let strip = egui::Panel::left("files-strip")
+            .resizable(false)
+            .default_size(34.0)
+            .show(&mut root, |ui| {
+                ui.add_space(6.0);
+                ui.vertical_centered(|ui| {
+                    if ui
+                        .small_button("📁")
+                        .on_hover_text("Open a folder: its files fill the rings, the tree and the finder")
+                        .clicked()
+                    {
+                        pick_folder = true;
+                    }
+                });
+            });
+        files_w = strip.response.rect.width();
+        ui_rects.push(strip.response.rect);
+    }
     if let Some((cwd, project)) = files_ctx {
         if store.files_open {
             let panel = egui::Panel::left("files")
@@ -804,6 +837,9 @@ pub fn draw(
             ui_rects.push(panel.response.rect);
             if panel.inner.collapse {
                 files_toggle = true;
+            }
+            if panel.inner.pick_folder {
+                pick_folder = true;
             }
         } else {
             let strip = egui::Panel::left("files-strip")
@@ -827,6 +863,13 @@ pub fn draw(
     }
     if files_toggle {
         store.files_open = !store.files_open;
+    }
+    if pick_folder && let Some(p) = rfd::FileDialog::new().set_title("Open folder").pick_folder() {
+        let chosen = p.to_string_lossy().to_string();
+        settings.workspace = chosen.clone();
+        store.workspace = Some(chosen);
+        store.files_open = true;
+        store.files_open_dirs.clear();
     }
     let inset_left = inset_left + files_w;
     if let Some(s) = open {

@@ -44,6 +44,8 @@ pub struct Settings {
     /// The file index admits dotfiles and dot-folders / files the gitignore excludes.
     pub files_show_hidden: bool,
     pub files_show_ignored: bool,
+    /// The folder last opened by hand (empty: none).
+    pub workspace: String,
     /// Force the compact layout (it also turns on by itself under 1100 px of width).
     pub compact: bool,
     /// Windows notifications when the window is not focused (off by default: the radio is the alert).
@@ -87,12 +89,13 @@ impl Default for Settings {
             narrator: true,
             audio_device: String::new(),
             progress_rings: true,
-            satellites: true,
+            satellites: false,
             files_ring: true,
             file_links: false,
             file_links_all: false,
             files_show_hidden: false,
             files_show_ignored: false,
+            workspace: String::new(),
             compact: false,
             desktop_notifications: false,
             title_bar: false,
