@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.18.0 - 2026-10-29
+- A real terminal: each tab is a Windows pseudo console (ConPTY) running PowerShell, with alacritty's VT state machine behind a cell grid, 10,000 lines of scrollback, 256 and true colour, bold, underline, inverse, the program's own cursor shape, bracketed paste and app-cursor keys. Click the grid to type; PSReadLine, tab completion, Ctrl+C, `claude`, vim and other full-screen programs work as in a native window. The wheel scrolls the history, the card's search box switches to a text view of the scrollback with the hits lit, ⧉ copies it all, 🗑 runs cls, ⟲ restarts the tab. Replaces the line-based console.
+- Cinematic mode is for watching: clicks on units, files and other constellations do nothing there. Esc brings the console back.
+- ARTIFACTS and CHANGES are collapsing sections like SERVERS & PROCESSES: counts in the header, fully hidden when closed.
+
 ## 0.17.0 - 2026-10-29
 - Double-click a prompt group to open it as a card: a conversation segment (your prompt and the commander's reply) and a details segment (that turn's tool calls with the narrator lines).
 - Every card has a search box (Ctrl+F): the reply and turn cards filter to matching lines with the hits lit, the terminal filters its scrollback, the turn details reuse the call-row highlighting.

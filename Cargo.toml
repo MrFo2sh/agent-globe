@@ -1,6 +1,6 @@
 [package]
 name = "agent-globe"
-version = "0.17.0"
+version = "0.18.0"
 edition = "2024"
 description = "GPU-rendered 3D globe of coding-agent sessions, subagents and their terminal executions, live."
 license = "MIT"
@@ -34,6 +34,7 @@ notify-rust = "4"
 tray-icon = "0.26"
 open = "5"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp", "bmp"] }
+alacritty_terminal = "0.26.0"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse"] }

@@ -124,9 +124,9 @@ curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo"
 - **Cost.** Session spend in the HUD from token counts and list prices; per-unit cost in the
   panel; a budget alarm in settings.
 - **Git.** Branch and uncommitted-change count of the session's folder in the HUD.
-- **Terminal (⌨).** PowerShell tabs in the session's folder, inside the app: Enter runs, Tab
-  completes, ↑ ↓ history, Ctrl+C stops, Ctrl+T / Ctrl+W tabs, ⟲ restart. Right-click ⌨ for a native
-  window. Every card (reply, turn, terminal, settings) moves, resizes, fills the screen and searches
+- **Terminal (⌨).** Real consoles (ConPTY) in the session's folder, inside the app: PowerShell with
+  PSReadLine, colours, full-screen programs, `claude` itself. Tabs with Ctrl+T / Ctrl+W, wheel for
+  history, ⟲ restart. Right-click ⌨ for a native window instead. Every card (reply, turn, terminal, settings) moves, resizes, fills the screen and searches
   its own content with Ctrl+F.
 
 ## Radio, narrator, alarms

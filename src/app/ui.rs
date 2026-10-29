@@ -8,7 +8,7 @@ use super::servers::{self, ServerWatch, Snapshot};
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
 use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer, clock_hm};
-use super::terminal::{LineKind, Terminals};
+use super::terminal::{self, Terminals};
 use super::theme;
 use super::usage::{self, UsageState, UsageWatch};
 use super::winjump;
@@ -1446,7 +1446,8 @@ fn floating_card(
     } else {
         area.default_pos(default_pos).movable(true).constrain(true)
     };
-    let find = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F));
+    let find =
+        ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F)) && ctx.memory(|m| m.focused().is_none());
     let content = |ui: &mut egui::Ui, out: &mut CardOut| {
         let mut q_lower = String::new();
         ui.horizontal(|ui| {
@@ -1618,10 +1619,10 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) -> Option<egui::Rect> {
     out.rect
 }
 
-/// The integrated terminal: persistent PowerShell tabs in the session's folder, in the same card
-/// as the reply. Enter runs a line, Tab completes through PowerShell's own engine, ↑↓ walk the
-/// history, Ctrl+C ends the running command, Ctrl+T / Ctrl+W open and close tabs, ⟲ restarts the
-/// shell. The search box filters the scrollback.
+/// The integrated terminal: real consoles (ConPTY) in the session's folder, in the same card as
+/// the reply. Click the grid and keys go straight to the shell, so PSReadLine, Claude Code and
+/// full-screen programs work. The card's search box switches to a text view of the scrollback
+/// with the hits lit. Ctrl+T / Ctrl+W open and close tabs while nothing has the keyboard.
 fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) -> Option<egui::Rect> {
     let sid = store.terminal_open.clone()?;
     let Some((project, cwd)) = store.sessions.get(&sid).map(|s| (s.project.clone(), s.cwd.clone())) else {
@@ -1629,8 +1630,8 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
         return None;
     };
     let vr = ctx.viewport_rect();
-    let width = (vr.width() * 0.5).clamp(480.0, 900.0);
-    let height = (vr.height() * 0.45).clamp(240.0, 560.0);
+    let width = (vr.width() * 0.55).clamp(520.0, 1100.0);
+    let height = (vr.height() * 0.5).clamp(280.0, 640.0);
     let default_pos = egui::pos2(
         vr.center().x - width / 2.0,
         (vr.max.y - height - 56.0).max(vr.min.y + 56.0),
@@ -1644,10 +1645,11 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
     let mut new_tab = false;
     let mut close_tab: Option<usize> = None;
     let mut switch_to: Option<usize> = None;
+    let free = ctx.memory(|m| m.focused().is_none());
     let (ctrl_t, ctrl_w) = ctx.input(|i| {
         (
-            i.modifiers.command && i.key_pressed(egui::Key::T),
-            i.modifiers.command && i.key_pressed(egui::Key::W),
+            free && i.modifiers.command && i.key_pressed(egui::Key::T),
+            free && i.modifiers.command && i.key_pressed(egui::Key::W),
         )
     });
     let out = match terms.set_mut(&sid, &cwd) {
@@ -1671,19 +1673,14 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
             },
         ),
         Some(set) => {
-            let tabs = set.tabs();
+            let tabs = set.titles();
             let active = set.active;
-            let shell = set.active_mut();
-            shell.poll_completion();
-            let busy = shell.is_busy();
-            let dead = shell.is_dead();
-            let now_cwd = shell.cwd();
-            let folder = now_cwd
-                .rsplit(['\\', '/'])
-                .find(|p| !p.is_empty())
-                .unwrap_or("")
-                .to_string();
-            let lines = shell.snapshot();
+            let tab = set.active_mut();
+            if let Some(text) = tab.take_clipboard() {
+                ctx.copy_text(text);
+            }
+            let dead = tab.is_dead();
+            let title = tab.title().unwrap_or_default();
             floating_card(
                 ctx,
                 "terminal-card",
@@ -1694,9 +1691,9 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
                 |ui| {
                     ui.label(egui::RichText::new("⌨").size(16.0));
                     ui.label(egui::RichText::new(&project).font(stencil(14.0)).color(SAND));
-                    ui.add(egui::Label::new(egui::RichText::new(&now_cwd).small().monospace().color(DIM)).truncate());
+                    ui.add(egui::Label::new(egui::RichText::new(&title).small().monospace().color(DIM)).truncate());
                     if dead {
-                        ui.label(egui::RichText::new("shell exited").small().color(RED));
+                        ui.label(egui::RichText::new("exited").small().color(RED));
                     }
                     if ui
                         .small_button("⟲")
@@ -1705,28 +1702,27 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
                     {
                         restart = true;
                     }
-                    if ui
-                        .small_button("🗑")
-                        .on_hover_text("Clear the screen (or type cls)")
-                        .clicked()
-                    {
+                    if ui.small_button("🗑").on_hover_text("cls").clicked() {
                         clear = true;
                     }
-                    if ui.small_button("⧉").on_hover_text("Copy everything").clicked() {
+                    if ui
+                        .small_button("⧉")
+                        .on_hover_text("Copy the whole scrollback")
+                        .clicked()
+                    {
                         copy = true;
                     }
                 },
                 |ui, q| {
-                    // ---- tab bar
                     ui.horizontal(|ui| {
                         ui.style_mut().interaction.selectable_labels = false;
-                        for (i, (title, folder, tab_busy)) in tabs.iter().enumerate() {
-                            let label = if *tab_busy {
-                                format!("{title}: {folder} ●")
+                        for (i, (label, title, tab_dead)) in tabs.iter().enumerate() {
+                            let text = if *tab_dead {
+                                format!("{label}: {title} ✗")
                             } else {
-                                format!("{title}: {folder}")
+                                format!("{label}: {title}")
                             };
-                            let r = ui.selectable_label(i == active, egui::RichText::new(label).monospace().small());
+                            let r = ui.selectable_label(i == active, egui::RichText::new(text).monospace().small());
                             if r.clicked() {
                                 switch_to = Some(i);
                             }
@@ -1740,141 +1736,68 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
                                 close_tab = Some(i);
                             }
                         }
-                        if ui.small_button("+").on_hover_text("New tab here (Ctrl+T)").clicked() {
+                        if ui.small_button("+").on_hover_text("New tab (Ctrl+T)").clicked() {
                             new_tab = true;
                         }
-                        if busy {
-                            ui.spinner();
-                            ui.label(egui::RichText::new("Ctrl+C stops it").small().color(DIM));
-                        }
                     });
-                    // ---- scrollback
-                    let input_h = ui.spacing().interact_size.y + 12.0;
-                    let avail = (ui.available_height() - input_h).max(60.0);
-                    egui::ScrollArea::vertical()
-                        .id_salt(("terminal-scroll", active))
-                        .auto_shrink([false, false])
-                        .max_height(avail)
-                        .stick_to_bottom(q.is_empty())
-                        .show(ui, |ui| {
-                            ui.set_min_width(ui.available_width() - 8.0);
-                            let start = if q.is_empty() {
-                                lines.len().saturating_sub(1500)
-                            } else {
-                                0
-                            };
-                            let mut shown = 0;
-                            for l in &lines[start..] {
-                                if !q.is_empty() && !contains_ci(&l.text, q) {
-                                    continue;
+                    if q.is_empty() {
+                        draw_grid(ui, tab);
+                    } else {
+                        let lines = tab.all_lines();
+                        egui::ScrollArea::vertical()
+                            .id_salt("terminal-search")
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_min_width(ui.available_width() - 8.0);
+                                let mut shown = 0;
+                                for (n, l) in lines.iter().enumerate() {
+                                    if !contains_ci(l, q) {
+                                        continue;
+                                    }
+                                    shown += 1;
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(
+                                            egui::RichText::new(format!("{:>5}", n + 1))
+                                                .small()
+                                                .monospace()
+                                                .color(DIM),
+                                        );
+                                        ui.add(
+                                            egui::Label::new(highlighted(l, q, egui::FontId::monospace(13.0), TEXT))
+                                                .selectable(true)
+                                                .wrap(),
+                                        );
+                                    });
                                 }
-                                shown += 1;
-                                let color = match l.kind {
-                                    LineKind::Cmd => SAND,
-                                    LineKind::Out => TEXT,
-                                    LineKind::Note => DIM,
-                                };
-                                if q.is_empty() {
-                                    let rt = match l.kind {
-                                        LineKind::Cmd => egui::RichText::new(&l.text).monospace().color(color).strong(),
-                                        LineKind::Out => egui::RichText::new(&l.text).monospace().color(color),
-                                        LineKind::Note => egui::RichText::new(&l.text).monospace().small().color(color),
-                                    };
-                                    ui.add(egui::Label::new(rt).selectable(true).wrap());
-                                } else {
-                                    ui.add(
-                                        egui::Label::new(highlighted(&l.text, q, egui::FontId::monospace(13.0), color))
-                                            .selectable(true)
-                                            .wrap(),
-                                    );
+                                if shown == 0 {
+                                    ui.label(egui::RichText::new("no matches").color(DIM));
                                 }
-                            }
-                            if !q.is_empty() && shown == 0 {
-                                ui.label(egui::RichText::new("no matches").color(DIM));
-                            }
-                        });
-                    // ---- prompt line
-                    ui.horizontal(|ui| {
-                        ui.label(egui::RichText::new(format!("PS {folder}>")).monospace().color(ACCENT))
-                            .on_hover_text(&now_cwd);
-                        let hint = if busy {
-                            "running… Enter queues the next command"
-                        } else {
-                            "command · Enter runs · Tab completes · ↑ ↓ history"
-                        };
-                        let resp = ui.add(
-                            egui::TextEdit::singleline(&mut shell.input)
-                                .font(egui::TextStyle::Monospace)
-                                .desired_width(f32::INFINITY)
-                                .hint_text(hint)
-                                .lock_focus(true),
-                        );
-                        if shell.want_focus {
-                            resp.request_focus();
-                            shell.want_focus = false;
-                        }
-                        if resp.has_focus() {
-                            let (up, down, tab, shift, ctrl_c) = ctx.input(|i| {
-                                let hit = |k: egui::Key| {
-                                    i.raw
-                                        .events
-                                        .iter()
-                                        .any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if *key == k))
-                                };
-                                (
-                                    hit(egui::Key::ArrowUp),
-                                    hit(egui::Key::ArrowDown),
-                                    hit(egui::Key::Tab),
-                                    i.modifiers.shift,
-                                    i.modifiers.command && hit(egui::Key::C),
-                                )
                             });
-                            if up {
-                                shell.recall(-1);
-                            }
-                            if down {
-                                shell.recall(1);
-                            }
-                            if tab {
-                                shell.tab(shift);
-                            }
-                            if ctrl_c && busy {
-                                shell.restart_in_place("^C");
-                            }
-                        }
-                        if resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            let cmd = std::mem::take(&mut shell.input);
-                            shell.run(&cmd);
-                            shell.want_focus = true;
-                        }
-                    });
+                    }
                 },
             )
         }
     };
     if let Some(set) = terms.set_mut(&sid, &cwd) {
         if let Some(i) = switch_to {
-            set.active = i.min(set.shells.len() - 1);
-            set.active_mut().want_focus = true;
+            set.active = i.min(set.tabs.len() - 1);
         }
         if ctrl_t || new_tab {
-            let here = set.active_mut().cwd();
+            let here = set.active_mut().cwd.clone();
             let _ = set.open(&here);
         }
         if let Some(i) = close_tab.or(if ctrl_w { Some(set.active) } else { None }) {
             set.close(i);
-            set.active_mut().want_focus = true;
-        }
-        let shell = set.active_mut();
-        if clear {
-            shell.clear();
-        }
-        if copy {
-            let all: Vec<String> = shell.snapshot().into_iter().map(|l| l.text).collect();
-            ctx.copy_text(all.join("\n"));
         }
         if restart {
-            shell.restart_in_place("shell restarted");
+            set.restart_active();
+        }
+        let tab = set.active_mut();
+        if clear {
+            tab.write(b"cls\r".to_vec());
+        }
+        if copy {
+            ctx.copy_text(tab.all_lines().join("\n"));
         }
     }
     store.terminal_query = query;
@@ -1885,6 +1808,229 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
         store.terminal_open = None;
     }
     out.rect
+}
+
+fn rgb(c: [u8; 3]) -> egui::Color32 {
+    egui::Color32::from_rgb(c[0], c[1], c[2])
+}
+
+/// The console grid: sized to the space it gets (and the shell told), painted cell by cell,
+/// keys and paste forwarded while it has the keyboard, the wheel scrolling the history.
+fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab) {
+    let font = egui::FontId::monospace(13.0);
+    let (cw, ch) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
+    let avail = ui.available_size();
+    let (rect, resp) = ui.allocate_exact_size(avail, egui::Sense::click_and_drag());
+    let cols = ((rect.width() - 6.0) / cw).floor().clamp(10.0, 400.0) as u16;
+    let rows = ((rect.height() - 6.0) / ch).floor().clamp(3.0, 200.0) as u16;
+    tab.ensure_size(cols, rows);
+    if resp.clicked() || resp.drag_started() {
+        resp.request_focus();
+    }
+    let focused = resp.has_focus();
+    if focused {
+        ui.memory_mut(|m| {
+            m.set_focus_lock_filter(
+                resp.id,
+                egui::EventFilter {
+                    tab: true,
+                    horizontal_arrows: true,
+                    vertical_arrows: true,
+                    escape: true,
+                },
+            )
+        });
+    }
+    if resp.hovered() {
+        // Wheel notches in lines, with the fraction carried between frames so slow wheels still move.
+        let lines: f32 = ui.input(|i| {
+            i.events
+                .iter()
+                .filter_map(|e| match e {
+                    egui::Event::MouseWheel { unit, delta, .. } => Some(match unit {
+                        egui::MouseWheelUnit::Line => delta.y * 3.0,
+                        egui::MouseWheelUnit::Point => delta.y / ch,
+                        egui::MouseWheelUnit::Page => delta.y * rows as f32,
+                    }),
+                    _ => None,
+                })
+                .sum()
+        });
+        if lines != 0.0 {
+            let key = resp.id.with("wheel-rest");
+            let total = ui.data_mut(|d| d.get_temp::<f32>(key).unwrap_or(0.0)) + lines;
+            let whole = total.trunc();
+            ui.data_mut(|d| d.insert_temp(key, total - whole));
+            tab.scroll(whole as i32);
+        }
+    }
+    let frame = tab.frame();
+    if focused {
+        let (events, mods) = ui.input(|i| (i.events.clone(), i.modifiers));
+        for e in events {
+            match e {
+                egui::Event::Text(t) => {
+                    if mods.command || mods.ctrl {
+                        tab.paste(&t);
+                    } else {
+                        tab.write(t.into_bytes());
+                    }
+                    tab.scroll_bottom();
+                }
+                egui::Event::Paste(t) => {
+                    tab.paste(&t);
+                    tab.scroll_bottom();
+                }
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
+                    if let Some(bytes) = terminal::key_bytes(key, modifiers, frame.app_cursor) {
+                        tab.write(bytes);
+                        tab.scroll_bottom();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    let painter = ui.painter().with_clip_rect(rect);
+    painter.rect_filled(rect, 4.0, rgb(terminal::BG));
+    let origin = rect.min + egui::vec2(3.0, 3.0);
+    for (r, row) in frame.cells.iter().enumerate() {
+        let y = origin.y + r as f32 * ch;
+        for (c, px) in row.iter().enumerate() {
+            if let Some(bg) = px.bg {
+                let cell = egui::Rect::from_min_size(egui::pos2(origin.x + c as f32 * cw, y), egui::vec2(cw, ch));
+                painter.rect_filled(cell, 0.0, rgb(bg));
+            }
+        }
+        // Runs of one style, each placed by its column so wide glyphs never shift the rest.
+        let mut run = String::new();
+        let mut run_start = 0usize;
+        let mut run_style: Option<([u8; 3], bool, bool, bool)> = None;
+        let flush = |run: &mut String,
+                     start: usize,
+                     style: Option<([u8; 3], bool, bool, bool)>,
+                     painter: &egui::Painter,
+                     ui: &egui::Ui| {
+            if run.trim().is_empty() {
+                run.clear();
+                return;
+            }
+            let Some((fg, bold, dim, underline)) = style else {
+                run.clear();
+                return;
+            };
+            let mut color = rgb(fg);
+            if bold {
+                color = egui::Color32::from_rgb(
+                    fg[0].saturating_add(40),
+                    fg[1].saturating_add(40),
+                    fg[2].saturating_add(40),
+                );
+            }
+            if dim {
+                color = color.gamma_multiply(0.6);
+            }
+            let x = origin.x + start as f32 * cw;
+            let job = egui::text::LayoutJob::simple_singleline(std::mem::take(run), font.clone(), color);
+            let galley = ui.fonts_mut(|f| f.layout_job(job));
+            painter.galley(egui::pos2(x, y), galley, color);
+            if underline {
+                let w = run.chars().count().max(1) as f32 * cw;
+                painter.hline(x..=x + w, y + ch - 1.5, egui::Stroke::new(1.0, color));
+            }
+        };
+        for (c, px) in row.iter().enumerate() {
+            if px.spacer {
+                continue;
+            }
+            let style = (px.fg, px.bold, px.dim, px.underline);
+            if run_style != Some(style) {
+                flush(&mut run, run_start, run_style, &painter, ui);
+                run_style = Some(style);
+                run_start = c;
+            }
+            if run.is_empty() {
+                run_start = c;
+            }
+            run.push(px.c);
+            if px.wide {
+                flush(&mut run, run_start, run_style, &painter, ui);
+            }
+        }
+        flush(&mut run, run_start, run_style, &painter, ui);
+    }
+    if let Some((r, c, shape)) = frame.cursor {
+        use alacritty_terminal::vte::ansi::CursorShape;
+        let x = origin.x + c as f32 * cw;
+        let y = origin.y + r as f32 * ch;
+        let cell = egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(cw, ch));
+        let col = rgb(terminal::FG);
+        match shape {
+            CursorShape::Block | CursorShape::HollowBlock => {
+                if focused {
+                    painter.rect_filled(cell, 0.0, col.gamma_multiply(0.85));
+                    let under = frame
+                        .cells
+                        .get(r)
+                        .and_then(|row| row.get(c))
+                        .map(|p| p.c)
+                        .unwrap_or(' ');
+                    painter.text(
+                        cell.left_top(),
+                        egui::Align2::LEFT_TOP,
+                        under,
+                        font.clone(),
+                        rgb(terminal::BG),
+                    );
+                } else {
+                    painter.rect_stroke(cell, 0.0, egui::Stroke::new(1.0, col), egui::StrokeKind::Inside);
+                }
+            }
+            CursorShape::Underline => {
+                painter.rect_filled(
+                    egui::Rect::from_min_max(egui::pos2(x, y + ch - 2.0), egui::pos2(x + cw, y + ch)),
+                    0.0,
+                    col,
+                );
+            }
+            CursorShape::Beam => {
+                painter.rect_filled(
+                    egui::Rect::from_min_size(egui::pos2(x, y), egui::vec2(2.0, ch)),
+                    0.0,
+                    col,
+                );
+            }
+            CursorShape::Hidden => {}
+        }
+    }
+    if frame.display_offset > 0 {
+        let text = format!("▲ {} lines up · wheel or any key", frame.display_offset);
+        let pos = rect.right_top() + egui::vec2(-8.0, 6.0);
+        let galley = painter.layout_no_wrap(text, egui::FontId::proportional(11.0), SAND);
+        let r = egui::Rect::from_min_size(
+            pos - egui::vec2(galley.size().x + 8.0, 0.0),
+            galley.size() + egui::vec2(8.0, 4.0),
+        );
+        painter.rect_filled(r, 3.0, egui::Color32::from_black_alpha(200));
+        painter.galley(r.min + egui::vec2(4.0, 2.0), galley, SAND);
+    }
+    if !focused {
+        painter.text(
+            rect.right_bottom() - egui::vec2(6.0, 4.0),
+            egui::Align2::RIGHT_BOTTOM,
+            "click to type",
+            egui::FontId::proportional(11.0),
+            DIM,
+        );
+    }
+    if tab.take_bell() {
+        painter.rect_stroke(rect, 4.0, egui::Stroke::new(2.0, AMBER), egui::StrokeKind::Outside);
+    }
 }
 
 /// A prompt group as a card, opened by double-clicking its header: the conversation (your prompt
@@ -2538,66 +2684,57 @@ fn agent_panel(
     );
     if !a.artifacts.is_empty() {
         ui.add_space(4.0);
-        ui.label(egui::RichText::new("ARTIFACTS").small().color(DIM));
         let key = format!("{}:artifacts", a.id);
-        let all = expanded.contains(&key);
         let folded = dedup_artifacts(&a.artifacts);
         let total = folded.len();
         let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-        let shelf_h = if all { f32::INFINITY } else { row_h * 2.0 + 4.0 };
-        let mut toggle = false;
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("{total} items")).small().color(DIM));
-            let label = if all { "▴ collapse" } else { "▾ expand" };
-            if ui.small_button(egui::RichText::new(label).small()).clicked() {
-                toggle = true;
-            }
-        });
-        if all {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("🔍").small());
-                ui.add(
-                    egui::TextEdit::singleline(query)
-                        .hint_text("search artifacts")
-                        .desired_width(220.0),
-                );
-                if !query.is_empty() && ui.small_button("✕").clicked() {
-                    query.clear();
-                }
-            });
-        }
-        let needle = if all { query.to_ascii_lowercase() } else { String::new() };
-        egui::ScrollArea::vertical()
-            .id_salt(&key)
-            .max_height(shelf_h)
-            .auto_shrink([false, true])
+        let header = egui::RichText::new(format!(
+            "ARTIFACTS  ·  {total} item{}",
+            if total == 1 { "" } else { "s" }
+        ))
+        .small()
+        .color(DIM);
+        egui::CollapsingHeader::new(header)
+            .id_salt((&a.id, "artifacts"))
+            .default_open(true)
             .show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
-                    for (art, count) in folded.iter().filter(|(x, _)| {
-                        needle.is_empty()
-                            || x.label.to_ascii_lowercase().contains(&needle)
-                            || x.target.to_ascii_lowercase().contains(&needle)
-                    }) {
-                        let alive = if art.kind == ArtifactKind::Url {
-                            probe.is_alive(&art.target)
-                        } else {
-                            None
-                        };
-                        if artifact_chip(ui, art, alive, images, row_h - 6.0, *count).clicked()
-                            && let Some(path) = open_artifact(ui.ctx(), art, git)
-                        {
-                            *view_image = Some(path);
-                        }
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("🔍").small());
+                    ui.add(
+                        egui::TextEdit::singleline(query)
+                            .hint_text("search artifacts")
+                            .desired_width(220.0),
+                    );
+                    if !query.is_empty() && ui.small_button("✕").clicked() {
+                        query.clear();
                     }
                 });
+                let needle = query.to_ascii_lowercase();
+                egui::ScrollArea::vertical()
+                    .id_salt(&key)
+                    .max_height(row_h * 6.0 + 4.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        ui.horizontal_wrapped(|ui| {
+                            for (art, count) in folded.iter().filter(|(x, _)| {
+                                needle.is_empty()
+                                    || x.label.to_ascii_lowercase().contains(&needle)
+                                    || x.target.to_ascii_lowercase().contains(&needle)
+                            }) {
+                                let alive = if art.kind == ArtifactKind::Url {
+                                    probe.is_alive(&art.target)
+                                } else {
+                                    None
+                                };
+                                if artifact_chip(ui, art, alive, images, row_h - 6.0, *count).clicked()
+                                    && let Some(path) = open_artifact(ui.ctx(), art, git)
+                                {
+                                    *view_image = Some(path);
+                                }
+                            }
+                        });
+                    });
             });
-        if toggle {
-            if all {
-                expanded.remove(&key);
-            } else {
-                expanded.insert(key);
-            }
-        }
     }
     if a.depth == 0 && (!servers.servers.is_empty() || !servers.procs.is_empty()) {
         ui.add_space(4.0);
@@ -2779,79 +2916,59 @@ fn agent_panel(
     if !changes.is_empty() {
         ui.add_space(4.0);
         let key = format!("{}:changes", a.id);
-        let all = expanded.contains(&key);
         let (add, del) = changes.iter().fold((0, 0), |(x, y), c| (x + c.added, y + c.deleted));
-        let mut toggle = false;
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("CHANGES").small().color(DIM))
-                .on_hover_text("Files the working tree changed against the last commit. Click one to open it in VS Code; ✎ counts edits this session made to it.");
-            ui.label(
-                egui::RichText::new(format!("{} files  +{add} −{del}", changes.len()))
-                    .small()
-                    .color(SAND),
-            );
-            // Three rows always show; the button only exists when there is more to reveal.
-            if changes.len() > 3 {
-                let label = if all {
-                    "▴ collapse".to_string()
-                } else {
-                    format!("▾ {} more", changes.len() - 3)
-                };
-                if ui.small_button(egui::RichText::new(label).small()).clicked() {
-                    toggle = true;
-                }
-            }
-        });
-        let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-        let max_h = if all || changes.len() <= 3 {
-            360.0
-        } else {
-            row_h * 3.0 + 4.0
-        };
-        egui::ScrollArea::vertical()
-            .id_salt(&key)
-            .max_height(max_h)
-            .auto_shrink([false, true])
+        let header = egui::RichText::new(format!(
+            "CHANGES  ·  {} file{}  +{add} −{del}",
+            changes.len(),
+            if changes.len() == 1 { "" } else { "s" }
+        ))
+        .small()
+        .color(DIM);
+        let cr = egui::CollapsingHeader::new(header)
+            .id_salt((&a.id, "changes"))
+            .default_open(true)
             .show(ui, |ui| {
-                for c in changes {
-                    ui.horizontal(|ui| {
-                        let stat = if c.untracked {
-                            "new".to_string()
-                        } else {
-                            format!("+{} −{}", c.added, c.deleted)
-                        };
-                        let stat_color = if c.untracked { SAND } else { GREEN };
-                        ui.label(
-                            egui::RichText::new(format!("{stat:>9}"))
-                                .monospace()
-                                .small()
-                                .color(stat_color),
-                        );
-                        if ui
-                            .add(
-                                egui::Button::new(egui::RichText::new(&c.path).monospace().small())
-                                    .frame(false)
-                                    .truncate(),
-                            )
-                            .on_hover_text("open in VS Code")
-                            .clicked()
-                        {
-                            open_in_editor(cwd, &c.path);
-                        }
-                        if let Some(n) = touched.get(&c.path) {
-                            ui.label(egui::RichText::new(format!("✎ {n}")).small().color(DIM))
-                                .on_hover_text("edits by this session");
+                egui::ScrollArea::vertical()
+                    .id_salt(&key)
+                    .max_height(360.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for c in changes {
+                            ui.horizontal(|ui| {
+                                let stat = if c.untracked {
+                                    "new".to_string()
+                                } else {
+                                    format!("+{} −{}", c.added, c.deleted)
+                                };
+                                let stat_color = if c.untracked { SAND } else { GREEN };
+                                ui.label(
+                                    egui::RichText::new(format!("{stat:>9}"))
+                                        .monospace()
+                                        .small()
+                                        .color(stat_color),
+                                );
+                                if ui
+                                    .add(
+                                        egui::Button::new(egui::RichText::new(&c.path).monospace().small())
+                                            .frame(false)
+                                            .truncate(),
+                                    )
+                                    .on_hover_text("open in VS Code")
+                                    .clicked()
+                                {
+                                    open_in_editor(cwd, &c.path);
+                                }
+                                if let Some(n) = touched.get(&c.path) {
+                                    ui.label(egui::RichText::new(format!("✎ {n}")).small().color(DIM))
+                                        .on_hover_text("edits by this session");
+                                }
+                            });
                         }
                     });
-                }
             });
-        if toggle {
-            if all {
-                expanded.remove(&key);
-            } else {
-                expanded.insert(key);
-            }
-        }
+        cr.header_response.on_hover_text(
+            "Files the working tree changed against the last commit. Click one to open it in VS Code; ✎ counts edits this session made to it.",
+        );
     }
     ui.separator();
 

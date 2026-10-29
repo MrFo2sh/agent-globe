@@ -496,6 +496,9 @@ pub fn project_files(
 }
 
 fn on_file_click(ev: On<PointerClick>, nodes: Query<&FileNode>, mut store: ResMut<Store>) {
+    if store.hide_ui {
+        return;
+    }
     if let Ok(n) = nodes.get(ev.entity) {
         store.pending_open_file = Some(n.path.clone());
     }
@@ -866,6 +869,9 @@ pub fn animate_satellite_rings(
 }
 
 fn on_satellite_click(ev: On<PointerClick>, rings: Query<&SatelliteRing>, mut store: ResMut<Store>) {
+    if store.hide_ui {
+        return;
+    }
     if let Ok(r) = rings.get(ev.entity) {
         store.hide_ui = false;
         store.pending_open = Some(r.session.clone());
@@ -1140,6 +1146,10 @@ pub fn project_badges(
 }
 
 fn on_click(ev: On<PointerClick>, nodes: Query<&NodeAgent>, mut store: ResMut<Store>) {
+    // Cinematic mode is for watching: nothing in the scene reacts to a click.
+    if store.hide_ui {
+        return;
+    }
     if let Ok(n) = nodes.get(ev.entity) {
         debug!("click node {}/{}", n.session, n.id);
         // A click in cinematic mode brings the console back.
