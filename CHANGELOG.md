@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.29.1 - 2026-10-29
+- The terminal uses Microsoft's modern console host (ConPTY 1.25, the one Windows Terminal and VS Code ship) instead of the one built into Windows: keystrokes reach the screen in about half the time, and Claude Code no longer lags inside the app. Bundled under vendor/conpty and installed beside the app.
+
 ## 0.29.0 - 2026-10-29
 - No VS Code: files open in the app's editor from everywhere (the speech bubbles, artifact chips, the CHANGES list, the tree's right-click). The buttons that brought a session's VS Code window to the front are gone.
 - Ctrl+` opens or closes the terminal, from anywhere, the terminal included.

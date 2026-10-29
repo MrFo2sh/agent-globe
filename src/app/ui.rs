@@ -5335,3 +5335,113 @@ mod dock_tests {
         assert!(pushed.x1 - pushed.x0 >= DockGrid::MIN - 1e-6);
     }
 }
+
+#[cfg(test)]
+mod term_bench {
+    use super::*;
+
+    fn stat(v: &mut [u128]) -> (u128, u128, u128) {
+        v.sort_unstable();
+        (v[v.len() / 2], v[v.len() * 95 / 100], v[v.len() - 1])
+    }
+
+    fn measure(tab: &mut terminal::PtyTab, frames: usize) -> ((u128, u128, u128), (u128, u128, u128)) {
+        let ctx = egui::Context::default();
+        let mut read_us = Vec::new();
+        let mut frame_us = Vec::new();
+        for i in 0..frames {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1800.0, 1100.0))),
+                time: Some(i as f64 / 60.0),
+                ..Default::default()
+            };
+            let t = std::time::Instant::now();
+            let _ = tab.frame();
+            read_us.push(t.elapsed().as_micros());
+            let t = std::time::Instant::now();
+            let _ = ctx.run_ui(input.clone(), |ui| draw_grid_inner(ui, tab, 13.0));
+            frame_us.push(t.elapsed().as_micros());
+            std::thread::sleep(std::time::Duration::from_millis(16));
+        }
+        (stat(&mut read_us), stat(&mut frame_us))
+    }
+
+    /// A TUI's worth of output: 300 full-screen colour redraws, then a marker; how long until
+    /// the marker shows, and how long a keystroke takes to echo while the redraws run.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn term_tui_throughput() {
+        let tab = terminal::PtyTab::spawn("", 200, 60).expect("conpty");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let script = "$e=[char]27; $l=(1..58|%{ \"$e[3$($_%7+1)m line $_ $('x'*150)$e[0m\" }) -join \"`r`n\"; 1..300|%{ [Console]::Write(\"$e[H\" + $l) }; [Console]::Write(\"$e[2J$e[HAGDONE\")";
+        let t = std::time::Instant::now();
+        tab.write(script.as_bytes().to_vec());
+        tab.write(vec![13u8]);
+        loop {
+            if tab.all_lines().iter().any(|l| l.trim() == "AGDONE") || t.elapsed().as_secs() > 60 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        eprintln!(
+            "TUI BENCH: 300 full-screen redraws shown in {} ms",
+            t.elapsed().as_millis()
+        );
+    }
+
+    /// How long a line takes to show, plain and wrapped in synchronized-output markers.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn term_sync_latency() {
+        let tab = terminal::PtyTab::spawn("", 120, 30).expect("conpty");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        let shown = |needle: &str| tab.all_lines().iter().any(|l| l.contains(needle));
+        for (label, pre, post) in [("plain", "", ""), ("sync", "$e[?2026h", "$e[?2026l")] {
+            let mut ms = Vec::new();
+            for i in 0..8 {
+                let tag = format!("AGLAT{label}{i}");
+                let cmd = format!("$e=[char]27; [Console]::Write(\"{pre}{tag}{post}\")");
+                tab.write(cmd.into_bytes());
+                tab.write(vec![13u8]);
+                // the echo of the command line contains the tag too: wait for the printed one
+                let t = std::time::Instant::now();
+                loop {
+                    let n = tab.all_lines().iter().filter(|l| l.contains(&tag)).count();
+                    if n >= 2 || t.elapsed().as_millis() > 2000 {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(2));
+                }
+                ms.push(t.elapsed().as_millis());
+                let _ = shown("");
+                std::thread::sleep(std::time::Duration::from_millis(200));
+            }
+            eprintln!("SYNC BENCH {label}: {ms:?} ms");
+        }
+    }
+
+    /// `cargo test --release term_frame_cost -- --ignored --nocapture`: a real console, once
+    /// static and once under a Claude-like stream of full-screen coloured redraws.
+    #[test]
+    #[ignore]
+    #[cfg(windows)]
+    fn term_frame_cost() {
+        let mut tab = terminal::PtyTab::spawn("", 200, 60).expect("conpty");
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        tab.write(b"Get-ChildItem C:\\Windows\\System32 | Select-Object -First 400 | Format-Table -AutoSize".to_vec());
+        tab.write(vec![13u8]);
+        std::thread::sleep(std::time::Duration::from_millis(3000));
+        let (r, f) = measure(&mut tab, 120);
+        eprintln!("TERM BENCH static: read p50/p95/max {r:?} us | grid frame {f:?} us");
+        // A TUI redrawing the whole screen in colour, as fast as it can (Claude Code's spinner and
+        // status lines redraw like this many times a second).
+        let script = "$e=[char]27; $l=(1..58|%{ \"$e[3$($_%7+1)m line $_ $('x'*150)$e[0m\" }) -join \"`r`n\"; $t=[Diagnostics.Stopwatch]::StartNew(); while($t.Elapsed.TotalSeconds -lt 6){ [Console]::Write(\"$e[H\" + $l) }";
+        tab.write(script.as_bytes().to_vec());
+        tab.write(vec![13u8]);
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (r, f) = measure(&mut tab, 200);
+        eprintln!("TERM BENCH streaming: read p50/p95/max {r:?} us | grid frame {f:?} us");
+    }
+}

@@ -2,7 +2,7 @@
   "name": "agent-globe",
   "one_liner": "A GPU-rendered 3D constellation of every coding-agent session, its subagents, and their terminal executions, live.",
   "blueprint": "desktop-app",
-  "version": "0.29.0",
+  "version": "0.29.1",
   "check": [
     "lint",
     "typecheck",
@@ -19,6 +19,6 @@
     "build": "cargo build --release",
     "audit": "cargo audit",
     "run": "cargo run --release",
-    "release": "cargo build --release && powershell -NoProfile -Command \"New-Item -ItemType Directory -Force $env:LOCALAPPDATA/Programs/agent-globe | Out-Null; Copy-Item target/release/agent-globe.exe $env:LOCALAPPDATA/Programs/agent-globe/agent-globe.exe -Force\""
+    "release": "cargo build --release && powershell -NoProfile -Command \"New-Item -ItemType Directory -Force $env:LOCALAPPDATA/Programs/agent-globe | Out-Null; Copy-Item target/release/agent-globe.exe $env:LOCALAPPDATA/Programs/agent-globe/agent-globe.exe -Force; Copy-Item vendor/conpty/conpty.dll, vendor/conpty/OpenConsole.exe $env:LOCALAPPDATA/Programs/agent-globe/ -Force\""
   }
 }
