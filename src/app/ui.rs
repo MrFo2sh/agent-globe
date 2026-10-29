@@ -1621,9 +1621,7 @@ fn draw_files(ctx: &egui::Context, store: &mut Store) {
                 .order(egui::Order::Foreground)
                 .interactable(true)
                 .show(ctx, |ui| {
-                    let text = egui::RichText::new(format!("▸ {label}"))
-                        .font(stencil(12.0))
-                        .color(KHAKI_DIM);
+                    let text = egui::RichText::new(&label).font(stencil(12.0)).color(KHAKI_DIM);
                     if ui
                         .add(egui::Button::new(text).frame(false))
                         .on_hover_text(format!("{dir}\nclick: show this folder in the files sidebar"))
