@@ -25,6 +25,9 @@ Put VS Code with your agent on one screen and this on the other.
 - Approvals from the globe (PreToolUse hook) with global Ctrl+Alt+Y / Ctrl+Alt+N hotkeys; 🖥 jumps
   to the session's VS Code window; radio voice lines, badges, progress rings, debrief coach.
 
+New to Rust or to this codebase? Read [docs/COURSE.md](docs/COURSE.md): a short course on the
+project with diagrams and the code it quotes.
+
 ## Quickstart (60 seconds)
 
 ```

@@ -4,7 +4,8 @@ Rust + Bevy 0.20 (wgpu) + bevy_egui 0.43 (egui 0.36) desktop app that renders co
 sessions as constellations. Product of the software factory at `D:\software-factory`; this
 folder is `products/agent-globe` there and its own git repo (tags `vX.Y.Z`).
 
-Read this, then `SPEC.md` (what it is) and `CHANGELOG.md` (what each version added). The owner
+Read this, then `SPEC.md` (what it is) and `CHANGELOG.md` (what each version added). `docs/COURSE.md`
+is the owner's introduction to the codebase; keep it true when the architecture changes. The owner
 is on a Claude Max plan, works in VS Code on one screen with this app on the other, and tests the
 running app themselves while you work: odd clicks in screenshots may be theirs.
 
