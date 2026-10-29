@@ -20,6 +20,7 @@ use bevy_panorbit_camera::PanOrbitCamera;
 
 pub const CAMERA_HOME: Vec3 = Vec3::new(0.0, 9.0, 20.0);
 /// Fly-to distance for a subagent, and for the commander whose halos need more room.
+const FOCUS_RADIUS_FILE: f32 = 9.0;
 const FOCUS_RADIUS: f32 = 6.5;
 const FOCUS_RADIUS_ROOT: f32 = 11.0;
 
@@ -124,6 +125,7 @@ pub fn drive(
     mut store: ResMut<Store>,
     settings: Res<Settings>,
     world_pos: Res<NodeWorldPos>,
+    fscene: Res<super::scene::FileScene>,
     mut state: ResMut<CameraState>,
     mut cams: Query<(&mut PanOrbitCamera, &mut Bloom)>,
 ) {
@@ -170,6 +172,19 @@ pub fn drive(
         } else {
             store.selected = None;
         }
+    }
+
+    // An opened file: glide to its node, close enough to read the ring it sits on.
+    if let Some(path) = store.focus_file.take()
+        && let Some(p) = fscene
+            .positions
+            .iter()
+            .find(|(k, _)| super::scene::same_file(k, &path))
+            .map(|(_, p)| *p)
+    {
+        cam.target_focus = p;
+        cam.target_radius = FOCUS_RADIUS_FILE;
+        cam.force_update = true;
     }
 
     if store.selected != state.last_selected {

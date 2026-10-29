@@ -16,6 +16,8 @@ pub const RING_MESH: Color = Color::srgba(0.87, 0.78, 0.52, 0.50);
 pub const BASE: Color = Color::srgb(0.30, 0.50, 0.22);
 pub const LINK: Color = Color::srgba(0.87, 0.78, 0.52, 0.30);
 pub const LINK_ACTIVE: Color = Color::srgba(1.0, 0.92, 0.55, 0.95);
+/// A unit touching a file: the beam and the file's glow, cyan-green.
+pub const TOUCH: Color = Color::srgb(0.45, 0.95, 0.85);
 pub const LINK_DONE: Color = Color::srgba(0.45, 0.45, 0.35, 0.25);
 /// Tracer rounds along busy beams.
 pub const PULSE: Color = Color::srgb(3.0, 2.3, 0.8);

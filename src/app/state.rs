@@ -179,6 +179,25 @@ pub struct Badge {
     pub y: f32,
 }
 
+/// What a constellation shows: the units and the whole file system, or one of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SceneView {
+    #[default]
+    Both,
+    Files,
+    Agents,
+}
+
+impl SceneView {
+    pub fn next(self) -> SceneView {
+        match self {
+            SceneView::Both => SceneView::Files,
+            SceneView::Files => SceneView::Agents,
+            SceneView::Agents => SceneView::Both,
+        }
+    }
+}
+
 /// A file open in the editor card.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Doc {
@@ -310,6 +329,12 @@ pub struct Store {
     pub term_font: f32,
     /// Where the monitors meet, in window points, left to right.
     pub monitor_seams: Vec<f32>,
+    /// Units and files, files only, or units only.
+    pub scene_view: SceneView,
+    /// The file node under the pointer (its label shows even when it is not hot).
+    pub hovered_file: Option<String>,
+    /// A file just opened in the editor: the camera flies to its node once.
+    pub focus_file: Option<String>,
     /// Ask the host to hand the keyboard back to the app window (after the page asked for it).
     pub focus_app: bool,
     /// Where the WebView surface goes this frame, in physical pixels (x, y, w, h); None hides it.
@@ -423,6 +448,9 @@ impl Store {
             zoom_request: None,
             term_font: 13.0,
             monitor_seams: Vec::new(),
+            scene_view: SceneView::Both,
+            hovered_file: None,
+            focus_file: None,
             focus_app: false,
             webview_rect: None,
             webview_logged: false,
@@ -624,6 +652,7 @@ impl Store {
         }
         self.editor_open = true;
         info!("editor: open {path}");
+        self.focus_file = Some(path.clone());
         self.editor_cmds.push(EditorCmd::Open { path });
     }
 

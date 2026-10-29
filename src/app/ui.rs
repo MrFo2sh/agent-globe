@@ -12,7 +12,7 @@ use super::settings::Pane;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
 use super::state::CardState;
-use super::state::{BadgeKind, BridgeRes, EditorCmd, Store, ToastKind, Viewer, clock_hm};
+use super::state::{BadgeKind, BridgeRes, EditorCmd, SceneView, Store, ToastKind, Viewer, clock_hm};
 use super::terminal::{self, Terminals};
 use super::theme;
 use super::usage::{self, UsageState, UsageWatch};
@@ -144,6 +144,7 @@ pub struct Side<'w, 's> {
     pub index: ResMut<'w, files::FileIndex>,
     /// AGENT_GLOBE_OPEN=<file> was honoured once (a dev aid: open a file without a click).
     pub env_opened: Local<'s, bool>,
+    pub env_toggled: Local<'s, bool>,
     pub monitors: Query<'w, 's, &'static bevy::window::Monitor>,
 }
 
@@ -194,7 +195,22 @@ pub fn draw(
         && let Ok(p) = std::env::var("AGENT_GLOBE_OPEN")
     {
         *side.env_opened = true;
+        if std::env::var("AGENT_GLOBE_MD_EDIT").is_ok() {
+            store.md_preview = false;
+        }
         store.open_doc(&p);
+    }
+    // AGENT_GLOBE_MD_TOGGLE=<secs>: flip the Markdown mode once after that many seconds (a dev aid).
+    if let Ok(secs) = std::env::var("AGENT_GLOBE_MD_TOGGLE")
+        && let Ok(secs) = secs.parse::<f64>()
+        && !*side.env_toggled
+        && ctx.input(|i| i.time) > secs
+    {
+        *side.env_toggled = true;
+        store.md_preview = !store.md_preview;
+        let preview = store.md_preview;
+        bevy::log::info!("dev: markdown mode toggled, preview={preview}");
+        store.editor_cmds.push(EditorCmd::Mode { preview });
     }
     if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::P)) && !store.hide_ui && !store.quick_open {
         store.quick_open = true;
@@ -320,6 +336,7 @@ pub fn draw(
     let mut pick_root = false;
     let mut open_term: Option<String> = None;
     let mut open_files = false;
+    let mut cycle_view = false;
     let usage_state = usage.snapshot();
     let hud = egui::Panel::top("hud").show(&mut root, |ui| {
         ui.add_space(4.0);
@@ -361,6 +378,16 @@ pub fn draw(
                             .clicked()
                     {
                         open_files = true;
+                    }
+                    {
+                        let (label, tip) = match store.scene_view {
+                            SceneView::Both => ("⚭ both", "The constellation shows the units and the whole file system. Click: files only."),
+                            SceneView::Files => ("🗂 files", "The constellation shows the file system only. Click: units only."),
+                            SceneView::Agents => ("⚑ units", "The constellation shows the units only. Click: both."),
+                        };
+                        if ui.small_button(label).on_hover_text(tip).clicked() {
+                            cycle_view = true;
+                        }
                     }
                     if !s.cwd.is_empty() {
                         let r = ui.small_button("⌨").on_hover_text(format!(
@@ -508,6 +535,9 @@ pub fn draw(
     }
     if open_files {
         store.files_open = !store.files_open;
+    }
+    if cycle_view {
+        store.scene_view = store.scene_view.next();
     }
     if let Some(sid) = open_term {
         store.terminal_open = if store.terminal_open.as_deref() == Some(sid.as_str()) {
@@ -1237,7 +1267,7 @@ pub fn draw(
     draw_files(ctx, &mut store);
     draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
     if let Some(path) = store.pending_open_file.take() {
-        open_in_editor("", &path);
+        store.open_doc(&path);
     }
     if let Some(rect) = draw_viewer(ctx, &mut store, &mut images) {
         ui_rects.push(rect);
@@ -2264,8 +2294,15 @@ pub(super) fn floating_card(
     out.rect = Some(resp.response.rect);
     let pointer = ctx.input(|i| i.pointer.latest_pos()).unwrap_or(pos);
 
-    // ---- the title drag: float it, move it, dock it on a target
-    if out.drag_started {
+    // ---- the title drag: float it, move it, dock it on a target. A press that has not moved
+    // is a click on a header button (egui would call a long press a drag), so motion is required.
+    let moved = ctx.input(|i| {
+        i.pointer
+            .press_origin()
+            .zip(i.pointer.latest_pos())
+            .is_some_and(|(a, b)| a.distance(b) > 6.0)
+    });
+    if out.drag_started && moved {
         ctx.move_to_top(layer);
         cs.dragging = true;
         if dock.is_some() {

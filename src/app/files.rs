@@ -8,7 +8,7 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -107,6 +107,8 @@ pub struct FileIndex {
     root: String,
     entries: Arc<Mutex<Vec<String>>>,
     building: Arc<AtomicBool>,
+    /// Bumped after every rebuild, so the scene knows when to lay the files out again.
+    generation: Arc<AtomicU64>,
     built: bool,
     dirs: HashMap<String, (Instant, Vec<Entry>)>,
     matcher: SkimMatcherV2,
@@ -125,7 +127,7 @@ impl FileIndex {
         self.built = false;
         self.dirs.clear();
         self.building.store(true, Ordering::Relaxed);
-        let (entries, building) = (self.entries.clone(), self.building.clone());
+        let (entries, building, generation) = (self.entries.clone(), self.building.clone(), self.generation.clone());
         let root = PathBuf::from(root);
         std::thread::Builder::new()
             .name("file-index".into())
@@ -152,9 +154,22 @@ impl FileIndex {
                 if let Ok(mut v) = entries.lock() {
                     *v = out;
                 }
+                generation.fetch_add(1, Ordering::Relaxed);
                 building.store(false, Ordering::Relaxed);
             })
             .expect("spawn file index");
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
+    }
+
+    /// The first `cap` indexed paths (relative, forward slashes), sorted.
+    pub fn snapshot(&self, cap: usize) -> Vec<String> {
+        self.entries
+            .lock()
+            .map(|v| v.iter().take(cap).cloned().collect())
+            .unwrap_or_default()
     }
 
     pub fn is_building(&self) -> bool {

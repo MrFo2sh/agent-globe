@@ -3,7 +3,7 @@
 
 use super::settings::Settings;
 use super::sounds::Sfx;
-use super::state::Store;
+use super::state::{SceneView, Store};
 use super::theme;
 use agent_globe::data::files::{self, FileStat};
 use agent_globe::data::layout::{self, Layout};
@@ -36,11 +36,14 @@ pub struct Halo {
     pub is_core: bool,
 }
 
-/// One of the session's hottest files, on the ring outside the deepest orbit.
+/// A file of the session: one of its hottest, on the ring outside the deepest orbit, or one of
+/// the whole file system on the rings beyond (cold: small, dim, labelled only while hovered).
 #[derive(Component)]
 pub struct FileNode {
     pub path: String,
     pub angle: f32,
+    pub depth: u32,
+    pub cold: bool,
 }
 
 #[derive(Resource, Default)]
@@ -53,10 +56,14 @@ pub struct FileScene {
     pub depth: u32,
     pub positions: HashMap<String, Vec3>,
     next_rebuild: f32,
+    /// The file-system layout last built: for which index generation, session and view.
+    cold_key: Option<(u64, String, bool)>,
 }
 
 /// How many files the ring shows, how long a touch keeps its beam, how long a node glows after an edit.
 pub const FILE_RING_MAX: usize = 24;
+/// How many files of the whole file system the outer rings show at most.
+pub const FILE_ALL_MAX: usize = 1_500;
 pub const BEAM_MS: i64 = 45_000;
 pub const FILE_GLOW_MS: i64 = 20_000;
 
@@ -163,6 +170,7 @@ pub struct SceneAssets {
     file_mesh: Handle<Mesh>,
     file_material: Handle<StandardMaterial>,
     file_hot_material: Handle<StandardMaterial>,
+    file_cold_material: Handle<StandardMaterial>,
     hull_material: Handle<StandardMaterial>,
     hull_hover_material: Handle<StandardMaterial>,
 }
@@ -266,7 +274,8 @@ pub fn setup(
     // Night sky: small faint cubes far away.
     let file_mesh = meshes.add(Cuboid::new(0.22, 0.22, 0.22));
     let file_material = materials.add(plastic(theme::KHAKI, 6.0));
-    let file_hot_material = materials.add(plastic(theme::PLASTIC_LIGHT, 60.0));
+    let file_hot_material = materials.add(plastic(theme::TOUCH, 70.0));
+    let file_cold_material = materials.add(plastic(theme::KHAKI, 1.2));
     // Fully transparent but still picked by the pointer; a faint glow while hovered.
     let hull_material = materials.add(StandardMaterial {
         base_color: Color::NONE,
@@ -337,6 +346,7 @@ pub fn setup(
         file_mesh,
         file_material,
         file_hot_material,
+        file_cold_material,
         hull_material,
         hull_hover_material,
     });
@@ -351,6 +361,7 @@ pub fn sync_files(
     settings: Res<Settings>,
     assets: Res<SceneAssets>,
     scene: Res<SceneLayout>,
+    index: Res<super::files::FileIndex>,
     mut fscene: ResMut<FileScene>,
     mut fents: ResMut<FileEntities>,
     mut nodes: Query<(&mut FileNode, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
@@ -358,79 +369,169 @@ pub fn sync_files(
     let t = time.elapsed_secs();
     let dt = time.delta_secs();
     let now = now_millis();
-    let session = if settings.files_ring {
-        store.current_session()
-    } else {
-        None
-    };
+    let show_files = settings.files_ring && store.scene_view != SceneView::Agents;
+    let session = if show_files { store.current_session() } else { None };
     let Some(session) = session else {
         for (_, e) in fents.0.drain() {
             commands.entity(e).despawn();
         }
         fscene.files.clear();
         fscene.positions.clear();
+        fscene.cold_key = None;
         return;
+    };
+    let max_depth = scene.per.get(&session.id).map(|e| e.layout.max_depth).unwrap_or(0);
+    let hot_depth = max_depth + 1;
+    let spawn = |commands: &mut Commands, fents: &mut FileEntities, path: &str, angle: f32, depth: u32, cold: bool| {
+        let mut ec = commands.spawn((
+            Mesh3d(assets.file_mesh.clone()),
+            MeshMaterial3d(if cold {
+                assets.file_cold_material.clone()
+            } else {
+                assets.file_material.clone()
+            }),
+            Transform::from_translation(Vec3::ZERO).with_scale(Vec3::splat(0.01)),
+            FileNode {
+                path: path.to_string(),
+                angle,
+                depth,
+                cold,
+            },
+        ));
+        ec.observe(on_file_click).observe(on_file_over).observe(on_file_out);
+        fents.0.insert(path.to_string(), ec.id());
     };
     if t >= fscene.next_rebuild {
         fscene.next_rebuild = t + 1.0;
         fscene.files = files::hot_files(session, FILE_RING_MAX, now, BEAM_MS);
-        let max_depth = scene.per.get(&session.id).map(|e| e.layout.max_depth).unwrap_or(0);
-        fscene.depth = max_depth + 1;
-        let keep: std::collections::HashSet<&str> = fscene.files.iter().map(|f| f.path.as_str()).collect();
-        fents.0.retain(|path, e| {
-            let k = keep.contains(path.as_str());
-            if !k {
-                commands.entity(*e).despawn();
-            }
-            k
-        });
+        fscene.depth = hot_depth;
         // Angles follow the alphabetical order of the chosen set, so nodes do not jump as heat shifts.
-        let mut order: Vec<&str> = fscene.files.iter().map(|f| f.path.as_str()).collect();
+        let mut order: Vec<String> = fscene.files.iter().map(|f| f.path.clone()).collect();
         order.sort_unstable();
         let n = order.len().max(1) as f32;
+        let hot_set: std::collections::HashSet<String> = order.iter().cloned().collect();
         for (i, path) in order.iter().enumerate() {
             let angle = TAU * i as f32 / n;
-            match fents.0.get(*path) {
+            match fents.0.get(path.as_str()) {
                 Some(&e) => {
                     if let Ok((mut node, _, _)) = nodes.get_mut(e) {
                         node.angle = angle;
+                        node.depth = hot_depth;
+                        node.cold = false;
                     }
                 }
-                None => {
-                    let mut ec = commands.spawn((
-                        Mesh3d(assets.file_mesh.clone()),
-                        MeshMaterial3d(assets.file_material.clone()),
-                        Transform::from_translation(Vec3::ZERO).with_scale(Vec3::splat(0.01)),
-                        FileNode {
-                            path: path.to_string(),
-                            angle,
-                        },
-                    ));
-                    ec.observe(on_file_click);
-                    fents.0.insert(path.to_string(), ec.id());
-                }
+                None => spawn(&mut commands, &mut fents, path, angle, hot_depth, false),
             }
         }
+        // Hot nodes that cooled off go, unless the file system view still wants them as cold.
+        let want_cold = store.scene_view != SceneView::Agents && !session.cwd.is_empty();
+        let key = (index.generation(), session.id.clone(), want_cold);
+        if fscene.cold_key.as_ref() != Some(&key) {
+            fscene.cold_key = Some(key);
+            // The whole file system, alphabetical so folders stay together, on the rings beyond
+            // the hot ring, each ring holding as many nodes as its circumference allows.
+            let cwd = session.cwd.replace('\\', "/");
+            let cold: Vec<String> = if want_cold {
+                index
+                    .snapshot(FILE_ALL_MAX)
+                    .into_iter()
+                    .map(|rel| format!("{cwd}/{rel}"))
+                    .filter(|abs| !hot_set.iter().any(|h| same_file(h, abs)))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let keep: std::collections::HashSet<&str> = hot_set
+                .iter()
+                .map(|s| s.as_str())
+                .chain(cold.iter().map(|s| s.as_str()))
+                .collect();
+            fents.0.retain(|path, e| {
+                let k = keep.contains(path.as_str());
+                if !k {
+                    commands.entity(*e).despawn();
+                }
+                k
+            });
+            // Folders are wedges of the outer rings: each top-level folder gets a slice of the
+            // circle sized by its file count, its files at the first cold ring and anything
+            // nested one ring further out per level, so a folder reads as a fan behind its name.
+            let mut groups: std::collections::BTreeMap<String, Vec<(&String, u32)>> = Default::default();
+            let prefix_len = cwd.len() + 1;
+            for path in &cold {
+                let rel = path.get(prefix_len..).unwrap_or(path);
+                let top = rel.split('/').next().unwrap_or("").to_string();
+                let nested = rel.matches('/').count().min(4) as u32;
+                groups.entry(top).or_default().push((path, nested));
+            }
+            let total = cold.len().max(1) as f32;
+            let mut start = 0.0_f32;
+            for (_, files) in groups {
+                let span = TAU * files.len() as f32 / total;
+                let mut per_ring: std::collections::BTreeMap<u32, Vec<&String>> = Default::default();
+                for (path, nested) in &files {
+                    per_ring.entry(*nested).or_default().push(path);
+                }
+                for (nested, paths) in per_ring {
+                    let depth = hot_depth + 1 + nested;
+                    let count = paths.len() as f32;
+                    for (j, path) in paths.into_iter().enumerate() {
+                        let angle = start + span * (j as f32 + 0.5) / count;
+                        match fents.0.get(path.as_str()) {
+                            Some(&e) => {
+                                if let Ok((mut node, _, _)) = nodes.get_mut(e) {
+                                    node.angle = angle;
+                                    node.depth = depth;
+                                    node.cold = true;
+                                }
+                            }
+                            None => spawn(&mut commands, &mut fents, path, angle, depth, true),
+                        }
+                    }
+                }
+                start += span;
+            }
+        } else {
+            fents.0.retain(|path, e| {
+                let k = hot_set.contains(path.as_str()) || nodes.get(*e).is_ok_and(|(n, _, _)| n.cold);
+                if !k {
+                    commands.entity(*e).despawn();
+                }
+                k
+            });
+        }
     }
-    let depth = fscene.depth;
     let heat_of: HashMap<&str, (u32, i64)> = fscene
         .files
         .iter()
         .map(|f| (f.path.as_str(), (f.heat(), f.last_at)))
         .collect();
+    let hovered = store.hovered_file.as_deref();
     let mut positions = HashMap::new();
     for (node, mut tf, mut mat) in nodes.iter_mut() {
         let (heat, last_at) = heat_of.get(node.path.as_str()).copied().unwrap_or((1, 0));
-        let angle = orbit_angle(node.angle, depth, t, settings.drift_speed);
-        let target = Vec3::from(layout::orbit_point(depth, angle));
+        let angle = orbit_angle(
+            node.angle,
+            node.depth,
+            t,
+            settings.drift_speed * if node.cold { 0.35 } else { 1.0 },
+        );
+        let target = Vec3::from(layout::orbit_point(node.depth, angle));
         tf.translation = tf.translation.lerp(target, (dt * 4.0).min(1.0));
-        let want = 0.7 + (heat.min(24) as f32 / 24.0) * 0.9;
+        let is_hovered = hovered == Some(node.path.as_str());
+        let want = if node.cold {
+            if is_hovered { 0.75 } else { 0.4 }
+        } else {
+            0.7 + (heat.min(24) as f32 / 24.0) * 0.9
+        };
         let sc = tf.scale.x + (want - tf.scale.x) * (dt * 4.0).min(1.0);
         tf.scale = Vec3::splat(sc);
         tf.rotation = Quat::from_rotation_y(t * 0.4 + node.angle) * Quat::from_rotation_x(0.6);
-        let hot = now - last_at <= FILE_GLOW_MS;
-        let handle = if hot {
+        let hot = !node.cold && now - last_at <= FILE_GLOW_MS;
+        let handle = if hot || is_hovered {
             &assets.file_hot_material
+        } else if node.cold {
+            &assets.file_cold_material
         } else {
             &assets.file_material
         };
@@ -442,7 +543,31 @@ pub fn sync_files(
     fscene.positions = positions;
 }
 
-/// Beams from units to the files they touched in the last `BEAM_MS`: bright for edits, faint for reads, fading with age.
+/// The same file under two spellings (slashes, case, one absolute and one relative).
+pub fn same_file(a: &str, b: &str) -> bool {
+    let na = a.replace('\\', "/").to_ascii_lowercase();
+    let nb = b.replace('\\', "/").to_ascii_lowercase();
+    na == nb || na.ends_with(&format!("/{nb}")) || nb.ends_with(&format!("/{na}"))
+}
+
+/// Files only: the units, their halos and their orbit rings step aside.
+#[allow(clippy::type_complexity)]
+pub fn apply_scene_view(
+    store: Res<Store>,
+    mut parts: Query<&mut Visibility, Or<(With<NodeAgent>, With<Halo>, With<OrbitRing>)>>,
+) {
+    let want = if store.scene_view == SceneView::Files {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for mut v in &mut parts {
+        if *v != want {
+            *v = want;
+        }
+    }
+}
+
 pub fn draw_file_beams(mut gizmos: Gizmos, store: Res<Store>, fscene: Res<FileScene>, world_pos: Res<NodeWorldPos>) {
     let Some(current) = store.current.clone() else { return };
     let now = now_millis();
@@ -455,9 +580,8 @@ pub fn draw_file_beams(mut gizmos: Gizmos, store: Res<Store>, fscene: Res<FileSc
                 continue;
             };
             let age = ((now - touch.at) as f32 / BEAM_MS as f32).clamp(0.0, 1.0);
-            let alpha = (1.0 - age) * if touch.edit { 0.9 } else { 0.35 };
-            let base = if touch.edit { theme::LINK_ACTIVE } else { theme::LINK };
-            let c = base.to_srgba();
+            let alpha = (1.0 - age) * if touch.edit { 0.95 } else { 0.55 };
+            let c = theme::TOUCH.to_srgba();
             let color = Color::srgba(c.red, c.green, c.blue, alpha);
             let pts = layout::curve(from.into(), to.into(), 0.8, 20);
             let v: Vec<Vec3> = pts.iter().map(|p| Vec3::from(*p)).collect();
@@ -476,20 +600,21 @@ pub fn project_files(
 ) {
     let Ok((cam, cam_tf)) = cams.single() else { return };
     let zoom = settings.ui_scale.max(0.1);
+    let hovered = store.hovered_file.clone();
     let mut out = Vec::new();
     for (node, tf) in &nodes {
-        let Some(f) = fscene.files.iter().find(|f| f.path == node.path) else {
-            continue;
+        let hot = fscene.files.iter().find(|f| f.path == node.path);
+        let (label, reads, edits) = match hot {
+            Some(f) => (f.label.clone(), f.reads, f.edits),
+            None if hovered.as_deref() == Some(node.path.as_str()) => {
+                let parts: Vec<&str> = node.path.rsplit(['/', '\\']).take(2).collect();
+                let label = parts.iter().rev().copied().collect::<Vec<_>>().join("/");
+                (label, 0, 0)
+            }
+            None => continue,
         };
         if let Ok(p) = cam.world_to_viewport(cam_tf, tf.translation() - Vec3::Y * 0.2) {
-            out.push((
-                f.path.clone(),
-                f.label.clone(),
-                p.x / zoom,
-                p.y / zoom,
-                f.reads,
-                f.edits,
-            ));
+            out.push((node.path.clone(), label, p.x / zoom, p.y / zoom, reads, edits));
         }
     }
     store.file_screen = out;
@@ -501,6 +626,20 @@ fn on_file_click(ev: On<PointerClick>, nodes: Query<&FileNode>, mut store: ResMu
     }
     if let Ok(n) = nodes.get(ev.entity) {
         store.pending_open_file = Some(n.path.clone());
+    }
+}
+
+fn on_file_over(ev: On<PointerOver>, nodes: Query<&FileNode>, mut store: ResMut<Store>) {
+    if let Ok(n) = nodes.get(ev.entity) {
+        store.hovered_file = Some(n.path.clone());
+    }
+}
+
+fn on_file_out(ev: On<PointerOut>, nodes: Query<&FileNode>, mut store: ResMut<Store>) {
+    if let Ok(n) = nodes.get(ev.entity)
+        && store.hovered_file.as_deref() == Some(n.path.as_str())
+    {
+        store.hovered_file = None;
     }
 }
 
@@ -1028,6 +1167,9 @@ pub fn animate_dust(time: Res<Time>, settings: Res<Settings>, mut dust: Query<(&
 
 /// Radio beams between commander and units, and tracer rounds down busy beams.
 pub fn draw_links(mut gizmos: Gizmos, time: Res<Time>, store: Res<Store>, world_pos: Res<NodeWorldPos>) {
+    if store.scene_view == SceneView::Files {
+        return;
+    }
     let t = time.elapsed_secs();
     let now = now_millis();
     for session in store.sessions.values() {

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.24.0 - 2026-10-29
+- The constellation carries the whole file system: beyond the ring of hot files, every file of the session folder (up to 1,500, gitignore respected) sits on the outer rings, alphabetical so folders stay together, small and dim, lit and labelled when hovered. Click a file node to open it in the editor card.
+- A view toggle in the HUD: both, files only (the units, halos, rings and links step aside), or units only (no file rings).
+- Folders are wedges of the outer rings: each top-level folder gets a slice of the circle sized by its file count, its files on the first cold ring and nested files one ring further out per level, a fan behind its name.
+- A unit touching a file: the beam and the file's glow are cyan-green now, and read beams are brighter.
+- Opening a file, from the tree, the finder, the palette or a node, glides the camera to its node.
+- A press that has not moved never starts a card drag: a slow click on a header button used to undock the card and drop it as a small floating one.
+
 ## 0.23.1 - 2026-10-29
 - Dock columns follow the monitors: each monitor's free span (beside the sidebars and the agent panel) is split in two, so the seam between monitors is always a grid line and a pane docked on the left monitor never spills onto the right one. Pane positions are fractions of the whole window, clipped to the free area, so a sidebar opening pushes a pane and closing it gives the space back.
 - Dock targets for four-wide shapes: a strip across both monitors and the whole wall (labelled 2), beside the quarters, halves and monitors.

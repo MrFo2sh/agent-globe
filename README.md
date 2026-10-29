@@ -148,6 +148,8 @@ curl -X POST 127.0.0.1:4711/events -d '{"type":"agent_spawn","session_id":"demo"
 - **Files and editor (🗂, Ctrl+P).** A second left sidebar with the session folder as a tree and a
   fuzzy finder, collapsible to a strip, and an editor card: Monaco for code (Ctrl+S saves), Markdown with Mermaid, Word, images, PDFs. The
   editor surface is WebView2 and needs the internet for Monaco.
+- **File system view.** The outer rings hold every file of the session folder; a HUD toggle shows
+  both, files only, or units only. Click a file node to open it in the editor.
 - **The raid (🛸).** In cinematic mode: saucers come for the data, click them before they land.
   Waves and levels, pause and resume across restarts, replay, stop. P toggles it.
 

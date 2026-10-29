@@ -103,6 +103,7 @@ pub fn run(cfg: Config) {
                     scene::update_halos,
                     scene::animate_dust,
                     scene::sync_files,
+                    scene::apply_scene_view,
                     scene::draw_links,
                 )
                     .chain(),
