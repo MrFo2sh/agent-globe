@@ -324,6 +324,7 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
                             } else {
                                 None
                             },
+                            background: input["run_in_background"].as_bool().unwrap_or(false),
                             at,
                         });
                     }

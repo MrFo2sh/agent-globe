@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.10.0 - 2026-10-29
+- Servers & processes: the commander's panel lists the servers this session runs (from the local URLs it printed and the server-like or background commands it ran) with a live dot, the index page's title, the URL (click to open), the owning process and pid, plus the background processes it spawned with their command line. ✕ ends a process tree after a second confirming click. The HUD shows "⚡ n" while servers are listening; click it to open the panel. The app asks Windows every five seconds (netstat, the process list) and reads each index page once a minute.
+- Tool calls remember whether they were started in the background.
+
 ## 0.9.5 - 2026-10-29
 - Turns settle on their own: this Claude Code version writes no turn-end record, so the app now closes a commander's turn when its last reply was text only and nothing followed for five seconds. "Waiting for commands" (or "Need your input, commander" after a question) plays a few seconds after the answer, the waiting badge appears, and "thinking…" ends; a late real turn-end record is ignored.
 - "▴ fold all" next to TOOL CALLS collapses every prompt group.

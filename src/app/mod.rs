@@ -7,6 +7,7 @@ mod gitinfo;
 mod hotkeys;
 mod probe;
 mod scene;
+mod servers;
 mod settings;
 mod sounds;
 mod state;
@@ -68,6 +69,7 @@ pub fn run(cfg: Config) {
         .init_resource::<scene::NodeWorldPos>()
         .init_resource::<camera::CameraState>()
         .init_resource::<probe::Probe>()
+        .init_resource::<servers::ServerWatch>()
         .init_resource::<gitinfo::GitWatch>()
         .insert_resource(hotkeys::start())
         .add_systems(Startup, (camera::setup, scene::setup, sounds::setup, alerts::setup))

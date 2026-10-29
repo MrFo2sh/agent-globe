@@ -190,6 +190,7 @@ mod tests {
             command: cmd.map(String::from),
             note: String::new(),
             todos: None,
+            background: false,
             at,
         });
         s.apply(Event::ToolEnd {

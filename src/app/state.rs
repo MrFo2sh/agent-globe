@@ -218,6 +218,8 @@ pub struct Store {
     pub show_usage: bool,
     /// One-frame request from the "fold all" button: collapse every prompt group.
     pub fold_groups: bool,
+    /// A ✕ was clicked once on this pid; a second click within three seconds ends the process.
+    pub kill_armed: Option<(u32, std::time::Instant)>,
     /// Cinematic mode: no panels, full-window scene.
     pub hide_ui: bool,
     /// Set by the UI; the camera system consumes it.
@@ -286,6 +288,7 @@ impl Store {
             show_debrief: false,
             show_usage: false,
             fold_groups: false,
+            kill_armed: None,
             hide_ui: false,
             reset_view: false,
             expanded_calls: HashSet::new(),

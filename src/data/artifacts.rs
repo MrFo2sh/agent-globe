@@ -246,6 +246,7 @@ mod tests {
             is_error: false,
             started: 1,
             ended: Some(2),
+            background: false,
         }
     }
 

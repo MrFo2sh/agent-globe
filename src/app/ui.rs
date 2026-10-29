@@ -5,6 +5,7 @@
 use super::debrief;
 use super::gitinfo::{FileChange, GitInfo, GitWatch};
 use super::probe::Probe;
+use super::servers::{self, ServerWatch, Snapshot};
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
 use super::state::{BadgeKind, BridgeRes, Store, ToastKind, Viewer, clock_hm};
@@ -15,6 +16,7 @@ use agent_globe::bridge::Bridge;
 use agent_globe::data::artifacts::{Artifact, ArtifactKind};
 use agent_globe::data::claude::SessionRef;
 use agent_globe::data::model::{Agent, ROOT_AGENT, Session, Status, now_millis, snippet};
+use agent_globe::data::servers::session_targets;
 use bevy::diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin};
 use bevy::prelude::*;
 use bevy_egui::{EguiContexts, egui};
@@ -141,6 +143,7 @@ pub fn draw(
     probe: Res<Probe>,
     gitw: Res<GitWatch>,
     usage: Res<UsageWatch>,
+    serverw: Res<ServerWatch>,
     mut images: Local<HashMap<String, Option<egui::TextureHandle>>>,
     mut styled: Local<bool>,
     mut last_scale: Local<f32>,
@@ -169,6 +172,9 @@ pub fn draw(
         );
     }
     let git = gitw.info();
+    serverw.set_wanted(store.current_session().map(session_targets).unwrap_or_default());
+    let servers_snap: Snapshot = serverw.snapshot();
+    let alive_servers = servers_snap.servers.iter().filter(|x| x.alive).count();
 
     // ---- cinematic mode: scene only ----
     if store.hide_ui {
@@ -206,6 +212,7 @@ pub fn draw(
     let mut cinematic = false;
     let mut toggle_sound = false;
     let mut toggle_usage = false;
+    let mut pick_root = false;
     let usage_state = usage.snapshot();
     let hud = egui::Panel::top("hud").show(&mut root, |ui| {
         ui.add_space(4.0);
@@ -305,6 +312,23 @@ pub fn draw(
                 {
                     toggle_debrief = true;
                 }
+                // Servers this session is running right now.
+                if alive_servers > 0 {
+                    ui.separator();
+                    let list: Vec<String> = servers_snap
+                        .servers
+                        .iter()
+                        .filter(|x| x.alive)
+                        .map(|x| format!("{} {}", x.title.clone().unwrap_or_default(), x.url))
+                        .collect();
+                    if ui
+                        .button(egui::RichText::new(format!("⚡ {alive_servers}")).color(ACCENT))
+                        .on_hover_text(format!("Servers listening:\n{}\nClick to open the commander's panel.", list.join("\n")))
+                        .clicked()
+                    {
+                        pick_root = true;
+                    }
+                }
                 // Plan usage, left of the debrief button: the same numbers the editor shows.
                 ui.separator();
                 match &usage_state {
@@ -362,6 +386,9 @@ pub fn draw(
     }
     if toggle_usage {
         store.show_usage = !store.show_usage;
+    }
+    if pick_root {
+        store.selected = Some(ROOT_AGENT.to_string());
     }
     if go_home {
         store.selected = None;
@@ -630,6 +657,8 @@ pub fn draw(
     let mut query = std::mem::take(&mut store.artifact_query);
     let mut history = std::mem::take(&mut store.history_query);
     let mut fold_groups = std::mem::take(&mut store.fold_groups);
+    let mut kill_armed = store.kill_armed.take();
+    let mut kill_request: Option<u32> = None;
     let mut inset_right = 0.0_f32;
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
     *last_panel = selected.as_ref().map(|a| a.id.clone());
@@ -696,6 +725,9 @@ pub fn draw(
                     &touched,
                     &mut history,
                     &mut fold_groups,
+                    &servers_snap,
+                    &mut kill_armed,
+                    &mut kill_request,
                 );
             });
         inset_right = right.response.rect.width();
@@ -704,6 +736,18 @@ pub fn draw(
     store.artifact_query = query;
     store.history_query = history;
     store.fold_groups = fold_groups;
+    store.kill_armed = kill_armed.filter(|(_, at)| at.elapsed().as_secs_f32() < 3.0);
+    if let Some(pid) = kill_request {
+        let msg = servers::kill(pid);
+        store.toast(
+            if msg.starts_with('✖') {
+                ToastKind::Warn
+            } else {
+                ToastKind::Error
+            },
+            msg,
+        );
+    }
     if close {
         store.selected = None;
     }
@@ -1573,6 +1617,9 @@ fn agent_panel(
     touched: &HashMap<String, usize>,
     history: &mut String,
     fold_all: &mut bool,
+    servers: &Snapshot,
+    kill_armed: &mut Option<(u32, std::time::Instant)>,
+    kill_request: &mut Option<u32>,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -1707,6 +1754,101 @@ fn agent_panel(
             } else {
                 expanded.insert(key);
             }
+        }
+    }
+    if a.depth == 0 && (!servers.servers.is_empty() || !servers.procs.is_empty()) {
+        ui.add_space(4.0);
+        ui.label(egui::RichText::new("SERVERS & PROCESSES").small().color(DIM)).on_hover_text(
+            "Servers this session started (from the URLs it printed and the commands it ran) and background processes it spawned. ✕ twice ends a process and everything under it.",
+        );
+        let armed_for = |pid: u32, armed: &Option<(u32, std::time::Instant)>| {
+            armed.is_some_and(|(p, at)| p == pid && at.elapsed().as_secs_f32() < 3.0)
+        };
+        let kill_button = |ui: &mut egui::Ui,
+                           pid: u32,
+                           kill_armed: &mut Option<(u32, std::time::Instant)>,
+                           kill_request: &mut Option<u32>| {
+            let armed = armed_for(pid, kill_armed);
+            let label = if armed {
+                egui::RichText::new("kill?").color(AMBER).strong()
+            } else {
+                egui::RichText::new("✕").color(RED)
+            };
+            if ui
+                .small_button(label)
+                .on_hover_text(if armed {
+                    "Click again to end this process tree"
+                } else {
+                    "End this process (asks once more)"
+                })
+                .clicked()
+            {
+                if armed {
+                    *kill_request = Some(pid);
+                    *kill_armed = None;
+                } else {
+                    *kill_armed = Some((pid, std::time::Instant::now()));
+                }
+            }
+        };
+        for srv in &servers.servers {
+            ui.horizontal(|ui| {
+                let (dot, color) = if srv.alive { ("●", ACCENT) } else { ("○", DIM) };
+                ui.label(egui::RichText::new(dot).color(color));
+                if let Some(t) = &srv.title {
+                    ui.label(egui::RichText::new(t).color(SAND).strong());
+                }
+                let link = ui
+                    .add(
+                        egui::Button::new(egui::RichText::new(&srv.url).monospace().color(if srv.alive {
+                            ACCENT
+                        } else {
+                            DIM
+                        }))
+                        .frame(false),
+                    )
+                    .on_hover_text(if srv.alive {
+                        "open in the browser"
+                    } else {
+                        "not listening right now"
+                    });
+                if link.clicked() {
+                    let u = srv.url.clone();
+                    std::thread::spawn(move || {
+                        let _ = open::that(&u);
+                    });
+                }
+                match srv.pid {
+                    Some(pid) => {
+                        ui.label(
+                            egui::RichText::new(format!("· {} (pid {pid})", srv.name))
+                                .small()
+                                .color(DIM),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            kill_button(ui, pid, kill_armed, kill_request);
+                        });
+                    }
+                    None => {
+                        ui.label(egui::RichText::new("· not listening").small().color(DIM));
+                    }
+                }
+            });
+        }
+        for p in &servers.procs {
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("⚙").color(SAND));
+                ui.label(
+                    egui::RichText::new(format!("{} (pid {})", p.name, p.pid))
+                        .monospace()
+                        .color(TEXT),
+                );
+                ui.add(egui::Label::new(egui::RichText::new(&p.cmdline).small().color(DIM)).truncate())
+                    .on_hover_text(format!("started by: {}", p.from));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    kill_button(ui, p.pid, kill_armed, kill_request);
+                });
+            });
         }
     }
     if !changes.is_empty() {
@@ -2781,6 +2923,7 @@ mod tests {
             is_error: false,
             started: 0,
             ended: Some(1),
+            background: false,
         };
         assert!(call_matches(&c, "CARGO"));
         assert!(call_matches(&c, "12 passed"));

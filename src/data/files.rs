@@ -109,6 +109,7 @@ mod tests {
             command: None,
             note: String::new(),
             todos: None,
+            background: false,
             at,
         }
     }

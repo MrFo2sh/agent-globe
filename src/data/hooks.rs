@@ -41,6 +41,7 @@ pub fn from_claude_hook(v: &Value) -> Option<Event> {
                 tool,
                 note: String::new(),
                 todos: None,
+                background: false,
                 at,
             }
         }

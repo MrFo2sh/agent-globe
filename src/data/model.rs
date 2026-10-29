@@ -55,6 +55,8 @@ pub enum Event {
         #[serde(default)]
         todos: Option<Progress>,
         #[serde(default)]
+        background: bool,
+        #[serde(default)]
         at: Millis,
     },
     ToolEnd {
@@ -213,6 +215,9 @@ pub struct ToolCall {
     pub is_error: bool,
     pub started: Millis,
     pub ended: Option<Millis>,
+    /// Started with `run_in_background`: a process that outlives the call.
+    #[serde(default)]
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -559,6 +564,7 @@ impl Session {
                 command,
                 note,
                 todos,
+                background,
                 at,
                 ..
             } => {
@@ -582,6 +588,7 @@ impl Session {
                         is_error: false,
                         started: at,
                         ended: None,
+                        background,
                     };
                     let found = artifacts::from_call(&call);
                     a.calls.push(call);
@@ -777,6 +784,7 @@ mod tests {
             command: None,
             note: String::new(),
             todos: None,
+            background: false,
             at,
         }
     }
@@ -942,6 +950,7 @@ mod tests {
             command: Some("ls -la".into()),
             note: "checking the tree".into(),
             todos: None,
+            background: false,
             at: 5,
         };
         let j = serde_json::to_string(&e).unwrap();
