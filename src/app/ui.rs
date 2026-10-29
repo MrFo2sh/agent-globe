@@ -1639,20 +1639,65 @@ impl DockGrid {
         )
     }
 
-    /// The drop target in the middle of a cell.
-    fn target_rect(&self, c: usize, r: usize) -> egui::Rect {
-        egui::Rect::from_center_size(self.cell_rect(c, r).center(), egui::vec2(130.0, 76.0))
-    }
-
-    fn target_at(&self, p: egui::Pos2) -> Option<(u8, u8)> {
-        for r in 0..self.rows {
-            for c in 0..self.cols {
-                if self.target_rect(c, r).contains(p) {
-                    return Some((c as u8, r as u8));
+    /// Every block a card can be dropped into: each cell (a quarter of a monitor), each pair of
+    /// cells aligned to a 2x2 group (a half), and each whole group (a monitor). Their targets sit
+    /// at the blocks' centres, which never coincide.
+    fn targets(&self) -> Vec<Dock> {
+        let (cols, rows) = (self.cols as u8, self.rows as u8);
+        let mut out = Vec::new();
+        for r in 0..rows {
+            for c in 0..cols {
+                out.push(Dock {
+                    c0: c,
+                    c1: c + 1,
+                    r0: r,
+                    r1: r + 1,
+                });
+                let wide = c % 2 == 0 && c + 2 <= cols;
+                let tall = r % 2 == 0 && r + 2 <= rows;
+                if wide {
+                    out.push(Dock {
+                        c0: c,
+                        c1: c + 2,
+                        r0: r,
+                        r1: r + 1,
+                    });
+                }
+                if tall {
+                    out.push(Dock {
+                        c0: c,
+                        c1: c + 1,
+                        r0: r,
+                        r1: r + 2,
+                    });
+                }
+                if wide && tall {
+                    out.push(Dock {
+                        c0: c,
+                        c1: c + 2,
+                        r0: r,
+                        r1: r + 2,
+                    });
                 }
             }
         }
-        None
+        out
+    }
+
+    fn target_rect(&self, d: Dock) -> egui::Rect {
+        let cells = (d.c1 - d.c0) as f32 * (d.r1 - d.r0) as f32;
+        let size = if cells >= 4.0 {
+            egui::vec2(150.0, 84.0)
+        } else if cells >= 2.0 {
+            egui::vec2(130.0, 74.0)
+        } else {
+            egui::vec2(110.0, 64.0)
+        };
+        egui::Rect::from_center_size(self.block(d).center(), size)
+    }
+
+    fn target_at(&self, p: egui::Pos2) -> Option<Dock> {
+        self.targets().into_iter().find(|d| self.target_rect(*d).contains(p))
     }
 
     fn col_line(&self, x: f32) -> u8 {
@@ -1678,8 +1723,10 @@ fn begin_card(
 ) -> (CardState, Option<Dock>, DockGrid) {
     let cs = store.cards.remove(id).unwrap_or_default();
     let dock = settings.docks.remove(id);
+    let vr = ctx.viewport_rect();
+    let (left, top, _, _) = store.scene_insets.unwrap_or((0.0, 0.0, 0.0, 0.0));
     let grid = DockGrid {
-        rect: ctx.viewport_rect(),
+        rect: egui::Rect::from_min_max(egui::pos2(vr.min.x + left, vr.min.y + top), vr.max),
         cols: settings.grid_cols.clamp(1, 12) as usize,
         rows: settings.grid_rows.clamp(1, 6) as usize,
     };
@@ -1693,8 +1740,9 @@ fn end_card(store: &mut Store, settings: &mut Settings, id: &str, cs: CardState,
     }
 }
 
-/// While a title is dragged: the grid, faint, and a drop target in every cell; the one under the
-/// pointer lights up. Dropping anywhere else leaves the card floating where it is.
+/// While a title is dragged: the grid, faint, and a target for every block a card can fill
+/// (quarter, half, whole monitor); the one under the pointer lights up. Dropping anywhere else
+/// leaves the card floating where it is.
 fn draw_dock_zones(ctx: &egui::Context, grid: DockGrid, pointer: egui::Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dock-zones")));
     let hot = grid.target_at(pointer);
@@ -1707,31 +1755,48 @@ fn draw_dock_zones(ctx: &egui::Context, grid: DockGrid, pointer: egui::Pos2) {
                 egui::Stroke::new(1.0, ACCENT.gamma_multiply(0.35)),
                 egui::StrokeKind::Inside,
             );
-            let t = grid.target_rect(c, r);
-            let lit = hot == Some((c as u8, r as u8));
-            painter.rect_filled(
-                t,
-                6.0,
-                if lit {
-                    ACCENT.gamma_multiply(0.75)
-                } else {
-                    egui::Color32::from_rgba_unmultiplied(6, 12, 5, 190)
-                },
-            );
-            painter.rect_stroke(
-                t,
-                6.0,
-                egui::Stroke::new(1.5, if lit { SAND } else { ACCENT }),
-                egui::StrokeKind::Inside,
-            );
-            painter.text(
-                t.center(),
-                egui::Align2::CENTER_CENTER,
-                if lit { "dock here" } else { "⊞" },
-                egui::FontId::proportional(if lit { 14.0 } else { 22.0 }),
-                if lit { INK } else { SAND },
-            );
         }
+    }
+    if let Some(d) = hot {
+        painter.rect_filled(grid.block(d), 6.0, ACCENT.gamma_multiply(0.12));
+        painter.rect_stroke(
+            grid.block(d),
+            6.0,
+            egui::Stroke::new(1.5, ACCENT),
+            egui::StrokeKind::Inside,
+        );
+    }
+    for d in grid.targets() {
+        let t = grid.target_rect(d);
+        let lit = hot == Some(d);
+        let cells = (d.c1 - d.c0) as u32 * (d.r1 - d.r0) as u32;
+        let label = match cells {
+            1 => "¼",
+            2 => "½",
+            _ => "1",
+        };
+        painter.rect_filled(
+            t,
+            6.0,
+            if lit {
+                ACCENT.gamma_multiply(0.75)
+            } else {
+                egui::Color32::from_rgba_unmultiplied(6, 12, 5, 190)
+            },
+        );
+        painter.rect_stroke(
+            t,
+            6.0,
+            egui::Stroke::new(1.5, if lit { SAND } else { ACCENT }),
+            egui::StrokeKind::Inside,
+        );
+        painter.text(
+            t.center(),
+            egui::Align2::CENTER_CENTER,
+            if lit { "dock here" } else { label },
+            egui::FontId::proportional(if lit { 14.0 } else { 22.0 }),
+            if lit { INK } else { SAND },
+        );
     }
 }
 
@@ -1915,13 +1980,8 @@ fn floating_card(
         let released = out.drag_stopped || !ctx.input(|i| i.pointer.primary_down());
         if released {
             cs.dragging = false;
-            if let Some((c, r)) = grid.target_at(pointer) {
-                *dock = Some(Dock {
-                    c0: c,
-                    c1: c + 1,
-                    r0: r,
-                    r1: r + 1,
-                });
+            if let Some(d) = grid.target_at(pointer) {
+                *dock = Some(d);
             }
         }
     }
@@ -4549,13 +4609,64 @@ mod dock_tests {
             r1: 2,
         });
         assert!((left.width() - (1700.0 - 12.0)).abs() < 0.5 && (left.height() - (900.0 - 12.0)).abs() < 0.5);
-        // drop targets sit in cell centres; the gap between them leaves a card floating
-        assert_eq!(grid.target_at(egui::pos2(425.0, 225.0)), Some((0, 0)));
-        assert_eq!(grid.target_at(egui::pos2(3000.0, 700.0)), Some((3, 1)));
+        // targets: a quarter at a cell centre, a half between two cells, a monitor at its centre
+        assert_eq!(
+            grid.target_at(egui::pos2(425.0, 225.0)),
+            Some(Dock {
+                c0: 0,
+                c1: 1,
+                r0: 0,
+                r1: 1
+            })
+        );
+        assert_eq!(
+            grid.target_at(egui::pos2(3000.0, 700.0)),
+            Some(Dock {
+                c0: 3,
+                c1: 4,
+                r0: 1,
+                r1: 2
+            })
+        );
+        assert_eq!(
+            grid.target_at(egui::pos2(425.0, 450.0)),
+            Some(Dock {
+                c0: 0,
+                c1: 1,
+                r0: 0,
+                r1: 2
+            }),
+            "left half"
+        );
+        assert_eq!(
+            grid.target_at(egui::pos2(850.0, 225.0)),
+            Some(Dock {
+                c0: 0,
+                c1: 2,
+                r0: 0,
+                r1: 1
+            }),
+            "top half"
+        );
         assert_eq!(
             grid.target_at(egui::pos2(850.0, 450.0)),
+            Some(Dock {
+                c0: 0,
+                c1: 2,
+                r0: 0,
+                r1: 2
+            }),
+            "whole monitor"
+        );
+        assert_eq!(
+            grid.target_at(egui::pos2(600.0, 450.0)),
             None,
-            "a corner between cells is not a target"
+            "between targets a card stays floating"
+        );
+        assert_eq!(
+            grid.targets().len(),
+            8 + 4 + 4 + 2,
+            "8 quarters, 4 top/bottom halves, 4 left/right halves, 2 monitors"
         );
         // edges snap to the nearest grid line
         assert_eq!(grid.col_line(1690.0), 2);

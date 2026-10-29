@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.20.1 - 2026-10-29
+- Dock targets for halves and whole monitors, not only quarters: ¼ at each region's centre, ½ between two regions, 1 at a monitor's centre. The block lights up before you drop.
+- The dock area excludes the left sidebar and the top bar, like an editor's workbench: docked cards never cover them.
+
 ## 0.20.0 - 2026-10-29
 - Docking. The window is a grid of regions (two columns per monitor by default, set in settings). Drag any card by its title: targets appear in every region; drop on one and the card fills that region. Drag a docked card's edge to grow or shrink it by whole regions; drag its title to float it again. Dropping anywhere else leaves the card floating. Where each card is docked is remembered across runs. Works for the reply, terminal, turn and settings cards, and every card to come.
 - The window opens borderless across every monitor at start (one wall), instead of full screen on one. A settings switch restores the single-monitor full screen; F11 still toggles.
