@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.9.4 - 2026-10-29
+- A commander whose turn is open with nothing answered yet reads "thinking…" with a spinner, under the unit and on the satellite label, instead of "idle". Claude Code writes nothing to the transcript while a long reply is being generated, so that state used to look like inactivity.
+
 ## 0.9.3 - 2026-10-29
 - Clicking anywhere on a satellite constellation navigates to it: an invisible sphere wraps each satellite as the click target, with a faint glow while hovered; the two circles stay as the visual cue.
 

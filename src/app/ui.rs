@@ -1105,10 +1105,13 @@ fn draw_satellites(ctx: &egui::Context, store: &mut Store, now: i64) {
             .iter()
             .filter(|a| a.status(now, theme::ACTIVE_WINDOW_MS) == Status::Active)
             .count();
+        let in_turn = root.turn_log.last().is_some_and(|t| t.ended.is_none()) && !root.waiting_for_user;
         let (state, color) = if root.waiting_for_user {
             ("💬 awaiting orders".to_string(), ACCENT)
         } else if active > 0 {
             (format!("active · {active} unit(s) moving"), ACCENT)
+        } else if in_turn {
+            ("thinking…".to_string(), ACCENT)
         } else {
             ("idle".to_string(), DIM)
         };
@@ -2600,7 +2603,10 @@ fn draw_progress(ctx: &egui::Context, store: &Store, settings: &Settings, now: i
         // An open call is work in progress however long ago it started (a long build is still work).
         let busy = agent.has_open_call();
         let open_call = agent.calls.iter().rev().find(|c| c.ended.is_none());
-        // Hint: the in-progress task, else the running call, else idle.
+        // Your prompt is open and nothing has been answered yet: the model is generating. The
+        // transcript stays silent until a reply completes, so this is "thinking", not idle.
+        let in_turn = agent.turn_log.last().is_some_and(|t| t.ended.is_none()) && !agent.waiting_for_user;
+        // Hint: the in-progress task, else the running call, else thinking, else idle.
         let hint: String = if busy {
             agent
                 .progress
@@ -2617,8 +2623,8 @@ fn draw_progress(ctx: &egui::Context, store: &Store, settings: &Settings, now: i
                     })
                 })
                 .unwrap_or_default()
-        } else if active {
-            "thinking".into()
+        } else if active || in_turn {
+            "thinking…".into()
         } else {
             "idle".into()
         };
@@ -2652,7 +2658,7 @@ fn draw_progress(ctx: &egui::Context, store: &Store, settings: &Settings, now: i
                     TEXT,
                 );
             }
-            None if busy => {
+            None if busy || in_turn => {
                 // No task list: a spinner says "working".
                 let a0 = t * 4.0;
                 let pts: Vec<egui::Pos2> = (0..=12)
