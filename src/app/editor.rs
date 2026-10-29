@@ -340,6 +340,10 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
     store.webview_rect = surface
         .filter(|_| !docs.is_empty())
         .map(|r| [r.min.x * ppp, r.min.y * ppp, r.width() * ppp, r.height() * ppp]);
+    if store.webview_rect.is_some() && !store.webview_logged {
+        store.webview_logged = true;
+        bevy::log::info!("editor card: surface rect {:?} (ppp {ppp})", store.webview_rect);
+    }
     if let Some(i) = switch {
         store.active_doc = Some(i);
         if let Some(d) = store.docs.get(i) {

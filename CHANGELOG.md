@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.21.1 - 2026-10-29
+- The editor surface was never created: the host looked the window up through a registry this Bevy build does not expose. It now takes the window's raw handle from the window entity. The first open downloads Monaco, which can take a while; the page reports boot, libraries and errors into the log.
+- Docked cards resize freely: drag any edge or the bottom-right corner; it snaps when within a few pixels of a grid line and lands wherever you leave it otherwise. Dock targets still give quarters, halves and whole monitors as starting shapes. Pane positions are saved as fractions of the dock area.
+- AGENT_GLOBE_OPEN=<file> opens a file in the editor at start, a development aid.
+
 ## 0.21.0 - 2026-10-29
 - Files card (🗂 in the HUD, or Ctrl+P anywhere): the session folder as a lazy tree, hidden and build folders skipped, and the card's search box as a fuzzy finder over an index built in the background with the gitignore respected. Click opens a file in the editor; right-click reveals it in VS Code; Enter opens the first match.
 - Editor card: a WebView2 surface inside the card chrome, so it floats, docks and fills the screen like every card. Monaco for code with the phosphor theme and Ctrl+S saving through the app; Markdown rendered with Mermaid diagrams and GitHub styling, with an edit/preview switch; Word documents converted in the page; images; PDFs in Edge's own viewer. Tabs for open files with unsaved marks. Monaco and the Markdown tools load from the internet.

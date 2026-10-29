@@ -277,6 +277,7 @@ pub struct Store {
     pub md_preview: bool,
     /// Where the WebView surface goes this frame, in physical pixels (x, y, w, h); None hides it.
     pub webview_rect: Option<[f32; 4]>,
+    pub webview_logged: bool,
     /// An egui text field has the keyboard: scene shortcuts (R, Esc) stay out of the way.
     pub typing: bool,
     /// Screen rects of the open cards this frame (min x, min y, max x, max y): badges under
@@ -379,6 +380,7 @@ impl Store {
             editor_cmds: Vec::new(),
             md_preview: true,
             webview_rect: None,
+            webview_logged: false,
             typing: false,
             card_rects: Vec::new(),
             hide_ui: false,
@@ -550,6 +552,7 @@ impl Store {
             self.active_doc = Some(self.docs.len() - 1);
         }
         self.editor_open = true;
+        info!("editor: open {path}");
         self.editor_cmds.push(EditorCmd::Open { path });
     }
 

@@ -9,8 +9,7 @@ use super::files::{DocKind, kind_of, language_of};
 use super::state::{EditorCmd, Store, ToastKind};
 use base64::Engine;
 use bevy::prelude::*;
-use bevy::window::PrimaryWindow;
-use bevy::winit::WinitWindows;
+use bevy::window::{PrimaryWindow, RawHandleWrapper};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::time::Instant;
 
@@ -18,6 +17,7 @@ const PAGE: &str = include_str!("../../assets/editor/page.html");
 
 enum Ipc {
     Ready,
+    Log(String),
     Dirty { path: String, dirty: bool },
     Save { path: String, content: String },
 }
@@ -27,6 +27,7 @@ fn parse_ipc(body: &str) -> Option<Ipc> {
     let path = v["path"].as_str().unwrap_or("").to_string();
     match v["type"].as_str()? {
         "ready" => Some(Ipc::Ready),
+        "log" => Some(Ipc::Log(v["text"].as_str().unwrap_or("").to_string())),
         "dirty" => Some(Ipc::Dirty {
             path,
             dirty: v["dirty"].as_bool().unwrap_or(true),
@@ -51,6 +52,7 @@ pub struct WebViews {
     created: Option<Instant>,
     warned: bool,
     failed: bool,
+    shown: bool,
 }
 
 fn bounds(r: [f32; 4]) -> wry::Rect {
@@ -132,15 +134,18 @@ impl WebViews {
 /// commands, apply saves and dirty marks the page reports, and place or hide them to match the
 /// rectangle the editor card reserved.
 pub fn sync(
-    winit: Option<NonSend<WinitWindows>>,
-    primary: Query<Entity, With<PrimaryWindow>>,
+    handles: Query<&RawHandleWrapper, With<PrimaryWindow>>,
     mut views: NonSendMut<WebViews>,
     mut store: ResMut<Store>,
 ) {
-    let Some(winit) = winit else { return };
-    let Ok(entity) = primary.single() else { return };
-    let Some(window) = winit.get_window(entity) else { return };
+    let Ok(wrapper) = handles.single() else { return };
+    // This system holds a NonSend parameter, so Bevy runs it on the main thread, where the
+    // window handle may be used.
+    let window = unsafe { wrapper.get_handle() };
     let want = store.webview_rect;
+    if want.is_some() && views.created.is_none() && !views.failed {
+        info!("webview sync: surface wanted at {:?}", want);
+    }
     let active_kind = store.active_doc.and_then(|i| store.docs.get(i)).map(|d| d.kind);
 
     // ---- creation, the first time the editor shows a file
@@ -158,9 +163,10 @@ pub fn sync(
                     let _ = tx2.send(m);
                 }
             })
-            .build_as_child(&**window);
+            .build_as_child(&window);
         match built {
             Ok(v) => {
+                info!("editor surface created at {:?}", r);
                 views.page = Some(v);
                 views.rx = Some(rx);
                 views.tx = Some(tx);
@@ -168,6 +174,7 @@ pub fn sync(
             }
             Err(e) => {
                 views.failed = true;
+                error!("editor surface failed: {e}");
                 store.toast(ToastKind::Error, format!("editor surface failed: {e}"));
             }
         }
@@ -182,7 +189,9 @@ pub fn sync(
     }
     for m in inbox {
         match m {
+            Ipc::Log(text) => info!("editor page: {text}"),
             Ipc::Ready => {
+                info!("editor page ready");
                 views.ready = true;
                 let queued = std::mem::take(&mut views.queued);
                 if let Some(v) = &views.page {
@@ -212,6 +221,7 @@ pub fn sync(
     }
     if !views.ready && !views.warned && views.created.is_some_and(|t| t.elapsed().as_secs() > 12) {
         views.warned = true;
+        warn!("editor page not ready after 12 s");
         store.toast(
             ToastKind::Warn,
             "the editor page has not loaded: Monaco and the Markdown tools come from the internet",
@@ -232,7 +242,7 @@ pub fn sync(
                             .with_url(&url)
                             .with_visible(false)
                             .with_bounds(bounds(r))
-                            .build_as_child(&**window)
+                            .build_as_child(&window)
                         {
                             Ok(v) => views.pdf = Some(v),
                             Err(e) => store.toast(ToastKind::Error, format!("pdf view failed: {e}")),
@@ -266,8 +276,16 @@ pub fn sync(
     if let Some(v) = &views.page {
         match (want, show_pdf) {
             (Some(r), false) => {
-                let _ = v.set_bounds(bounds(r));
-                let _ = v.set_visible(true);
+                if let Err(e) = v.set_bounds(bounds(r)) {
+                    warn!("editor surface bounds: {e}");
+                }
+                if let Err(e) = v.set_visible(true) {
+                    warn!("editor surface visible: {e}");
+                }
+                if !views.shown {
+                    views.shown = true;
+                    info!("editor surface shown at {:?}", r);
+                }
             }
             _ => {
                 let _ = v.set_visible(false);

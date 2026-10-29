@@ -28,7 +28,7 @@ running app themselves while you work: odd clicks in screenshots may be theirs.
 | `src/app/alerts.rs` | Tray icon moods, optional Windows toasts. |
 | `src/app/hotkeys.rs` | Global Ctrl+Alt+Y / Ctrl+Alt+N approval hotkeys (Win32 `RegisterHotKey` on its own thread). |
 | `src/app/winjump.rs` | Bring a session's VS Code window to front by title (skips our own process: asking our window for its title deadlocks). |
-| `src/app/files.rs`, `editor.rs`, `webview.rs` | File index (ignore + fuzzy), the files and editor cards, and the WebView2 host (main thread, NonSend) that fills the editor card's rectangle with `assets/editor/page.html` (Monaco, marked, mermaid, mammoth from CDN). |
+| `src/app/files.rs`, `editor.rs`, `webview.rs` | (`AGENT_GLOBE_OPEN=<file>` opens a file at start to test the surface without a click.) File index (ignore + fuzzy), the files and editor cards, and the WebView2 host (main thread, NonSend) that fills the editor card's rectangle with `assets/editor/page.html` (Monaco, marked, mermaid, mammoth from CDN). |
 | `src/app/raid.rs` | The cinematic-mode wave shooter: ships, turret beams, debris, waves and levels, pause persisted to `raid.json`. |
 | `src/app/gitinfo.rs`, `probe.rs`, `terminal.rs`, `settings.rs`, `theme.rs` | git branch/dirty/changes, URL liveness, ConPTY consoles per session (alacritty_terminal behind an egui cell grid), persisted settings (`%APPDATA%/agent-globe/settings.json`), palette and tuning constants. |
 

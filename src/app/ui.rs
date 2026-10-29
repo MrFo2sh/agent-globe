@@ -8,7 +8,7 @@ use super::gitinfo::{FileChange, GitInfo, GitWatch};
 use super::probe::Probe;
 use super::raid;
 use super::servers::{self, ServerWatch, Snapshot};
-use super::settings::Dock;
+use super::settings::Pane;
 use super::settings::Settings;
 use super::sounds::{Sfx, Sounds};
 use super::state::CardState;
@@ -138,10 +138,12 @@ fn tip(ui: &mut egui::Ui, text: impl Into<egui::WidgetText>, help: &str) {
 
 /// Bevy allows sixteen parameters per system; the newer resources ride together here.
 #[derive(bevy::ecs::system::SystemParam)]
-pub struct Side<'w> {
+pub struct Side<'w, 's> {
     pub terms: ResMut<'w, Terminals>,
     pub raid: ResMut<'w, raid::Raid>,
     pub index: ResMut<'w, files::FileIndex>,
+    /// AGENT_GLOBE_OPEN=<file> was honoured once (a dev aid: open a file without a click).
+    pub env_opened: Local<'s, bool>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -174,6 +176,12 @@ pub fn draw(
     }
     let now = now_millis();
     store.typing = ctx.memory(|m| m.focused().is_some());
+    if !*side.env_opened
+        && let Ok(p) = std::env::var("AGENT_GLOBE_OPEN")
+    {
+        *side.env_opened = true;
+        store.open_doc(&p);
+    }
     if ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::P)) && !store.typing && !store.hide_ui {
         store.files_open = true;
         store.files_focus_search = true;
@@ -1614,6 +1622,8 @@ pub(super) struct DockGrid {
 }
 
 impl DockGrid {
+    const MIN: f32 = 0.06;
+
     fn cell_w(&self) -> f32 {
         self.rect.width() / self.cols as f32
     }
@@ -1622,31 +1632,29 @@ impl DockGrid {
         self.rect.height() / self.rows as f32
     }
 
-    /// A block clamped to this grid (the grid may have shrunk since the dock was saved).
-    fn clamp(&self, d: Dock) -> Dock {
-        let cols = self.cols as u8;
-        let rows = self.rows as u8;
-        let c0 = d.c0.min(cols - 1);
-        let r0 = d.r0.min(rows - 1);
-        Dock {
-            c0,
-            c1: d.c1.clamp(c0 + 1, cols),
-            r0,
-            r1: d.r1.clamp(r0 + 1, rows),
+    /// A pane kept inside the area and no smaller than a sliver.
+    fn clamp(&self, p: Pane) -> Pane {
+        let x0 = p.x0.clamp(0.0, 1.0 - Self::MIN);
+        let y0 = p.y0.clamp(0.0, 1.0 - Self::MIN);
+        Pane {
+            x0,
+            y0,
+            x1: p.x1.clamp(x0 + Self::MIN, 1.0),
+            y1: p.y1.clamp(y0 + Self::MIN, 1.0),
         }
     }
 
-    fn block(&self, d: Dock) -> egui::Rect {
-        let d = self.clamp(d);
+    fn block(&self, p: Pane) -> egui::Rect {
+        let p = self.clamp(p);
         let m = 6.0;
         egui::Rect::from_min_max(
             egui::pos2(
-                self.rect.min.x + d.c0 as f32 * self.cell_w() + m,
-                self.rect.min.y + d.r0 as f32 * self.cell_h() + m,
+                self.rect.min.x + p.x0 * self.rect.width() + m,
+                self.rect.min.y + p.y0 * self.rect.height() + m,
             ),
             egui::pos2(
-                self.rect.min.x + d.c1 as f32 * self.cell_w() - m,
-                self.rect.min.y + d.r1 as f32 * self.cell_h() - m,
+                self.rect.min.x + p.x1 * self.rect.width() - m,
+                self.rect.min.y + p.y1 * self.rect.height() - m,
             ),
         )
     }
@@ -1661,77 +1669,80 @@ impl DockGrid {
         )
     }
 
+    fn pane_of(&self, c0: u8, c1: u8, r0: u8, r1: u8) -> Pane {
+        Pane {
+            x0: c0 as f32 / self.cols as f32,
+            x1: c1 as f32 / self.cols as f32,
+            y0: r0 as f32 / self.rows as f32,
+            y1: r1 as f32 / self.rows as f32,
+        }
+    }
+
     /// Every block a card can be dropped into: each cell (a quarter of a monitor), each pair of
     /// cells aligned to a 2x2 group (a half), and each whole group (a monitor). Their targets sit
-    /// at the blocks' centres, which never coincide.
-    fn targets(&self) -> Vec<Dock> {
+    /// at the blocks' centres, which never coincide. Once docked, edges move freely.
+    fn targets(&self) -> Vec<Pane> {
         let (cols, rows) = (self.cols as u8, self.rows as u8);
         let mut out = Vec::new();
         for r in 0..rows {
             for c in 0..cols {
-                out.push(Dock {
-                    c0: c,
-                    c1: c + 1,
-                    r0: r,
-                    r1: r + 1,
-                });
+                out.push(self.pane_of(c, c + 1, r, r + 1));
                 let wide = c % 2 == 0 && c + 2 <= cols;
                 let tall = r % 2 == 0 && r + 2 <= rows;
                 if wide {
-                    out.push(Dock {
-                        c0: c,
-                        c1: c + 2,
-                        r0: r,
-                        r1: r + 1,
-                    });
+                    out.push(self.pane_of(c, c + 2, r, r + 1));
                 }
                 if tall {
-                    out.push(Dock {
-                        c0: c,
-                        c1: c + 1,
-                        r0: r,
-                        r1: r + 2,
-                    });
+                    out.push(self.pane_of(c, c + 1, r, r + 2));
                 }
                 if wide && tall {
-                    out.push(Dock {
-                        c0: c,
-                        c1: c + 2,
-                        r0: r,
-                        r1: r + 2,
-                    });
+                    out.push(self.pane_of(c, c + 2, r, r + 2));
                 }
             }
         }
         out
     }
 
-    fn target_rect(&self, d: Dock) -> egui::Rect {
-        let cells = (d.c1 - d.c0) as f32 * (d.r1 - d.r0) as f32;
-        let size = if cells >= 4.0 {
+    /// How many grid cells a pane covers (for the target's label and size).
+    fn cells(&self, p: Pane) -> f32 {
+        (p.x1 - p.x0) * self.cols as f32 * (p.y1 - p.y0) * self.rows as f32
+    }
+
+    fn target_rect(&self, p: Pane) -> egui::Rect {
+        let cells = self.cells(p);
+        let size = if cells >= 3.5 {
             egui::vec2(150.0, 84.0)
-        } else if cells >= 2.0 {
+        } else if cells >= 1.5 {
             egui::vec2(130.0, 74.0)
         } else {
             egui::vec2(110.0, 64.0)
         };
-        egui::Rect::from_center_size(self.block(d).center(), size)
+        egui::Rect::from_center_size(self.block(p).center(), size)
     }
 
-    fn target_at(&self, p: egui::Pos2) -> Option<Dock> {
+    fn target_at(&self, p: egui::Pos2) -> Option<Pane> {
         self.targets().into_iter().find(|d| self.target_rect(*d).contains(p))
     }
 
-    fn col_line(&self, x: f32) -> u8 {
-        ((x - self.rect.min.x) / self.cell_w())
-            .round()
-            .clamp(0.0, self.cols as f32) as u8
+    /// A pointer x as a fraction of the area, pulled onto a grid line when within a few pixels.
+    fn snap_x(&self, x: f32) -> f32 {
+        let f = ((x - self.rect.min.x) / self.rect.width()).clamp(0.0, 1.0);
+        let line = (f * self.cols as f32).round() / self.cols as f32;
+        if ((line - f) * self.rect.width()).abs() <= 12.0 {
+            line
+        } else {
+            f
+        }
     }
 
-    fn row_line(&self, y: f32) -> u8 {
-        ((y - self.rect.min.y) / self.cell_h())
-            .round()
-            .clamp(0.0, self.rows as f32) as u8
+    fn snap_y(&self, y: f32) -> f32 {
+        let f = ((y - self.rect.min.y) / self.rect.height()).clamp(0.0, 1.0);
+        let line = (f * self.rows as f32).round() / self.rows as f32;
+        if ((line - f) * self.rect.height()).abs() <= 12.0 {
+            line
+        } else {
+            f
+        }
     }
 }
 
@@ -1742,9 +1753,9 @@ pub(super) fn begin_card(
     settings: &mut Settings,
     id: &str,
     ctx: &egui::Context,
-) -> (CardState, Option<Dock>, DockGrid) {
+) -> (CardState, Option<Pane>, DockGrid) {
     let cs = store.cards.remove(id).unwrap_or_default();
-    let dock = settings.docks.remove(id);
+    let dock = settings.panes.remove(id);
     let vr = ctx.viewport_rect();
     let (left, top, _, _) = store.scene_insets.unwrap_or((0.0, 0.0, 0.0, 0.0));
     let grid = DockGrid {
@@ -1755,10 +1766,10 @@ pub(super) fn begin_card(
     (cs, dock, grid)
 }
 
-pub(super) fn end_card(store: &mut Store, settings: &mut Settings, id: &str, cs: CardState, dock: Option<Dock>) {
+pub(super) fn end_card(store: &mut Store, settings: &mut Settings, id: &str, cs: CardState, dock: Option<Pane>) {
     store.cards.insert(id.to_string(), cs);
     if let Some(d) = dock {
-        settings.docks.insert(id.to_string(), d);
+        settings.panes.insert(id.to_string(), d);
     }
 }
 
@@ -1791,7 +1802,7 @@ fn draw_dock_zones(ctx: &egui::Context, grid: DockGrid, pointer: egui::Pos2) {
     for d in grid.targets() {
         let t = grid.target_rect(d);
         let lit = hot == Some(d);
-        let cells = (d.c1 - d.c0) as u32 * (d.r1 - d.r0) as u32;
+        let cells = grid.cells(d).round() as u32;
         let label = match cells {
             1 => "¼",
             2 => "½",
@@ -1833,7 +1844,7 @@ pub(super) fn floating_card(
     id: &str,
     maxed: bool,
     cs: &mut CardState,
-    dock: &mut Option<Dock>,
+    dock: &mut Option<Pane>,
     grid: DockGrid,
     default_pos: egui::Pos2,
     default_size: egui::Vec2,
@@ -1968,6 +1979,14 @@ pub(super) fn floating_card(
                                 egui::Rect::from_min_max(egui::pos2(r.min.x, r.max.y - t), r.right_bottom()),
                                 egui::CursorIcon::ResizeVertical,
                             ),
+                            (
+                                4u8,
+                                egui::Rect::from_min_max(
+                                    egui::pos2(r.max.x - 2.0 * t, r.max.y - 2.0 * t),
+                                    r.right_bottom(),
+                                ),
+                                egui::CursorIcon::ResizeNwSe,
+                            ),
                         ];
                         for (side, strip, cursor) in strips {
                             let e = ui
@@ -2009,24 +2028,31 @@ pub(super) fn floating_card(
         }
     }
 
-    // ---- edges of a docked card snap to the nearest grid line
+    // ---- edges (and the corner) of a docked card move freely, snapping near grid lines
     if let (Some(side), Some(d)) = (out.edge, dock.as_mut()) {
         let cur = grid.clamp(*d);
+        let (fx, fy) = (grid.snap_x(pointer.x), grid.snap_y(pointer.y));
+        let min = DockGrid::MIN;
         *d = match side {
-            0 => Dock {
-                c0: grid.col_line(pointer.x).min(cur.c1 - 1),
+            0 => Pane {
+                x0: fx.min(cur.x1 - min),
                 ..cur
             },
-            1 => Dock {
-                c1: grid.col_line(pointer.x).max(cur.c0 + 1),
+            1 => Pane {
+                x1: fx.max(cur.x0 + min),
                 ..cur
             },
-            2 => Dock {
-                r0: grid.row_line(pointer.y).min(cur.r1 - 1),
+            2 => Pane {
+                y0: fy.min(cur.y1 - min),
                 ..cur
             },
-            _ => Dock {
-                r1: grid.row_line(pointer.y).max(cur.r0 + 1),
+            3 => Pane {
+                y1: fy.max(cur.y0 + min),
+                ..cur
+            },
+            _ => Pane {
+                x1: fx.max(cur.x0 + min),
+                y1: fy.max(cur.y0 + min),
                 ..cur
             },
         };
@@ -4601,6 +4627,13 @@ mod tests {
 mod dock_tests {
     use super::*;
 
+    fn close(a: Pane, b: Pane) -> bool {
+        (a.x0 - b.x0).abs() < 1e-4
+            && (a.x1 - b.x1).abs() < 1e-4
+            && (a.y0 - b.y0).abs() < 1e-4
+            && (a.y1 - b.y1).abs() < 1e-4
+    }
+
     #[test]
     fn dock_grid_math() {
         let grid = DockGrid {
@@ -4608,77 +4641,51 @@ mod dock_tests {
             cols: 4,
             rows: 2,
         };
-        // a block saved on a bigger grid is pulled back inside this one
-        let wild = Dock {
-            c0: 9,
-            c1: 12,
-            r0: 5,
-            r1: 9,
+        // a pane saved wild is pulled back inside the area and no thinner than a sliver
+        let wild = Pane {
+            x0: 1.4,
+            y0: -0.5,
+            x1: 0.1,
+            y1: 9.0,
         };
-        assert_eq!(
-            grid.clamp(wild),
-            Dock {
-                c0: 3,
-                c1: 4,
-                r0: 1,
-                r1: 2
-            }
-        );
-        // the full left monitor: two columns, both rows
-        let left = grid.block(Dock {
-            c0: 0,
-            c1: 2,
-            r0: 0,
-            r1: 2,
+        let c = grid.clamp(wild);
+        assert!(c.x0 <= 1.0 - DockGrid::MIN && c.x1 >= c.x0 + DockGrid::MIN && c.y0 == 0.0 && c.y1 == 1.0);
+        // the full left monitor: half the area
+        let left = grid.block(Pane {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 0.5,
+            y1: 1.0,
         });
         assert!((left.width() - (1700.0 - 12.0)).abs() < 0.5 && (left.height() - (900.0 - 12.0)).abs() < 0.5);
         // targets: a quarter at a cell centre, a half between two cells, a monitor at its centre
-        assert_eq!(
-            grid.target_at(egui::pos2(425.0, 225.0)),
-            Some(Dock {
-                c0: 0,
-                c1: 1,
-                r0: 0,
-                r1: 1
-            })
-        );
-        assert_eq!(
-            grid.target_at(egui::pos2(3000.0, 700.0)),
-            Some(Dock {
-                c0: 3,
-                c1: 4,
-                r0: 1,
-                r1: 2
-            })
-        );
-        assert_eq!(
-            grid.target_at(egui::pos2(425.0, 450.0)),
-            Some(Dock {
-                c0: 0,
-                c1: 1,
-                r0: 0,
-                r1: 2
-            }),
+        assert!(close(
+            grid.target_at(egui::pos2(425.0, 225.0)).unwrap(),
+            grid.pane_of(0, 1, 0, 1)
+        ));
+        assert!(close(
+            grid.target_at(egui::pos2(3000.0, 700.0)).unwrap(),
+            grid.pane_of(3, 4, 1, 2)
+        ));
+        assert!(
+            close(
+                grid.target_at(egui::pos2(425.0, 450.0)).unwrap(),
+                grid.pane_of(0, 1, 0, 2)
+            ),
             "left half"
         );
-        assert_eq!(
-            grid.target_at(egui::pos2(850.0, 225.0)),
-            Some(Dock {
-                c0: 0,
-                c1: 2,
-                r0: 0,
-                r1: 1
-            }),
+        assert!(
+            close(
+                grid.target_at(egui::pos2(850.0, 225.0)).unwrap(),
+                grid.pane_of(0, 2, 0, 1)
+            ),
             "top half"
         );
-        assert_eq!(
-            grid.target_at(egui::pos2(850.0, 450.0)),
-            Some(Dock {
-                c0: 0,
-                c1: 2,
-                r0: 0,
-                r1: 2
-            }),
+        assert!(
+            close(
+                grid.target_at(egui::pos2(850.0, 450.0)).unwrap(),
+                grid.pane_of(0, 2, 0, 2)
+            ),
             "whole monitor"
         );
         assert_eq!(
@@ -4691,10 +4698,15 @@ mod dock_tests {
             8 + 4 + 4 + 2,
             "8 quarters, 4 top/bottom halves, 4 left/right halves, 2 monitors"
         );
-        // edges snap to the nearest grid line
-        assert_eq!(grid.col_line(1690.0), 2);
-        assert_eq!(grid.col_line(1300.0), 2);
-        assert_eq!(grid.col_line(1000.0), 1);
-        assert_eq!(grid.row_line(440.0), 1);
+        // edges snap only near grid lines, otherwise they land where the pointer is
+        assert!(
+            (grid.snap_x(1690.0) - 0.5).abs() < 1e-6,
+            "ten pixels from the centre line snaps"
+        );
+        assert!(
+            (grid.snap_x(1300.0) - 1300.0 / 3400.0).abs() < 1e-6,
+            "far from a line stays free"
+        );
+        assert!((grid.snap_y(455.0) - 0.5).abs() < 1e-6);
     }
 }

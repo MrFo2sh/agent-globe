@@ -44,16 +44,16 @@ pub struct Settings {
     pub grid_cols: u8,
     pub grid_rows: u8,
     /// Where each card is docked, by card id. Floating cards are absent.
-    pub docks: HashMap<String, Dock>,
+    pub panes: HashMap<String, Pane>,
 }
 
-/// A block of dock cells: columns `c0..c1`, rows `r0..r1`.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Dock {
-    pub c0: u8,
-    pub c1: u8,
-    pub r0: u8,
-    pub r1: u8,
+/// A docked card's rectangle as fractions of the dock area, so it survives any window size.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Pane {
+    pub x0: f32,
+    pub y0: f32,
+    pub x1: f32,
+    pub y1: f32,
 }
 
 impl Default for Settings {
@@ -81,7 +81,7 @@ impl Default for Settings {
             span_monitors: true,
             grid_cols: 4,
             grid_rows: 2,
-            docks: HashMap::new(),
+            panes: HashMap::new(),
         }
     }
 }
