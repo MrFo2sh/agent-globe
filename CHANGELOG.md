@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.26.1 - 2026-10-29
+- Links between files are off by default; the ⛓ toggle in the top bar turns them on (focus or all).
+
 ## 0.26.0 - 2026-10-29
 - One click picks a file, in the constellation, the tree or the finder: it lights up, the camera glides towards it, and its connections show with their direction, green to the files it uses, red from the files that use it, amber for files that change with it. A second click opens it in the editor; double-click in the tree opens it pinned; Esc drops the selection.
 - Git repositories nested in the session folder are indexed with their own ignore rules, so a factory's products are in the constellation even though the factory's gitignore hides them. Connections and co-changes come from every repository.

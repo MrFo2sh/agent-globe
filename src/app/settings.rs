@@ -81,7 +81,7 @@ impl Default for Settings {
             progress_rings: true,
             satellites: true,
             files_ring: true,
-            file_links: true,
+            file_links: false,
             file_links_all: false,
             compact: false,
             desktop_notifications: false,
