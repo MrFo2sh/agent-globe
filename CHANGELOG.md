@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.11.1 - 2026-10-29
+- The reply card has a solid opaque background with a drop shadow, so the constellation and file labels behind it no longer bleed through the text.
+
 ## 0.11.0 - 2026-10-29
 - Servers list shows only what is listening now; Windows services and Agent Globe's own ports are hidden as noise, Docker-owned ports are labelled and left for Docker to stop. Background processes collapse into one expandable line.
 - Click the 💬 badge to read the reply: a card next to the unit shows the commander's full last message, the text the editor shows as its answer, with light Markdown (headings, lists, code, bold), a copy button, and Esc, ✕ or the badge again to close. Works on satellites too. Replies are kept up to 12,000 characters.

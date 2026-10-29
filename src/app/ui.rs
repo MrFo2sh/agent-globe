@@ -1384,8 +1384,15 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) {
         ))
         .frame(
             egui::Frame::NONE
-                .fill(PANEL)
+                // Solid fill: the reply is text to read, the constellation behind must not bleed through.
+                .fill(egui::Color32::from_rgb(6, 12, 5))
                 .stroke(egui::Stroke::new(1.5, ACCENT))
+                .shadow(egui::epaint::Shadow {
+                    offset: [0, 4],
+                    blur: 18,
+                    spread: 0,
+                    color: egui::Color32::from_black_alpha(160),
+                })
                 .inner_margin(12.0)
                 .corner_radius(8.0),
         );
