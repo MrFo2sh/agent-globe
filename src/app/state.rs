@@ -333,8 +333,10 @@ pub struct Store {
     pub scene_view: SceneView,
     /// The file node under the pointer (its label shows even when it is not hot).
     pub hovered_file: Option<String>,
-    /// A file just opened in the editor: the camera flies to its node once.
+    /// A file just opened or selected: the camera glides to its node once.
     pub focus_file: Option<String>,
+    /// The file picked with one click: lit, its connections shown; a second click opens it.
+    pub selected_file: Option<String>,
     /// Ask the host to hand the keyboard back to the app window (after the page asked for it).
     pub focus_app: bool,
     /// Where the WebView surface goes this frame, in physical pixels (x, y, w, h); None hides it.
@@ -451,6 +453,7 @@ impl Store {
             scene_view: SceneView::Both,
             hovered_file: None,
             focus_file: None,
+            selected_file: None,
             focus_app: false,
             webview_rect: None,
             webview_logged: false,

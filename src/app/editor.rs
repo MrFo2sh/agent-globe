@@ -84,7 +84,7 @@ fn tree(
                         .frame(false),
                     )
                     .on_hover_text(format!(
-                        "{}\nclick: preview · double-click: keep open · right-click: VS Code",
+                        "{}\nclick: select · click again: open · double-click: keep open · right-click: VS Code",
                         e.path
                     ));
                 if r.double_clicked() {
@@ -184,9 +184,9 @@ pub fn files_body(
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width() - 8.0);
                 for (p, idx) in &hits {
-                    let r = ui
-                        .add(egui::Button::new(hit_label(p, idx)).frame(false))
-                        .on_hover_text("click: preview · double-click: keep open · right-click: VS Code");
+                    let r = ui.add(egui::Button::new(hit_label(p, idx)).frame(false)).on_hover_text(
+                        "click: select · click again: open · double-click: keep open · right-click: VS Code",
+                    );
                     if r.double_clicked() {
                         open_path = Some((format!("{cwd}/{p}"), false));
                     } else if r.clicked() {
@@ -225,10 +225,17 @@ pub fn files_body(
         store.files_open_dirs.insert(d);
     }
     if let Some((p, preview)) = open_path {
-        if preview {
+        if !preview {
+            store.open_doc_pinned(&p);
+        } else if store
+            .selected_file
+            .as_deref()
+            .is_some_and(|s| super::scene::same_file(s, &p))
+        {
             store.open_doc(&p);
         } else {
-            store.open_doc_pinned(&p);
+            store.selected_file = Some(p.clone());
+            store.focus_file = Some(p);
         }
     }
     if let Some(p) = reveal {

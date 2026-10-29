@@ -20,7 +20,7 @@ use bevy_panorbit_camera::PanOrbitCamera;
 
 pub const CAMERA_HOME: Vec3 = Vec3::new(0.0, 9.0, 20.0);
 /// Fly-to distance for a subagent, and for the commander whose halos need more room.
-const FOCUS_RADIUS_FILE: f32 = 9.0;
+const FOCUS_RADIUS_FILE: f32 = 11.0;
 const FOCUS_RADIUS: f32 = 6.5;
 const FOCUS_RADIUS_ROOT: f32 = 11.0;
 
@@ -167,6 +167,8 @@ pub fn drive(
             store.reply_open = None;
         } else if store.show_settings {
             store.show_settings = false;
+        } else if store.selected_file.is_some() {
+            store.selected_file = None;
         } else if store.viewer.is_some() {
             store.viewer = None;
         } else if store.hide_ui {

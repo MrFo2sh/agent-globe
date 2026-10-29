@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.26.0 - 2026-10-29
+- One click picks a file, in the constellation, the tree or the finder: it lights up, the camera glides towards it, and its connections show with their direction, green to the files it uses, red from the files that use it, amber for files that change with it. A second click opens it in the editor; double-click in the tree opens it pinned; Esc drops the selection.
+- Git repositories nested in the session folder are indexed with their own ignore rules, so a factory's products are in the constellation even though the factory's gitignore hides them. Connections and co-changes come from every repository.
+- Connections to the files the units touch resolve again: those nodes carry the path as the tool wrote it, which no longer has to match letter for letter.
+
 ## 0.25.3 - 2026-10-29
 - Text fields take the keyboard back. Once the editor surface (a native child window) has had the keyboard, Windows kept handing it back, so the history and artifact searches and every other box looked disabled. A click on the app's own side, or a field gaining focus, now returns the keyboard to the app.
 

@@ -81,9 +81,38 @@ pub fn language_of(path: &str) -> &'static str {
     }
 }
 
+/// Git repositories nested under `root`, up to `depth` folders down (the root itself excluded).
+fn nested_repos(root: &Path, depth: usize) -> Vec<PathBuf> {
+    fn walk(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+        if depth == 0 {
+            return;
+        }
+        let Ok(rd) = std::fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || SKIP.contains(&name.as_str()) {
+                continue;
+            }
+            let p = e.path();
+            if !p.is_dir() {
+                continue;
+            }
+            if p.join(".git").exists() {
+                out.push(p);
+            } else {
+                walk(&p, depth - 1, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, depth, &mut out);
+    out.sort();
+    out
+}
+
 /// Imports from the source (files up to 256 KB, the first 4,000 scannable ones) and co-change
-/// pairs from the last 500 commits, kept to pairs of files the index knows.
-fn connections(root: &Path, files: &[String]) -> Vec<Link> {
+/// pairs from the last 500 commits of every repository, kept to pairs of files the index knows.
+fn connections(root: &Path, files: &[String], repos: &[(PathBuf, String)]) -> Vec<Link> {
     let scan: Vec<String> = files
         .iter()
         .filter(|p| links::scannable(p))
@@ -103,24 +132,31 @@ fn connections(root: &Path, files: &[String]) -> Vec<Link> {
         }
         std::fs::read_to_string(&p).ok()
     });
-    let mut git = std::process::Command::new("git");
-    git.args(["log", "--name-only", "--format=%H", "-n", "500"])
-        .current_dir(root);
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        git.creation_flags(0x0800_0000);
-    }
-    if let Ok(o) = git.output()
-        && o.status.success()
-    {
-        let log = String::from_utf8_lossy(&o.stdout);
-        out.extend(
-            links::co_change_links(&log, 30, 2)
-                .into_iter()
-                .filter(|l| known.contains(l.a.as_str()) && known.contains(l.b.as_str()))
-                .take(6_000),
-        );
+    for (base, prefix) in repos {
+        let mut git = std::process::Command::new("git");
+        git.args(["log", "--name-only", "--format=%H", "-n", "500"])
+            .current_dir(base);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            git.creation_flags(0x0800_0000);
+        }
+        if let Ok(o) = git.output()
+            && o.status.success()
+        {
+            let log = String::from_utf8_lossy(&o.stdout);
+            out.extend(
+                links::co_change_links(&log, 30, 2)
+                    .into_iter()
+                    .map(|l| Link {
+                        a: format!("{prefix}{}", l.a),
+                        b: format!("{prefix}{}", l.b),
+                        ..l
+                    })
+                    .filter(|l| known.contains(l.a.as_str()) && known.contains(l.b.as_str()))
+                    .take(6_000),
+            );
+        }
     }
     out
 }
@@ -180,32 +216,46 @@ impl FileIndex {
         std::thread::Builder::new()
             .name("file-index".into())
             .spawn(move || {
+                // The folder itself, then every git repository nested in it (a parent's
+                // gitignore often hides them, as a factory hides its products), each walked
+                // with its own ignore rules.
+                let mut repos: Vec<(PathBuf, String)> = vec![(root.clone(), String::new())];
+                for nested in nested_repos(&root, 3) {
+                    let prefix = nested
+                        .strip_prefix(&root)
+                        .map(|p| p.to_string_lossy().replace('\\', "/"))
+                        .unwrap_or_default();
+                    repos.push((nested, format!("{prefix}/")));
+                }
                 let mut out: Vec<String> = Vec::new();
-                let walker = ignore::WalkBuilder::new(&root)
-                    .hidden(true)
-                    .git_ignore(true)
-                    .git_exclude(true)
-                    .max_depth(Some(14))
-                    .filter_entry(|e| !e.file_name().to_str().is_some_and(|n| SKIP.contains(&n)))
-                    .build();
-                for e in walker.flatten() {
-                    if e.file_type().is_some_and(|t| t.is_file())
-                        && let Ok(rel) = e.path().strip_prefix(&root)
-                    {
-                        out.push(rel.to_string_lossy().replace('\\', "/"));
-                        if out.len() >= 60_000 {
-                            break;
+                for (base, prefix) in &repos {
+                    let walker = ignore::WalkBuilder::new(base)
+                        .hidden(true)
+                        .git_ignore(true)
+                        .git_exclude(true)
+                        .max_depth(Some(14))
+                        .filter_entry(|e| !e.file_name().to_str().is_some_and(|n| SKIP.contains(&n)))
+                        .build();
+                    for e in walker.flatten() {
+                        if e.file_type().is_some_and(|t| t.is_file())
+                            && let Ok(rel) = e.path().strip_prefix(base)
+                        {
+                            out.push(format!("{prefix}{}", rel.to_string_lossy().replace('\\', "/")));
+                            if out.len() >= 60_000 {
+                                break;
+                            }
                         }
                     }
                 }
                 out.sort();
+                out.dedup();
                 if let Ok(mut v) = entries.lock() {
                     *v = out.clone();
                 }
                 generation.fetch_add(1, Ordering::Relaxed);
                 building.store(false, Ordering::Relaxed);
                 // Connections come after the list, so the tree and the finder never wait for them.
-                let found = connections(&root, &out);
+                let found = connections(&root, &out, &repos);
                 if let Ok(mut l) = links.lock() {
                     *l = found;
                 }

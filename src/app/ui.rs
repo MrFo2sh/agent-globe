@@ -1331,7 +1331,17 @@ pub fn draw(
     draw_files(ctx, &mut store);
     draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
     if let Some(path) = store.pending_open_file.take() {
-        store.open_doc(&path);
+        // First click: pick the file, light it and its connections, glide towards it. Second: open.
+        let again = store
+            .selected_file
+            .as_deref()
+            .is_some_and(|s| super::scene::same_file(s, &path));
+        if again {
+            store.open_doc(&path);
+        } else {
+            store.selected_file = Some(path.clone());
+            store.focus_file = Some(path);
+        }
     }
     if let Some(rect) = draw_viewer(ctx, &mut store, &mut images) {
         ui_rects.push(rect);
@@ -1648,7 +1658,7 @@ fn draw_satellites(ctx: &egui::Context, store: &mut Store, now: i64) {
     }
 }
 
-/// Labels under the file nodes: name, counts on hover, click to open in the editor.
+/// Labels under the file nodes: name, counts on hover, click: select, click again: open in the editor.
 fn draw_files(ctx: &egui::Context, store: &mut Store) {
     if store.viewer.is_some() || store.file_screen.is_empty() {
         return;

@@ -550,9 +550,11 @@ pub fn sync_files(
         .map(|f| (f.path.as_str(), (f.heat(), f.last_at)))
         .collect();
     let hovered = store.hovered_file.as_deref();
+    let selected = store.selected_file.as_deref();
     let mut positions = HashMap::new();
     for (node, mut tf, mut mat) in nodes.iter_mut() {
         let (heat, last_at) = heat_of.get(node.path.as_str()).copied().unwrap_or((1, 0));
+        let is_selected = selected.is_some_and(|s| same_file(s, &node.path));
         let angle = if node.cold {
             orbit_angle(node.angle, fscene.depth + 1, t, settings.drift_speed * 0.35)
         } else {
@@ -560,9 +562,9 @@ pub fn sync_files(
         };
         let target = Vec3::from(layout::orbit_point(node.depth, angle));
         tf.translation = tf.translation.lerp(target, (dt * 4.0).min(1.0));
-        let is_hovered = hovered == Some(node.path.as_str());
+        let is_hovered = hovered == Some(node.path.as_str()) || is_selected;
         let want = if node.cold {
-            if is_hovered { 0.8 } else { 0.5 }
+            if is_hovered { 0.9 } else { 0.5 }
         } else {
             0.7 + (heat.min(24) as f32 / 24.0) * 0.9
         };
@@ -625,37 +627,53 @@ pub fn draw_file_beams(
     if settings.file_links && (!fscene.links.is_empty() || !fscene.files.is_empty()) {
         let norm = |p: &str| p.replace('\\', "/").to_ascii_lowercase();
         let pos: HashMap<String, Vec3> = fscene.positions.iter().map(|(k, v)| (norm(k), *v)).collect();
+        // Hot nodes carry the path as the tool wrote it (relative, or with another spelling):
+        // when the exact key misses, the same file under another spelling still counts.
+        let find = |n: &str| -> Option<Vec3> {
+            pos.get(n).copied().or_else(|| {
+                pos.iter()
+                    .find(|(k, _)| k.ends_with(&format!("/{n}")) || n.ends_with(&format!("/{}", k.as_str())))
+                    .map(|(_, v)| *v)
+            })
+        };
         let focus: Option<String> = store
             .hovered_file
             .clone()
+            .or_else(|| store.selected_file.clone())
             .or_else(|| store.active_doc.and_then(|i| store.docs.get(i)).map(|d| d.path.clone()))
             .map(|p| norm(&p));
+        let is_focus = |n: &str| focus.as_deref().is_some_and(|f| same_file(f, n));
         let touch = theme::TOUCH.to_srgba();
         for (a, b, kind, weight) in &fscene.links {
             let (na, nb) = (norm(a), norm(b));
-            let (Some(pa), Some(pb)) = (pos.get(&na), pos.get(&nb)) else {
+            let (Some(pa), Some(pb)) = (find(&na), find(&nb)) else {
                 continue;
             };
-            let lit = focus.as_deref().is_some_and(|f| f == na || f == nb);
+            // a imports b: from the focus, green goes to what it uses, red comes from what uses it
+            let uses = is_focus(&na);
+            let used_by = is_focus(&nb);
+            let lit = uses || used_by;
             if !lit && !settings.file_links_all {
                 continue;
             }
             let color = match kind {
-                LinkKind::Import => Color::srgba(touch.red, touch.green, touch.blue, if lit { 0.8 } else { 0.07 }),
+                LinkKind::Import if uses => Color::srgba(0.45, 1.0, 0.55, 0.9),
+                LinkKind::Import if used_by => Color::srgba(1.0, 0.35, 0.35, 0.9),
+                LinkKind::Import => Color::srgba(touch.red, touch.green, touch.blue, 0.07),
                 LinkKind::CoChange => {
                     let w = (*weight as f32).min(6.0) / 6.0;
                     Color::srgba(0.95, 0.75, 0.40, if lit { 0.55 + 0.3 * w } else { 0.03 + 0.05 * w })
                 }
             };
-            gizmos.line(*pa, *pb, color);
+            gizmos.line(pa, pb, color);
         }
         // Files the same unit touched in the same window: a signal only this app has.
         let mut by_agent: HashMap<&str, Vec<Vec3>> = HashMap::new();
         for f in &fscene.files {
-            let Some(p) = pos.get(&norm(&f.path)) else { continue };
+            let Some(p) = find(&norm(&f.path)) else { continue };
             for t in &f.touches {
                 if now - t.at <= BEAM_MS {
-                    by_agent.entry(t.agent_id.as_str()).or_default().push(*p);
+                    by_agent.entry(t.agent_id.as_str()).or_default().push(p);
                 }
             }
         }
@@ -748,6 +766,7 @@ pub fn project_files(
     let norm = |p: &str| p.replace('\\', "/").to_ascii_lowercase();
     let focus: Option<String> = hovered
         .clone()
+        .or_else(|| store.selected_file.clone())
         .or_else(|| store.active_doc.and_then(|i| store.docs.get(i)).map(|d| d.path.clone()))
         .map(|p| norm(&p));
     let neighbours: std::collections::HashSet<String> = match &focus {
@@ -778,8 +797,8 @@ pub fn project_files(
         let near = cam_pos.distance(tf.translation()) < LABEL_DISTANCE;
         let np = norm(&node.path);
         let wanted = hovered.as_deref() == Some(node.path.as_str())
-            || neighbours.contains(&np)
-            || focus.as_deref() == Some(np.as_str())
+            || neighbours.iter().any(|n| same_file(n, &np))
+            || focus.as_deref().is_some_and(|f| same_file(f, &np))
             || near
             || few;
         let (label, reads, edits) = match hot {
