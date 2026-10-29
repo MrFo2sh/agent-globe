@@ -58,6 +58,13 @@ pub struct FileScene {
     next_rebuild: f32,
     /// The file-system layout last built: for which index generation, session and view.
     cold_key: Option<(u64, String, bool)>,
+    /// Folder captions: (absolute folder path, name, wedge centre angle, file count).
+    pub folders: Vec<(String, String, f32, usize)>,
+    /// Wedge boundary angles, and the rings the cold files use (for the faint guides).
+    pub wedges: Vec<f32>,
+    pub cold_depths: Vec<u32>,
+    /// The outermost ring in use, for the home camera.
+    pub outer_depth: u32,
 }
 
 /// How many files the ring shows, how long a touch keeps its beam, how long a node glows after an edit.
@@ -275,7 +282,7 @@ pub fn setup(
     let file_mesh = meshes.add(Cuboid::new(0.22, 0.22, 0.22));
     let file_material = materials.add(plastic(theme::KHAKI, 6.0));
     let file_hot_material = materials.add(plastic(theme::TOUCH, 70.0));
-    let file_cold_material = materials.add(plastic(theme::KHAKI, 1.2));
+    let file_cold_material = materials.add(plastic(theme::FILE_COLD, 3.0));
     // Fully transparent but still picked by the pointer; a faint glow while hovered.
     let hull_material = materials.add(StandardMaterial {
         base_color: Color::NONE,
@@ -361,7 +368,7 @@ pub fn sync_files(
     settings: Res<Settings>,
     assets: Res<SceneAssets>,
     scene: Res<SceneLayout>,
-    index: Res<super::files::FileIndex>,
+    mut index: ResMut<super::files::FileIndex>,
     mut fscene: ResMut<FileScene>,
     mut fents: ResMut<FileEntities>,
     mut nodes: Query<(&mut FileNode, &mut Transform, &mut MeshMaterial3d<StandardMaterial>)>,
@@ -378,8 +385,14 @@ pub fn sync_files(
         fscene.files.clear();
         fscene.positions.clear();
         fscene.cold_key = None;
+        fscene.folders.clear();
+        fscene.wedges.clear();
+        fscene.cold_depths.clear();
+        fscene.outer_depth = 0;
         return;
     };
+    // The scene asks for the file index itself; the sidebar and the palette share it.
+    index.ensure(&session.cwd, false);
     let max_depth = scene.per.get(&session.id).map(|e| e.layout.max_depth).unwrap_or(0);
     let hot_depth = max_depth + 1;
     let spawn = |commands: &mut Commands, fents: &mut FileEntities, path: &str, angle: f32, depth: u32, cold: bool| {
@@ -466,14 +479,29 @@ pub fn sync_files(
             }
             let total = cold.len().max(1) as f32;
             let mut start = 0.0_f32;
-            for (_, files) in groups {
+            fscene.folders.clear();
+            fscene.wedges.clear();
+            fscene.cold_depths.clear();
+            fscene.outer_depth = hot_depth;
+            for (name, files) in groups {
                 let span = TAU * files.len() as f32 / total;
+                let root_file = files.iter().all(|(_, nested)| *nested == 0);
+                if !root_file {
+                    fscene
+                        .folders
+                        .push((format!("{cwd}/{name}"), name.clone(), start + span * 0.5, files.len()));
+                    fscene.wedges.push(start);
+                }
                 let mut per_ring: std::collections::BTreeMap<u32, Vec<&String>> = Default::default();
                 for (path, nested) in &files {
                     per_ring.entry(*nested).or_default().push(path);
                 }
                 for (nested, paths) in per_ring {
                     let depth = hot_depth + 1 + nested;
+                    if !fscene.cold_depths.contains(&depth) {
+                        fscene.cold_depths.push(depth);
+                    }
+                    fscene.outer_depth = fscene.outer_depth.max(depth);
                     let count = paths.len() as f32;
                     for (j, path) in paths.into_iter().enumerate() {
                         let angle = start + span * (j as f32 + 0.5) / count;
@@ -510,17 +538,16 @@ pub fn sync_files(
     let mut positions = HashMap::new();
     for (node, mut tf, mut mat) in nodes.iter_mut() {
         let (heat, last_at) = heat_of.get(node.path.as_str()).copied().unwrap_or((1, 0));
-        let angle = orbit_angle(
-            node.angle,
-            node.depth,
-            t,
-            settings.drift_speed * if node.cold { 0.35 } else { 1.0 },
-        );
+        let angle = if node.cold {
+            orbit_angle(node.angle, fscene.depth + 1, t, settings.drift_speed * 0.35)
+        } else {
+            orbit_angle(node.angle, node.depth, t, settings.drift_speed)
+        };
         let target = Vec3::from(layout::orbit_point(node.depth, angle));
         tf.translation = tf.translation.lerp(target, (dt * 4.0).min(1.0));
         let is_hovered = hovered == Some(node.path.as_str());
         let want = if node.cold {
-            if is_hovered { 0.75 } else { 0.4 }
+            if is_hovered { 0.8 } else { 0.5 }
         } else {
             0.7 + (heat.min(24) as f32 / 24.0) * 0.9
         };
@@ -568,9 +595,37 @@ pub fn apply_scene_view(
     }
 }
 
-pub fn draw_file_beams(mut gizmos: Gizmos, store: Res<Store>, fscene: Res<FileScene>, world_pos: Res<NodeWorldPos>) {
+pub fn draw_file_beams(
+    mut gizmos: Gizmos,
+    time: Res<Time>,
+    settings: Res<Settings>,
+    store: Res<Store>,
+    fscene: Res<FileScene>,
+    world_pos: Res<NodeWorldPos>,
+) {
     let Some(current) = store.current.clone() else { return };
     let now = now_millis();
+    // The file system's guides: a faint ring per cold depth, a faint line at each wedge edge.
+    if !fscene.cold_depths.is_empty() {
+        let t = time.elapsed_secs();
+        let drift = orbit_angle(0.0, fscene.depth + 1, t, settings.drift_speed * 0.35);
+        let guide = Color::srgba(0.45, 0.95, 0.85, 0.07);
+        for &d in &fscene.cold_depths {
+            let iso = Isometry3d::new(
+                Vec3::Y * layout::ring_height(d),
+                Quat::from_rotation_x(std::f32::consts::FRAC_PI_2),
+            );
+            gizmos.circle(iso, layout::ring_radius(d), guide);
+        }
+        let inner = fscene.depth + 1;
+        let outer = fscene.outer_depth.max(inner);
+        for &w in &fscene.wedges {
+            let a = w + drift;
+            let p0 = Vec3::from(layout::orbit_point(inner, a)) - Vec3::Y * 0.02;
+            let p1 = Vec3::from(layout::orbit_point(outer, a)) + Vec3::Y * 0.02;
+            gizmos.line(p0, p1, Color::srgba(0.45, 0.95, 0.85, 0.05));
+        }
+    }
     for f in &fscene.files {
         let Some(&to) = fscene.positions.get(&f.path) else {
             continue;
@@ -593,6 +648,7 @@ pub fn draw_file_beams(mut gizmos: Gizmos, store: Res<Store>, fscene: Res<FileSc
 /// Screen positions of the file nodes, for their labels.
 pub fn project_files(
     mut store: ResMut<Store>,
+    time: Res<Time>,
     settings: Res<Settings>,
     fscene: Res<FileScene>,
     cams: Query<(&Camera, &GlobalTransform), With<bevy_panorbit_camera::PanOrbitCamera>>,
@@ -602,6 +658,24 @@ pub fn project_files(
     let zoom = settings.ui_scale.max(0.1);
     let hovered = store.hovered_file.clone();
     let mut out = Vec::new();
+    // Folder captions sit just inside their wedge, on the first cold ring.
+    let t = time.elapsed_secs();
+    for (path, name, angle, count) in &fscene.folders {
+        let a = orbit_angle(*angle, fscene.depth + 1, t, settings.drift_speed * 0.35);
+        let depth = fscene.depth + 1;
+        let p = Vec3::from(layout::orbit_point(depth, a)) * (1.0 - 1.4 / layout::ring_radius(depth).max(1.0))
+            + Vec3::Y * 0.3;
+        if let Ok(s) = cam.world_to_viewport(cam_tf, p) {
+            out.push((
+                format!("dir:{path}"),
+                format!("{name}/  {count}"),
+                s.x / zoom,
+                s.y / zoom,
+                0,
+                0,
+            ));
+        }
+    }
     for (node, tf) in &nodes {
         let hot = fscene.files.iter().find(|f| f.path == node.path);
         let (label, reads, edits) = match hot {

@@ -121,6 +121,7 @@ pub fn run(cfg: Config) {
                     toggle_fullscreen,
                     apply_title_bar,
                     zoom_keys,
+                    self_shot,
                     window_icon,
                 )
                     .chain(),
@@ -233,6 +234,28 @@ fn zoom_keys(
         ((settings.ui_scale + 0.1 * step as f32) * 10.0).round() / 10.0
     };
     settings.ui_scale = next.clamp(0.6, 1.8);
+}
+
+/// AGENT_GLOBE_SHOT=<png> photographs the window itself after AGENT_GLOBE_SHOT_AT seconds
+/// (default 12): the scene as rendered, whatever covers the window. A development aid.
+fn self_shot(mut commands: Commands, time: Res<Time>, mut done: Local<bool>) {
+    if *done {
+        return;
+    }
+    let Ok(path) = std::env::var("AGENT_GLOBE_SHOT") else {
+        *done = true;
+        return;
+    };
+    let at: f32 = std::env::var("AGENT_GLOBE_SHOT_AT")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(12.0);
+    if time.elapsed_secs() < at {
+        return;
+    }
+    *done = true;
+    use bevy::render::view::screenshot::{Screenshot, save_to_disk};
+    commands.spawn(Screenshot::primary_window()).observe(save_to_disk(path));
 }
 
 /// Title-bar and taskbar icon for the running window (the exe resource covers Explorer).

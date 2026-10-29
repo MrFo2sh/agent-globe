@@ -37,6 +37,7 @@ pub(super) const AMBER: egui::Color32 = egui::Color32::from_rgb(255, 185, 70);
 pub(super) const SAND: egui::Color32 = egui::Color32::from_rgb(222, 200, 135);
 pub(super) const TEXT: egui::Color32 = egui::Color32::from_rgb(222, 226, 200);
 const PANEL: egui::Color32 = egui::Color32::from_rgba_premultiplied(8, 14, 5, 228);
+pub(super) const KHAKI_DIM: egui::Color32 = egui::Color32::from_rgb(150, 138, 96);
 pub(super) const INK: egui::Color32 = egui::Color32::from_rgb(4, 8, 3);
 const SCANLINE: egui::Color32 = egui::Color32::from_rgba_premultiplied(0, 0, 0, 60);
 const MAX_LINES: usize = 10;
@@ -899,9 +900,16 @@ pub fn draw(
                 .collect()
         };
         let vw = ctx.viewport_rect().width();
+        let remembered = settings.agent_panel_width;
         let right = egui::Panel::right("agent")
             .resizable(true)
-            .default_size(if compact { vw * 0.55 } else { 520.0 })
+            .default_size(if remembered > 100.0 {
+                remembered
+            } else if compact {
+                vw * 0.55
+            } else {
+                520.0
+            })
             .max_size(vw * if compact { 0.8 } else { 0.6 })
             .show(&mut root, |ui| {
                 ui.add_space(6.0);
@@ -937,6 +945,10 @@ pub fn draw(
                 );
             });
         inset_right = right.response.rect.width();
+        // The width you dragged it to is the width it opens at, this run and the next.
+        if (inset_right - settings.agent_panel_width).abs() > 1.0 && inset_right > 100.0 {
+            settings.agent_panel_width = inset_right;
+        }
         ui_rects.push(right.response.rect);
     }
     store.artifact_query = query;
@@ -1596,9 +1608,30 @@ fn draw_files(ctx: &egui::Context, store: &mut Store) {
         egui::pos2(vr.max.x - r, vr.max.y - b),
     );
     let mut open: Option<String> = None;
+    let mut reveal_dir: Option<String> = None;
     for (path, label, x, y, reads, edits) in store.file_screen.clone() {
         let pos = egui::pos2(x, y + 10.0);
         if !scene.contains(pos) {
+            continue;
+        }
+        if let Some(dir) = path.strip_prefix("dir:") {
+            egui::Area::new(egui::Id::new(("dir", dir)))
+                .fixed_pos(pos)
+                .pivot(egui::Align2::CENTER_CENTER)
+                .order(egui::Order::Foreground)
+                .interactable(true)
+                .show(ctx, |ui| {
+                    let text = egui::RichText::new(format!("▸ {label}"))
+                        .font(stencil(12.0))
+                        .color(KHAKI_DIM);
+                    if ui
+                        .add(egui::Button::new(text).frame(false))
+                        .on_hover_text(format!("{dir}\nclick: show this folder in the files sidebar"))
+                        .clicked()
+                    {
+                        reveal_dir = Some(dir.to_string());
+                    }
+                });
             continue;
         }
         egui::Area::new(egui::Id::new(("file", &path)))
@@ -1610,7 +1643,7 @@ fn draw_files(ctx: &egui::Context, store: &mut Store) {
                 if ui
                     .add(egui::Button::new(egui::RichText::new(&label).small().color(color)).frame(false))
                     .on_hover_text(format!(
-                        "{path}\n{reads} reads · {edits} edits · click to open in VS Code"
+                        "{path}\n{reads} reads · {edits} edits · click to open in the editor"
                     ))
                     .clicked()
                 {
@@ -1620,6 +1653,10 @@ fn draw_files(ctx: &egui::Context, store: &mut Store) {
     }
     if open.is_some() {
         store.pending_open_file = open;
+    }
+    if let Some(dir) = reveal_dir {
+        store.files_open = true;
+        store.files_open_dirs.insert(dir.replace('/', "\\"));
     }
 }
 

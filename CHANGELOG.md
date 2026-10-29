@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.24.1 - 2026-10-29
+- The file system reads as one: cold files are cool-tinted and a touch bigger, apart from the warm dust; each cold ring has a faint guide circle and each folder wedge a faint edge line; every folder carries a caption on its wedge (name and file count) that opens it in the files sidebar. All cold rings drift together so the wedges never shear. The home camera takes the outermost ring in.
+- The agent panel opens at the width you last dragged it to, this run and the next.
+- AGENT_GLOBE_SHOT=<png> photographs the window itself after a delay, a development aid.
+
 ## 0.24.0 - 2026-10-29
 - The constellation carries the whole file system: beyond the ring of hot files, every file of the session folder (up to 1,500, gitignore respected) sits on the outer rings, alphabetical so folders stay together, small and dim, lit and labelled when hovered. Click a file node to open it in the editor card.
 - A view toggle in the HUD: both, files only (the units, halos, rings and links step aside), or units only (no file rings).

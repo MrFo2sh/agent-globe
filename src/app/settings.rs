@@ -43,6 +43,8 @@ pub struct Settings {
     /// The dock grid: cells across and down the whole window. Two columns per monitor reads well.
     pub grid_cols: u8,
     pub grid_rows: u8,
+    /// The agent panel's width, as last dragged (0: the default).
+    pub agent_panel_width: f32,
     /// Where each card is docked, by card id. Floating cards are absent.
     pub panes: HashMap<String, Pane>,
 }
@@ -81,6 +83,7 @@ impl Default for Settings {
             span_monitors: true,
             grid_cols: 4,
             grid_rows: 2,
+            agent_panel_width: 0.0,
             panes: HashMap::new(),
         }
     }

@@ -108,9 +108,11 @@ pub fn setup(mut commands: Commands, settings: Res<Settings>, mut egui_settings:
     });
 }
 
-fn go_home(cam: &mut PanOrbitCamera) {
+fn go_home(cam: &mut PanOrbitCamera, outer_depth: u32) {
     cam.target_focus = Vec3::ZERO;
-    cam.target_radius = CAMERA_HOME.length();
+    // Far enough to take the outermost file ring in, never closer than the plain home.
+    let outer = agent_globe::data::layout::ring_radius(outer_depth);
+    cam.target_radius = CAMERA_HOME.length().max(outer * 1.9);
     cam.target_yaw = 0.0;
     cam.target_pitch = (CAMERA_HOME.y / CAMERA_HOME.length()).asin();
     cam.force_update = true;
@@ -148,7 +150,7 @@ pub fn drive(
 
     if (keys.just_pressed(KeyCode::KeyR) && !store.typing) || store.reset_view {
         store.reset_view = false;
-        go_home(&mut cam);
+        go_home(&mut cam, fscene.outer_depth);
         return;
     }
     if keys.just_pressed(KeyCode::Escape) && !store.typing {
@@ -205,7 +207,7 @@ pub fn drive(
                 cam.target_radius = if depth == 0 { FOCUS_RADIUS_ROOT } else { FOCUS_RADIUS };
                 cam.force_update = true;
             }
-            None => go_home(&mut cam),
+            None => go_home(&mut cam, fscene.outer_depth),
         }
         return;
     }
