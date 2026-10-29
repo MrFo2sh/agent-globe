@@ -350,16 +350,28 @@ pub fn draw_quick_open(ctx: &egui::Context, store: &mut Store, index: &mut FileI
                             path.strip_prefix(&format!("{cwd}/")).unwrap_or(path).to_string()
                         };
                         let job = hit_label(&shown, idx);
-                        let r = ui.add(
-                            egui::Button::new(job)
-                                .frame(false)
-                                .fill(if selected {
-                                    egui::Color32::from_rgb(18, 58, 28)
-                                } else {
-                                    egui::Color32::TRANSPARENT
+                        // A frameless button ignores its fill, so the selected row paints its own.
+                        let row = egui::Frame::NONE
+                            .fill(if selected {
+                                egui::Color32::from_rgb(18, 58, 28)
+                            } else {
+                                egui::Color32::TRANSPARENT
+                            })
+                            .inner_margin(egui::Margin::symmetric(6, 2))
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        egui::RichText::new(if selected { "▸" } else { " " })
+                                            .monospace()
+                                            .color(ACCENT),
+                                    );
+                                    ui.add(egui::Button::new(job).frame(false))
                                 })
-                                .min_size(egui::vec2(ui.available_width(), 0.0)),
-                        );
+                                .inner
+                            });
+                        let r = row.inner.union(row.response.interact(egui::Sense::click()));
                         if r.hovered() && ctx.input(|i| i.pointer.delta() != egui::Vec2::ZERO) {
                             store.quick_sel = i;
                         }

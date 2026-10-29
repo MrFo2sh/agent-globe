@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.27.2 - 2026-10-29
+- Quick open shows its selection: the highlighted row and a ▸ marker follow ↑ ↓. The rows are frameless buttons, which ignore their fill, so the selection never painted before.
+
 ## 0.27.1 - 2026-10-29
 - Right-click a prompt group in the unit panel to open it as a card, the same as a double-click.
 
