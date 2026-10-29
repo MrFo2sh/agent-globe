@@ -252,6 +252,10 @@ pub struct Agent {
     /// The agent's latest message text: what it said or asked last.
     #[serde(default)]
     pub last_said: String,
+    /// When the agent last sent a text-only reply (no tool call in it). If nothing follows for a
+    /// few seconds, that reply was the end of the turn: the transcript carries no end marker.
+    #[serde(default)]
+    pub final_text_at: Option<Millis>,
     /// Completed turns (root agent: times it handed control back to the user).
     #[serde(default)]
     pub turns: u32,
@@ -358,6 +362,24 @@ impl Session {
         self.agents.iter().filter(move |a| a.parent.as_deref() == Some(id))
     }
 
+    /// Turn-end events this session is owed: a commander whose last reply was text only, with
+    /// nothing after it for `grace_ms`, has finished its turn even if the transcript never says so.
+    pub fn unsettled_turns(&self, now: Millis, grace_ms: Millis) -> Vec<Event> {
+        self.agents
+            .iter()
+            .filter(|a| a.depth == 0 && !a.waiting_for_user && a.ended.is_none() && !a.has_open_call())
+            .filter_map(|a| {
+                let at = a.final_text_at?;
+                (now - at >= grace_ms).then(|| Event::TurnEnd {
+                    session_id: self.id.clone(),
+                    agent_id: a.id.clone(),
+                    duration_ms: 0,
+                    at,
+                })
+            })
+            .collect()
+    }
+
     pub fn total_calls(&self) -> usize {
         self.agents.iter().map(|a| a.calls.len()).sum()
     }
@@ -429,6 +451,7 @@ impl Session {
             progress: None,
             turn_log: Vec::new(),
             last_said: String::new(),
+            final_text_at: None,
             turns: 0,
             waiting_for_user: false,
             order,
@@ -543,6 +566,7 @@ impl Session {
                 self.call_owner.insert(call_id.clone(), agent_id.clone());
                 let a = self.agent_mut(&agent_id).expect("ensured");
                 a.waiting_for_user = false;
+                a.final_text_at = None;
                 if let Some(p) = todos {
                     a.progress = Some(p);
                 }
@@ -626,6 +650,15 @@ impl Session {
                 if role == "assistant" && !text.trim().is_empty() {
                     a.last_said = text.chars().take(400).collect();
                 }
+                if role == "assistant" {
+                    // Tool calls of the same record were applied just before, with this timestamp.
+                    let had_tools = a.calls.last().is_some_and(|c| c.started == at);
+                    a.final_text_at = if !had_tools && !text.trim().is_empty() {
+                        Some(at)
+                    } else {
+                        None
+                    };
+                }
                 a.output_tokens += output_tokens;
                 a.input_tokens += input_tokens;
                 a.cache_read_tokens += cache_read_tokens;
@@ -682,8 +715,11 @@ impl Session {
             Event::TurnEnd { agent_id, at, .. } => {
                 self.ensure_agent(&agent_id, None, None, "", "", "", "", at);
                 if let Some(a) = self.agent_mut(&agent_id) {
-                    a.turns += 1;
+                    if !a.waiting_for_user {
+                        a.turns += 1;
+                    }
                     a.waiting_for_user = true;
+                    a.final_text_at = None;
                     if let Some(t) = a.turn_log.last_mut()
                         && t.ended.is_none()
                     {
@@ -858,6 +894,41 @@ mod tests {
         assert_eq!(s.throttles[0].resets_at, 1_000_000);
         assert_eq!(snippet("  \n first line here\nsecond", 8), "first li…");
         assert_eq!(snippet("short", 10), "short");
+    }
+
+    #[test]
+    fn a_text_only_reply_settles_the_turn_after_the_grace() {
+        let mut s = Session::new("s", "p", 1);
+        s.apply(msg("user", "do it", 10, 0));
+        s.apply(tool(ROOT_AGENT, "t1", 20));
+        s.apply(msg("assistant", "on it", 20, 5)); // same timestamp as the call: not final
+        assert_eq!(s.root().final_text_at, None);
+        s.apply(end("t1", false, 25));
+        s.apply(msg("assistant", "Done. Anything else?", 30, 5));
+        assert_eq!(s.root().final_text_at, Some(30));
+        assert!(s.unsettled_turns(3_000, 5_000).is_empty(), "too soon");
+        let evs = s.unsettled_turns(6_000, 5_000);
+        assert_eq!(evs.len(), 1);
+        for e in evs {
+            s.apply(e);
+        }
+        assert!(s.root().waiting_for_user);
+        assert_eq!(s.root().turn_log[0].ended, Some(30));
+        assert_eq!(s.root().turns, 1);
+        // a late real TurnEnd does not count the turn twice
+        s.apply(Event::TurnEnd {
+            session_id: "s".into(),
+            agent_id: ROOT_AGENT.into(),
+            duration_ms: 0,
+            at: 31,
+        });
+        assert_eq!(s.root().turns, 1);
+        // a text reply followed by a tool call is not final
+        s.apply(msg("user", "more", 40, 0));
+        s.apply(msg("assistant", "Let me look.", 41, 5));
+        s.apply(tool(ROOT_AGENT, "t2", 43));
+        assert_eq!(s.root().final_text_at, None);
+        assert!(s.unsettled_turns(60_000, 5_000).is_empty());
     }
 
     #[test]

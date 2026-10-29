@@ -216,6 +216,8 @@ pub struct Store {
     pub show_debrief: bool,
     /// The plan-usage window (session, weekly, per-model limits).
     pub show_usage: bool,
+    /// One-frame request from the "fold all" button: collapse every prompt group.
+    pub fold_groups: bool,
     /// Cinematic mode: no panels, full-window scene.
     pub hide_ui: bool,
     /// Set by the UI; the camera system consumes it.
@@ -283,6 +285,7 @@ impl Store {
             show_settings: false,
             show_debrief: false,
             show_usage: false,
+            fold_groups: false,
             hide_ui: false,
             reset_view: false,
             expanded_calls: HashSet::new(),
@@ -830,6 +833,52 @@ pub fn drain_bridge(mut store: ResMut<Store>, bridge: Res<BridgeRes>, settings: 
     let cutoff = std::time::Duration::from_secs(7);
     store.toasts.retain(|t| t.born.elapsed() < cutoff);
     store.sync_watch(&bridge.0, now);
+}
+
+/// Seconds a text-only reply must stand alone before the turn counts as finished.
+pub const SETTLE_GRACE_MS: i64 = 5_000;
+
+/// Once a second: close turns the transcript never closed (see `Session::unsettled_turns`), with
+/// the same toasts and radio lines a real turn end gets.
+pub fn settle_turns(time: Res<Time>, mut store: ResMut<Store>, settings: Res<Settings>, mut next: Local<f32>) {
+    let t = time.elapsed_secs();
+    if t < *next {
+        return;
+    }
+    *next = t + 1.0;
+    let now = now_millis();
+    let pending: Vec<Event> = store
+        .sessions
+        .values()
+        .flat_map(|s| s.unsettled_turns(now, SETTLE_GRACE_MS))
+        .collect();
+    for ev in pending {
+        let sid = ev.session_id().to_string();
+        let live = store.is_live_for(&sid);
+        let is_current = store.current.as_deref() == Some(sid.as_str());
+        let (mut toast, mut sfx) = if live { react(&store, &ev) } else { (None, None) };
+        if live && !is_current {
+            let (project, asked) = store
+                .sessions
+                .get(&sid)
+                .map(|s| (s.project.clone(), s.root().last_said.trim_end().ends_with('?')))
+                .unwrap_or_default();
+            toast = Some((ToastKind::Done, format!("💬 {project}: awaiting your orders")));
+            sfx = Some(if asked { Sfx::Question } else { Sfx::Waiting });
+        }
+        if let Some(s) = store.sessions.get_mut(&sid) {
+            s.apply(ev);
+        }
+        if let Some((kind, text)) = toast {
+            store.toast(kind, text);
+        }
+        if let Some(s) = sfx
+            && (s != Sfx::Blip || settings.tool_blips)
+        {
+            store.play(s);
+        }
+        store.layout_dirty = true;
+    }
 }
 
 /// Once a second: flag open tool calls that have run past the stall threshold.

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.9.5 - 2026-10-29
+- Turns settle on their own: this Claude Code version writes no turn-end record, so the app now closes a commander's turn when its last reply was text only and nothing followed for five seconds. "Waiting for commands" (or "Need your input, commander" after a question) plays a few seconds after the answer, the waiting badge appears, and "thinking…" ends; a late real turn-end record is ignored.
+- "▴ fold all" next to TOOL CALLS collapses every prompt group.
+- The app starts full screen on its monitor; F11 switches to a window and back.
+
 ## 0.9.4 - 2026-10-29
 - A commander whose turn is open with nothing answered yet reads "thinking…" with a spinner, under the unit and on the satellite label, instead of "idle". Claude Code writes nothing to the transcript while a long reply is being generated, so that state used to look like inactivity.
 

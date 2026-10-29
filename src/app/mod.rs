@@ -79,6 +79,7 @@ pub fn run(cfg: Config) {
                     state::drain_bridge,
                     hotkeys::poll,
                     state::watch_stalls,
+                    state::settle_turns,
                     scene::sync_nodes,
                     scene::sync_satellite_rings,
                     scene::sync_helmets,
@@ -121,6 +122,8 @@ fn maximize_window(mut windows: Query<&mut Window, With<PrimaryWindow>>, mut don
     *done += 1;
     for mut w in &mut windows {
         w.set_maximized(true);
+        // Start full screen on the monitor the window opened on; F11 toggles back to a window.
+        w.mode = WindowMode::BorderlessFullscreen(MonitorSelection::Current);
     }
 }
 

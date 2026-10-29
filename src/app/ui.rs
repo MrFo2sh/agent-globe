@@ -629,6 +629,7 @@ pub fn draw(
     let mut view_image: Option<String> = None;
     let mut query = std::mem::take(&mut store.artifact_query);
     let mut history = std::mem::take(&mut store.history_query);
+    let mut fold_groups = std::mem::take(&mut store.fold_groups);
     let mut inset_right = 0.0_f32;
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
     *last_panel = selected.as_ref().map(|a| a.id.clone());
@@ -694,6 +695,7 @@ pub fn draw(
                     &cwd,
                     &touched,
                     &mut history,
+                    &mut fold_groups,
                 );
             });
         inset_right = right.response.rect.width();
@@ -701,6 +703,7 @@ pub fn draw(
     }
     store.artifact_query = query;
     store.history_query = history;
+    store.fold_groups = fold_groups;
     if close {
         store.selected = None;
     }
@@ -1569,6 +1572,7 @@ fn agent_panel(
     cwd: &str,
     touched: &HashMap<String, usize>,
     history: &mut String,
+    fold_all: &mut bool,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -1816,7 +1820,18 @@ fn agent_panel(
                     code_block(ui, &format!("{}:prompt", a.id), &a.prompt, TEXT, expanded, "");
                 });
             }
-            ui.label(egui::RichText::new("TOOL CALLS").small().color(DIM));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("TOOL CALLS").small().color(DIM));
+                if !a.turn_log.is_empty()
+                    && ui
+                        .small_button(egui::RichText::new("▴ fold all").small())
+                        .on_hover_text("Collapse every prompt group")
+                        .clicked()
+                {
+                    *fold_all = true;
+                }
+            });
+            let fold: Option<bool> = if *fold_all { Some(false) } else { None };
             if !needle.is_empty() && hits.is_empty() {
                 ui.label(
                     egui::RichText::new(format!("nothing in this unit's history matches \"{}\"", history.trim()))
@@ -1841,6 +1856,7 @@ fn agent_panel(
                             .color(DIM),
                     )
                     .id_salt((&a.id, "lead"))
+                    .open(fold)
                     .default_open(false)
                     .show(ui, |ui| {
                         for i in lead {
@@ -1908,6 +1924,7 @@ fn agent_panel(
                         ui.set_width(ui.available_width());
                         egui::CollapsingHeader::new(header)
                             .id_salt((&a.id, ti))
+                            .open(fold)
                             .default_open((ti + 1 == n && !searching) || matched)
                             .show(ui, |ui| {
                                 ui.horizontal_wrapped(|ui| {
@@ -1948,6 +1965,7 @@ fn agent_panel(
                 ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
             }
         });
+    *fold_all = false;
 }
 
 fn hover_card(ui: &mut egui::Ui, a: &Agent, now: i64) {
