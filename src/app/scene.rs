@@ -423,6 +423,13 @@ pub fn sync_files(
     if t >= fscene.next_rebuild {
         fscene.next_rebuild = t + 1.0;
         fscene.files = files::hot_files(session, FILE_RING_MAX, now, BEAM_MS);
+        // A touched path that exists nowhere (a fixture name, a path relative to somewhere else)
+        // is a phantom: it gets no node.
+        let base = std::path::Path::new(&session.cwd);
+        fscene.files.retain(|f| {
+            let p = std::path::Path::new(&f.path);
+            p.is_absolute() && p.exists() || (!session.cwd.is_empty() && base.join(p).exists())
+        });
         fscene.depth = hot_depth;
         // Angles follow the alphabetical order of the chosen set, so nodes do not jump as heat shifts.
         let mut order: Vec<String> = fscene.files.iter().map(|f| f.path.clone()).collect();

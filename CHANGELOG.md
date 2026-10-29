@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.27.4 - 2026-10-29
+- The hot ring only shows touched files that exist, as given or under the session folder. A fixture name or a path relative to somewhere else used to get a node of its own.
+
 ## 0.27.3 - 2026-10-29
 - Two switches in settings decide what the file index admits: show hidden files (dotfiles and dot-folders) and show ignored files (what the gitignore excludes). Build and dependency folders stay out regardless. The rings, the tree and the finder follow.
 
