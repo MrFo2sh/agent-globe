@@ -103,6 +103,8 @@ pub struct PtyTab {
     rows: u16,
     /// The console's startup clear pushes a blank page into the history; it is dropped once.
     history_trimmed: bool,
+    /// Mouse selection on the screen, as (anchor row, anchor col, head row, head col).
+    pub sel: Option<(usize, usize, usize, usize)>,
 }
 
 impl PtyTab {
@@ -118,6 +120,23 @@ impl PtyTab {
             cell_width: 8,
             cell_height: 16,
         };
+        // When the app was started from a Claude Code session, the shell would inherit that
+        // session's markers and a `claude` started inside would think it is a child of it, with
+        // transcript saving off: nothing would reach the constellation. Scrub them, process-wide.
+        for key in [
+            "CLAUDE_CODE_CHILD_SESSION",
+            "CLAUDECODE",
+            "CLAUDE_CODE_SESSION_ID",
+            "CLAUDE_PID",
+            "CLAUDE_CODE_MESSAGING_SOCKET",
+            "CLAUDE_CODE_MESSAGING_TOKEN",
+            "CLAUDE_CODE_ENTRYPOINT",
+            "CLAUDE_CODE_SESSION_ATTENDED",
+            "CLAUDE_AGENT_SDK_VERSION",
+        ] {
+            // Single-threaded at this point as far as the environment goes; the shell is the reader.
+            unsafe { std::env::remove_var(key) };
+        }
         let mut env = HashMap::new();
         env.insert("COLORTERM".to_string(), "truecolor".to_string());
         env.insert("TERM_PROGRAM".to_string(), "agent-globe".to_string());
@@ -165,7 +184,39 @@ impl PtyTab {
             cols,
             rows,
             history_trimmed: false,
+            sel: None,
         })
+    }
+
+    /// The selected cells as text, rows joined with newlines, trailing blanks trimmed.
+    pub fn selected_text(&self, frame: &Frame) -> String {
+        let Some((r0, c0, r1, c1)) = self.sel else {
+            return String::new();
+        };
+        let (start, end) = if (r0, c0) <= (r1, c1) {
+            ((r0, c0), (r1, c1))
+        } else {
+            ((r1, c1), (r0, c0))
+        };
+        let mut out = Vec::new();
+        for (r, row) in frame.cells.iter().enumerate() {
+            if r < start.0 || r > end.0 {
+                continue;
+            }
+            let from = if r == start.0 { start.1 } else { 0 };
+            let to = if r == end.0 {
+                (end.1 + 1).min(row.len())
+            } else {
+                row.len()
+            };
+            let line: String = row[from.min(to)..to]
+                .iter()
+                .filter(|p| !p.spacer)
+                .map(|p| p.c)
+                .collect();
+            out.push(line.trim_end().to_string());
+        }
+        out.join("\n")
     }
 
     pub fn write(&self, bytes: impl Into<Vec<u8>>) {

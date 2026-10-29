@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.27.6 - 2026-10-29
+- Terminal text selection: drag to select, Ctrl+C with a selection copies (without one it still interrupts), Ctrl+Shift+C always copies, right-click copies, a plain click or typing clears.
+- A `claude` started inside the terminal is its own session: the shell no longer inherits the session markers of a Claude Code that launched the app, which made it a child session with transcript saving off and invisible to the constellation.
+
 ## 0.27.5 - 2026-10-29
 - Touch beams from a unit to the files it read or edited last four minutes instead of forty-five seconds, fading as they age. They were drawn before, but rarely for long enough to be seen. AGENT_GLOBE_BEAM_LOG=1 logs the beam pass, a development aid.
 

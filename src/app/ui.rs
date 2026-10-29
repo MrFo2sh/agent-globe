@@ -2830,6 +2830,29 @@ fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab, font_px: f32) {
         resp.request_focus();
     }
     let focused = resp.has_focus();
+    // Mouse selection: drag selects cells; a plain click clears; right-click copies.
+    let origin = rect.min + egui::vec2(3.0, 3.0);
+    let cell_at = |p: egui::Pos2| -> (usize, usize) {
+        let c = ((p.x - origin.x) / cw).floor().clamp(0.0, cols as f32 - 1.0) as usize;
+        let r = ((p.y - origin.y) / ch).floor().clamp(0.0, rows as f32 - 1.0) as usize;
+        (r, c)
+    };
+    if resp.drag_started()
+        && let Some(p) = resp.interact_pointer_pos()
+    {
+        let (r, c) = cell_at(p);
+        tab.sel = Some((r, c, r, c));
+    } else if resp.dragged()
+        && let Some(p) = resp.interact_pointer_pos()
+        && let Some(sel) = tab.sel.as_mut()
+    {
+        let (r, c) = cell_at(p);
+        sel.2 = r;
+        sel.3 = c;
+    } else if resp.clicked() {
+        tab.sel = None;
+    }
+    let mut copy_selection = resp.secondary_clicked();
     if focused {
         ui.memory_mut(|m| {
             m.set_focus_lock_filter(
@@ -2869,8 +2892,19 @@ fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab, font_px: f32) {
     let frame = tab.frame();
     if focused {
         let (events, mods) = ui.input(|i| (i.events.clone(), i.modifiers));
+        // With a selection, Ctrl+C copies instead of interrupting; Ctrl+Shift+C always copies.
+        let had_sel = tab.sel.is_some();
         for e in events {
             match e {
+                egui::Event::Key {
+                    key: egui::Key::C,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if (modifiers.command || modifiers.ctrl) && (modifiers.shift || had_sel) => {
+                    copy_selection = true;
+                }
+                egui::Event::Copy if had_sel => {}
                 egui::Event::Text(t) => {
                     if mods.command || mods.ctrl {
                         tab.paste(&t);
@@ -2898,15 +2932,37 @@ fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab, font_px: f32) {
             }
         }
     }
+    if copy_selection {
+        let text = tab.selected_text(&frame);
+        if !text.is_empty() {
+            ui.ctx().copy_text(text);
+        }
+        tab.sel = None;
+    } else if focused && tab.sel.is_some() && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Text(_)))) {
+        // Typing drops the selection.
+        tab.sel = None;
+    }
     let painter = ui.painter().with_clip_rect(rect);
     painter.rect_filled(rect, 4.0, rgb(terminal::BG));
-    let origin = rect.min + egui::vec2(3.0, 3.0);
+    let sel_range = tab.sel.map(|(r0, c0, r1, c1)| {
+        if (r0, c0) <= (r1, c1) {
+            ((r0, c0), (r1, c1))
+        } else {
+            ((r1, c1), (r0, c0))
+        }
+    });
     for (r, row) in frame.cells.iter().enumerate() {
         let y = origin.y + r as f32 * ch;
         for (c, px) in row.iter().enumerate() {
+            let cell = egui::Rect::from_min_size(egui::pos2(origin.x + c as f32 * cw, y), egui::vec2(cw, ch));
             if let Some(bg) = px.bg {
-                let cell = egui::Rect::from_min_size(egui::pos2(origin.x + c as f32 * cw, y), egui::vec2(cw, ch));
                 painter.rect_filled(cell, 0.0, rgb(bg));
+            }
+            if let Some((start, end)) = sel_range
+                && (r, c) >= start
+                && (r, c) <= end
+            {
+                painter.rect_filled(cell, 0.0, egui::Color32::from_rgba_unmultiplied(120, 220, 160, 70));
             }
         }
         // Runs of one style, each placed by its column so wide glyphs never shift the rest.
