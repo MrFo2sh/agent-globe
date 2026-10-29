@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.14.0 - 2026-10-29
+- Every prompt group now carries the commander's reply: a 💬 row with the first line, expanding to the full answer with light Markdown. Conversation turns with no tool calls used to render as an empty '0 calls' group; now they show what was said. The history search also matches reply text.
+- Slash-command records (/model, /clear and friends) no longer appear as prompts.
+
 ## 0.13.1 - 2026-10-29
 - '▴ fold all' now actually collapses every prompt group and the folding sticks; each group can be reopened individually afterwards. Before, the collapse lasted a single frame and sprang back open.
 

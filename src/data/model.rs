@@ -191,6 +191,9 @@ pub struct Turn {
     pub started: Millis,
     pub ended: Option<Millis>,
     pub first_call: usize,
+    /// The commander's final text for this turn, what the editor shows as the answer.
+    #[serde(default)]
+    pub reply: String,
     #[serde(default)]
     pub output_tokens: u64,
     #[serde(default)]
@@ -693,6 +696,9 @@ impl Session {
                 } else if role == "assistant"
                     && let Some(t) = a.turn_log.last_mut()
                 {
+                    if !text.trim().is_empty() {
+                        t.reply = text.chars().take(12_000).collect();
+                    }
                     t.output_tokens += output_tokens;
                     t.input_tokens += input_tokens;
                     t.cache_read_tokens += cache_read_tokens;
@@ -878,6 +884,8 @@ mod tests {
         assert_eq!(a.turn_log.len(), 2);
         assert_eq!((a.turn_log[0].first_call, a.turn_log[0].ended), (1, Some(20)));
         assert_eq!(a.turn_log[0].output_tokens, 500);
+        assert_eq!(a.turn_log[0].reply, "done", "each turn keeps the commander's reply");
+        assert_eq!(a.turn_log[1].reply, "", "a text-only turn with no answer yet is empty");
         assert_eq!(a.turn_range(0), 1..3);
         assert_eq!(a.turn_range(1), 3..4);
         assert!(a.turn_log[1].ended.is_none(), "the second turn is still open");

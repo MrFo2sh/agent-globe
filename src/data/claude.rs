@@ -407,9 +407,13 @@ pub fn parse_record(v: &Value, session_id: &str, agent_id: &str, events: &mut Ve
                 }
             } else if let Some(s) = content.as_str()
                 && !is_meta
-                && !s.trim().is_empty()
             {
-                events.push(user_message(session_id, agent, s, v["cwd"].as_str().unwrap_or(""), at));
+                // Slash-command records (`<command-name>`, `<local-command-stdout>`) are all tags:
+                // stripped, nothing is left, and they are not a prompt.
+                let s = strip_tag_blocks(s);
+                if !s.trim().is_empty() {
+                    events.push(user_message(session_id, agent, &s, v["cwd"].as_str().unwrap_or(""), at));
+                }
             }
         }
         _ => {}
@@ -533,6 +537,15 @@ noise
 test input <b>bold</b> 1 < 2";
         assert_eq!(strip_tag_blocks(t), "test input  1 < 2");
         assert_eq!(strip_tag_blocks("plain"), "plain");
+        // a slash-command record is tags only: nothing left, so it is not a prompt
+        assert_eq!(
+            strip_tag_blocks(
+                "<command-name>/model</command-name>
+<local-command-stdout>Set model</local-command-stdout>"
+            )
+            .trim(),
+            ""
+        );
     }
 
     #[test]

@@ -2385,7 +2385,8 @@ fn agent_panel(
                     let range = a.turn_range(ti);
                     let idx: Vec<usize> = range.clone().filter(|i| hit_set.contains(i)).collect();
                     let searching = !needle.is_empty();
-                    let matched = searching && !idx.is_empty();
+                    let reply_hit = searching && t.reply.to_lowercase().contains(&needle.to_lowercase());
+                    let matched = searching && (!idx.is_empty() || reply_hit);
                     let first_line: String = t
                         .prompt
                         .lines()
@@ -2468,6 +2469,34 @@ fn agent_panel(
                                 }
                                 for i in idx {
                                     call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
+                                }
+                                if !t.reply.trim().is_empty() {
+                                    let reply_first: String = t
+                                        .reply
+                                        .lines()
+                                        .find(|l| !l.trim().is_empty())
+                                        .unwrap_or("")
+                                        .trim()
+                                        .chars()
+                                        .take(80)
+                                        .collect();
+                                    let head = egui::RichText::new(format!("💬 {reply_first}")).color(if reply_hit {
+                                        egui::Color32::from_rgb(230, 255, 220)
+                                    } else {
+                                        SAND
+                                    });
+                                    egui::CollapsingHeader::new(head)
+                                        .id_salt((&a.id, ti, "reply"))
+                                        .default_open(range.is_empty() || ti + 1 == n || reply_hit)
+                                        .show(ui, |ui| {
+                                            egui::Frame::NONE.fill(INK).inner_margin(8.0).corner_radius(4.0).show(
+                                                ui,
+                                                |ui| {
+                                                    ui.set_width(ui.available_width());
+                                                    render_reply(ui, &t.reply);
+                                                },
+                                            );
+                                        });
                                 }
                             });
                     });
