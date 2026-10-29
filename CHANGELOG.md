@@ -5,6 +5,7 @@
 ## 0.29.0 - 2026-10-29
 - No VS Code: files open in the app's editor from everywhere (the speech bubbles, artifact chips, the CHANGES list, the tree's right-click). The buttons that brought a session's VS Code window to the front are gone.
 - Ctrl+` opens or closes the terminal, from anywhere, the terminal included.
+- The compact layout is the only layout; its settings switch is gone.
 - The quick-open palette is no longer hidden behind the editor: the editor surface (a native window that paints above everything) steps aside while the palette is open.
 
 ## 0.28.2 - 2026-10-29

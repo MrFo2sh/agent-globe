@@ -46,8 +46,6 @@ pub struct Settings {
     pub files_show_ignored: bool,
     /// The folder last opened by hand (empty: none).
     pub workspace: String,
-    /// Force the compact layout (it also turns on by itself under 1100 px of width).
-    pub compact: bool,
     /// Windows notifications when the window is not focused (off by default: the radio is the alert).
     pub desktop_notifications: bool,
     /// Native window title bar in windowed mode (off: the app draws its own chrome).
@@ -96,7 +94,6 @@ impl Default for Settings {
             files_show_hidden: false,
             files_show_ignored: false,
             workspace: String::new(),
-            compact: false,
             desktop_notifications: false,
             title_bar: false,
             key_light: 2_600.0,

@@ -301,7 +301,8 @@ pub fn draw(
             store.close_doc(i);
         }
     }
-    let compact = settings.compact || ctx.viewport_rect().width() < 1100.0;
+    // The compact layout is the layout: denser HUD, collapsible sessions sidebar.
+    let compact = true;
     if let Some(s) = store.current_session() {
         gitw.watch(&s.cwd);
         probe.watch(
@@ -1252,10 +1253,6 @@ pub fn draw(
                 ui.checkbox(
                     &mut settings.satellites,
                     "other active sessions as satellites around this one",
-                );
-                ui.checkbox(
-                    &mut settings.compact,
-                    "compact layout (also automatic under 1100 px wide)",
                 );
                 ui.checkbox(
                     &mut settings.files_ring,
