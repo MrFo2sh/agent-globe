@@ -2862,6 +2862,27 @@ fn rgb(c: [u8; 3]) -> egui::Color32 {
 /// The console grid: sized to the space it gets (and the shell told), painted cell by cell,
 /// keys and paste forwarded while it has the keyboard, the wheel scrolling the history.
 fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab, font_px: f32) {
+    let t0 = std::time::Instant::now();
+    draw_grid_inner(ui, tab, font_px);
+    if std::env::var("AGENT_GLOBE_TERM_LOG").is_ok() {
+        let us = t0.elapsed().as_micros();
+        let key = egui::Id::new("term-timing");
+        let (n, sum, max) = ui.data_mut(|d| d.get_temp::<(u32, u128, u128)>(key).unwrap_or((0, 0, 0)));
+        let (n, sum, max) = (n + 1, sum + us, max.max(us));
+        if n >= 120 {
+            bevy::log::info!(
+                "terminal grid: avg {} us, max {} us over {n} frames",
+                sum / n as u128,
+                max
+            );
+            ui.data_mut(|d| d.insert_temp(key, (0u32, 0u128, 0u128)));
+        } else {
+            ui.data_mut(|d| d.insert_temp(key, (n, sum, max)));
+        }
+    }
+}
+
+fn draw_grid_inner(ui: &mut egui::Ui, tab: &mut terminal::PtyTab, font_px: f32) {
     let font = egui::FontId::monospace(font_px);
     let (cw, ch) = ui.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
     let avail = ui.available_size();
@@ -2929,7 +2950,17 @@ fn draw_grid(ui: &mut egui::Ui, tab: &mut terminal::PtyTab, font_px: f32) {
             let total = ui.data_mut(|d| d.get_temp::<f32>(key).unwrap_or(0.0)) + lines;
             let whole = total.trunc();
             ui.data_mut(|d| d.insert_temp(key, total - whole));
-            tab.scroll(whole as i32);
+            let (col, row) = ui
+                .input(|i| i.pointer.hover_pos())
+                .map(|p| {
+                    let o = rect.min + egui::vec2(3.0, 3.0);
+                    (
+                        ((p.x - o.x) / cw).max(0.0) as usize,
+                        ((p.y - o.y) / ch).max(0.0) as usize,
+                    )
+                })
+                .unwrap_or((0, 0));
+            tab.wheel(whole as i32, col, row);
         }
     }
     let frame = tab.frame();

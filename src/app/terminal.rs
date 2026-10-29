@@ -251,6 +251,47 @@ impl PtyTab {
         }));
     }
 
+    /// The wheel, as a terminal routes it: to the program when it asked for mouse reports (SGR
+    /// wheel events), as arrow keys when a full-screen program owns the alternate screen, and to
+    /// our own scrollback otherwise. `lines` > 0 scrolls up.
+    pub fn wheel(&self, lines: i32, col: usize, row: usize) {
+        if lines == 0 {
+            return;
+        }
+        let mode = *self.term.lock().mode();
+        let n = lines.unsigned_abs().min(20);
+        if mode.intersects(TermMode::MOUSE_REPORT_CLICK | TermMode::MOUSE_DRAG | TermMode::MOUSE_MOTION) {
+            let button = if lines > 0 { 64 } else { 65 };
+            let mut out = Vec::new();
+            for _ in 0..n {
+                if mode.contains(TermMode::SGR_MOUSE) {
+                    out.extend(format!("\x1b[<{button};{};{}M", col + 1, row + 1).into_bytes());
+                } else {
+                    out.extend([
+                        0x1b,
+                        b'[',
+                        b'M',
+                        (32 + button) as u8,
+                        (33 + col.min(222)) as u8,
+                        (33 + row.min(222)) as u8,
+                    ]);
+                }
+            }
+            self.write(out);
+        } else if mode.contains(TermMode::ALT_SCREEN) {
+            let app = mode.contains(TermMode::APP_CURSOR);
+            let key: &[u8] = match (lines > 0, app) {
+                (true, true) => b"\x1bOA",
+                (true, false) => b"\x1b[A",
+                (false, true) => b"\x1bOB",
+                (false, false) => b"\x1b[B",
+            };
+            self.write(key.repeat(n as usize));
+        } else {
+            self.scroll(lines);
+        }
+    }
+
     pub fn scroll(&self, lines: i32) {
         if lines != 0 {
             self.term.lock().scroll_display(Scroll::Delta(lines));
@@ -332,7 +373,12 @@ impl PtyTab {
         let colors = content.colors;
         let mut cells = vec![vec![BLANK; cols]; rows];
         for cell in content.display_iter {
-            let r = cell.point.line.0 as usize;
+            // Lines are grid coordinates: scrolled into history they go negative.
+            let r = cell.point.line.0 + content.display_offset as i32;
+            if r < 0 {
+                continue;
+            }
+            let r = r as usize;
             let c = cell.point.column.0;
             if r >= rows || c >= cols {
                 continue;

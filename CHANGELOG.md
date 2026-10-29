@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.28.1 - 2026-10-29
+- Terminal scrollback works: rows from the history have negative line numbers and were dropped, so scrolling up blanked the screen from the bottom instead of moving it.
+- The wheel goes where a terminal sends it: to the program as mouse wheel events when it asked for mouse reports (Claude Code, vim with mouse on), as arrow keys when a full-screen program owns the alternate screen, and to our own scrollback otherwise.
+- AGENT_GLOBE_TERM_LOG=1 logs how long the terminal grid takes to draw, a development aid.
+
 ## 0.28.0 - 2026-10-29
 - One constellation: other sessions no longer appear as satellites unless the switch in settings is on. Switch sessions from the sidebar.
 - Open a folder: a native folder picker (📁 in the files sidebar, or on its strip when no session is on screen) makes that folder the file system: its files fill the rings, the tree, the finder and the connections. A session's own folder takes precedence while one is on screen; the opened folder is remembered.
