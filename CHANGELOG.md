@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.9.2 - 2026-10-29
+- Navigating to another constellation keeps the one you came from as a satellite: the last three visited sessions stay watched and shown even when idle, so you can always go back.
+
 ## 0.9.1 - 2026-10-29
 - Plan usage in the HUD, left of the debrief button: session (5 hr), weekly and per-model limits as percent with a small bar, coloured green, amber from two thirds, red from ninety percent; hover for the reset time, click or 📊 for the full panel with bars and reset times, refreshed every minute. The app reads the Claude Code login on this machine and asks Anthropic's usage endpoint, like the editor extension does; the token stays in memory and is never logged.
 

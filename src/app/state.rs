@@ -128,16 +128,28 @@ pub fn clock_hm(ms: i64) -> String {
 }
 
 /// Which sessions to tail: the current one plus the most recently modified ones still moving.
-pub fn desired_watch(list: &[SessionRef], current: Option<&str>, now: i64) -> Vec<SessionRef> {
+/// How many previously viewed constellations stay around as satellites after you leave them.
+pub const PINNED_MAX: usize = 3;
+
+pub fn desired_watch(list: &[SessionRef], current: Option<&str>, pinned: &[String], now: i64) -> Vec<SessionRef> {
     let mut out: Vec<SessionRef> = Vec::new();
     if let Some(c) = current
         && let Some(s) = list.iter().find(|s| s.id == c)
     {
         out.push(s.clone());
     }
+    // The constellations you came from stay watched, so you can always go back.
+    for id in pinned {
+        if out.iter().any(|s| &s.id == id) {
+            continue;
+        }
+        if let Some(s) = list.iter().find(|s| &s.id == id) {
+            out.push(s.clone());
+        }
+    }
     let mut recent: Vec<&SessionRef> = list
         .iter()
-        .filter(|s| now - s.modified < theme::WATCH_RECENT_MS && Some(s.id.as_str()) != current)
+        .filter(|s| now - s.modified < theme::WATCH_RECENT_MS && !out.iter().any(|o| o.id == s.id))
         .collect();
     recent.sort_by_key(|s| std::cmp::Reverse(s.modified));
     let room = theme::WATCH_MAX.saturating_sub(out.len());
@@ -179,6 +191,8 @@ pub struct Store {
     pub hovered_session: Option<String>,
     /// Session ids currently tailed by the worker.
     pub watched: Vec<String>,
+    /// Constellations you viewed before the current one, newest first; they stay as satellites.
+    pub pinned: Vec<String>,
     /// When each session's first event arrived; bursts right after are history, not news.
     seen: HashMap<String, Instant>,
     /// Set by the scene: switch to this session (by id) on the next frame.
@@ -253,6 +267,7 @@ impl Store {
             hovered: None,
             hovered_session: None,
             watched: Vec::new(),
+            pinned: Vec::new(),
             seen: HashMap::new(),
             pending_open: None,
             pending_select: None,
@@ -315,7 +330,11 @@ impl Store {
                 .sessions
                 .values()
                 .filter(|s| Some(&s.id) != self.current.as_ref())
-                .filter(|s| now - s.last_activity < theme::SATELLITE_RECENT_MS || needy.contains(&s.id))
+                .filter(|s| {
+                    now - s.last_activity < theme::SATELLITE_RECENT_MS
+                        || needy.contains(&s.id)
+                        || self.pinned.contains(&s.id)
+                })
                 .collect();
             others.sort_by(|a, b| a.id.cmp(&b.id));
             out.extend(others.into_iter().take(5).map(|s| s.id.clone()));
@@ -397,7 +416,7 @@ impl Store {
 
     /// Keep the worker tailing exactly the sessions worth watching.
     fn sync_watch(&mut self, bridge: &Bridge, now: i64) {
-        let desired = desired_watch(&self.session_list, self.current.as_deref(), now);
+        let desired = desired_watch(&self.session_list, self.current.as_deref(), &self.pinned, now);
         let mut ids: Vec<String> = desired.iter().map(|s| s.id.clone()).collect();
         ids.sort();
         let mut have = self.watched.clone();
@@ -423,8 +442,20 @@ impl Store {
         self.current.as_ref().and_then(|id| self.sessions.get(id))
     }
 
+    fn pin_current(&mut self, next: &str) {
+        if let Some(prev) = self.current.clone()
+            && prev != next
+        {
+            self.pinned.retain(|p| p != &prev && p != next);
+            self.pinned.insert(0, prev);
+            self.pinned.truncate(PINNED_MAX);
+        }
+        self.pinned.retain(|p| p != next);
+    }
+
     pub fn open(&mut self, r: &SessionRef, bridge: &Bridge) {
         let already = self.watched.iter().any(|w| w == &r.id) && self.sessions.contains_key(&r.id);
+        self.pin_current(&r.id);
         self.current = Some(r.id.clone());
         self.selected = None;
         self.hovered = None;
@@ -446,6 +477,7 @@ impl Store {
 
     /// Show a session that only exists through HTTP ingest (no file behind it).
     pub fn show(&mut self, id: &str) {
+        self.pin_current(id);
         self.current = Some(id.to_string());
         self.selected = None;
         self.hovered = None;
@@ -873,6 +905,22 @@ mod tests {
     }
 
     #[test]
+    fn pinned_sessions_stay_watched_after_you_leave_them() {
+        let now = 10_000_000;
+        let list = vec![r("stale", now - theme::WATCH_RECENT_MS - 1), r("cur", now - 1_000)];
+        let w = desired_watch(&list, Some("cur"), &["stale".to_string()], now);
+        let ids: Vec<&str> = w.iter().map(|s| s.id.as_str()).collect();
+        assert_eq!(ids, ["cur", "stale"], "a stale session stays watched while pinned");
+        let mut store = Store::new(None, PathBuf::from("."), None);
+        store.current = Some("a".into());
+        store.pin_current("b");
+        assert_eq!(store.pinned, vec!["a".to_string()]);
+        store.current = Some("b".into());
+        store.pin_current("a");
+        assert_eq!(store.pinned, vec!["b".to_string()], "going back unpins the destination");
+    }
+
+    #[test]
     fn watch_keeps_current_and_recent_sessions_only() {
         let now = 10_000_000;
         let list = vec![
@@ -884,14 +932,14 @@ mod tests {
             r("e", now - 5_000),
             r("f", now - 6_000),
         ];
-        let w = desired_watch(&list, Some("old"), now);
+        let w = desired_watch(&list, Some("old"), &[], now);
         let ids: Vec<&str> = w.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(
             ids,
             ["old", "a", "b", "c", "d", "e"],
             "current first, then newest, capped"
         );
-        let w = desired_watch(&list, None, now);
+        let w = desired_watch(&list, None, &[], now);
         assert_eq!(w.len(), theme::WATCH_MAX);
         assert!(!w.iter().any(|s| s.id == "old"));
     }
