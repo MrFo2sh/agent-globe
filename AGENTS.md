@@ -36,7 +36,33 @@ Data flow: files/hooks → `bridge` threads → `ToApp` channel → `drain_bridg
 `Store.sessions` → `scene` syncs entities from the store each frame → `ui::draw` reads the store.
 The app tails up to six recently modified sessions at once; `Store.current` is the one on screen.
 
+## Cards, docking, links (added 2026-10-29)
+
+- Every floating window is a card drawn by `ui::floating_card` (reply, terminal, turn, editor,
+  settings): drag by the title row (a drag needs real pointer motion), drop on a dock target
+  (quarters, halves, monitors, wall strips) to dock, drag edges to resize (neighbours sharing the
+  edge follow), ⛶ to fill, Ctrl+F to search its content, Ctrl +/-/0 zoom the card under the
+  pointer. Dock columns follow the monitor seams (`Store.monitor_seams`); panes are fractions of
+  the window clipped to the free area (right of both left sidebars, left of the agent panel).
+- `src/data/links.rs`: imports (rs/ts/js/py) + git co-change pairs; `files.rs` builds them in the
+  index thread, nested git repos included; `scene.rs` draws them on hover/selection (green = the
+  focus uses, red = uses the focus, amber = co-change). ⛓ in the HUD: off / focus / all.
+- Clicking a file node, tree row or finder row selects (lights, camera glides); a second click
+  opens it in the editor card; double-click pins; Esc clears. Hot files that do not exist on
+  disk get no node. Touch beams unit→file last `BEAM_MS` (4 min) after a Read/Edit/Write call.
+- Dev aids (env vars): `AGENT_GLOBE_OPEN=<file>`, `AGENT_GLOBE_MD_EDIT=1`,
+  `AGENT_GLOBE_MD_TOGGLE=<secs>`, `AGENT_GLOBE_LINKS_ALL=1`, `AGENT_GLOBE_SHOT=<png>` (+
+  `AGENT_GLOBE_SHOT_AT=<secs>`: the app photographs its own window), `AGENT_GLOBE_BEAM_LOG=1`.
+
 ## Rules that cost us time before
+
+- The Bash tool mangles backslashes inside heredocs: write patch scripts to a file with the Write
+  tool and run `python -I <file>`. Check the file as rustfmt left it before anchoring.
+- Never chain `ship` after a step that can fail. A ship on an unchanged version re-tags and
+  duplicates the factory's SHIPPED.md row. Gate with `grep -q 'version = "X"' Cargo.toml &&`.
+- The editor surface is a WebView2 child window: it paints above everything in its rectangle,
+  takes the keyboard once clicked (the app takes it back on any click outside), and is created
+  only on the first open. Monaco loads from the internet.
 
 - Bevy system tuples hold 20 systems at most: `mod.rs` chains two halves.
 - egui 0.36: `Panel::top/left/...` inside a root `Ui`, `Button::image`, `style_mut_of`; a font
