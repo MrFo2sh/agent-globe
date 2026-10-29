@@ -308,6 +308,8 @@ pub struct Store {
     pub zoom_request: Option<(String, i32)>,
     /// Terminal font size in points.
     pub term_font: f32,
+    /// Where the monitors meet, in window points, left to right.
+    pub monitor_seams: Vec<f32>,
     /// Ask the host to hand the keyboard back to the app window (after the page asked for it).
     pub focus_app: bool,
     /// Where the WebView surface goes this frame, in physical pixels (x, y, w, h); None hides it.
@@ -420,6 +422,7 @@ impl Store {
             hot_card: None,
             zoom_request: None,
             term_font: 13.0,
+            monitor_seams: Vec::new(),
             focus_app: false,
             webview_rect: None,
             webview_logged: false,

@@ -144,6 +144,7 @@ pub struct Side<'w, 's> {
     pub index: ResMut<'w, files::FileIndex>,
     /// AGENT_GLOBE_OPEN=<file> was honoured once (a dev aid: open a file without a click).
     pub env_opened: Local<'s, bool>,
+    pub monitors: Query<'w, 's, &'static bevy::window::Monitor>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -176,6 +177,19 @@ pub fn draw(
     }
     let now = now_millis();
     store.typing = ctx.memory(|m| m.focused().is_some());
+    // Where the monitors meet, in window points: the dock grid puts a column line on each seam.
+    {
+        let ppp = ctx.pixels_per_point();
+        let origin = side.monitors.iter().map(|m| m.physical_position.x).min().unwrap_or(0);
+        let mut seams: Vec<f32> = side
+            .monitors
+            .iter()
+            .map(|m| (m.physical_position.x - origin) as f32 / ppp)
+            .filter(|x| *x > 1.0)
+            .collect();
+        seams.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        store.monitor_seams = seams;
+    }
     if !*side.env_opened
         && let Ok(p) = std::env::var("AGENT_GLOBE_OPEN")
     {
@@ -1087,9 +1101,9 @@ pub fn draw(
                 ui.checkbox(&mut settings.span_monitors, "span all monitors at start")
                     .on_hover_text("One borderless window across every monitor. Off: full screen on one monitor. Takes effect at the next start.");
                 ui.label(egui::RichText::new("DOCK GRID").small().color(DIM))
-                    .on_hover_text("Drag a card by its title and drop it on a cell's target to dock it. Drag a docked card's edge to grow it. Two columns per monitor reads well.");
-                ui.add(egui::Slider::new(&mut settings.grid_cols, 1..=8).text("columns"));
-                ui.add(egui::Slider::new(&mut settings.grid_rows, 1..=4).text("rows"));
+                    .on_hover_text("Drag a card by its title and drop it on a target to dock it. Drag a docked card's edge to resize it; neighbours follow.");
+                ui.add(egui::Slider::new(&mut settings.grid_rows, 1..=4).text("rows"))
+                    .on_hover_text("Columns follow the monitors: each monitor's free span is split in two.");
                 ui.checkbox(&mut settings.narrator, "narrator line under each call");
                 ui.checkbox(&mut settings.progress_rings, "progress rings and hints under units");
                 ui.checkbox(
@@ -1729,28 +1743,76 @@ pub(super) struct CardOut {
     pub sash: Vec<(u8, f32, f32)>,
 }
 
-/// The dock grid: the window cut into cells, two per monitor by default. A docked card fills a
-/// block of cells; dropping a card on a cell's target docks it there; dragging a docked card's
-/// edge grows or shrinks it by whole cells.
-#[derive(Clone, Copy)]
+/// The dock grid. Columns follow the monitors: each monitor's free span (what is left of it
+/// beside the sidebars and the agent panel) is split in two, so the seam between monitors is
+/// always a grid line and a pane docked on one monitor never spills onto the next. Rows split
+/// the free height evenly. Panes are fractions of the whole window, clipped to the free area
+/// when drawn, so opening a panel pushes them and closing it gives the space back.
+#[derive(Clone)]
 pub(super) struct DockGrid {
-    rect: egui::Rect,
-    cols: usize,
-    rows: usize,
+    vp: egui::Rect,
+    area: egui::Rect,
+    /// Column lines as fractions of the window width, ascending; first and last are the area's edges.
+    xs: Vec<f32>,
+    ys: Vec<f32>,
 }
 
 impl DockGrid {
-    const MIN: f32 = 0.06;
+    const MIN: f32 = 0.04;
 
-    fn cell_w(&self) -> f32 {
-        self.rect.width() / self.cols as f32
+    fn new(vp: egui::Rect, area: egui::Rect, seams: &[f32], rows: usize) -> DockGrid {
+        let fx = |x: f32| ((x - vp.min.x) / vp.width().max(1.0)).clamp(0.0, 1.0);
+        let fy = |y: f32| ((y - vp.min.y) / vp.height().max(1.0)).clamp(0.0, 1.0);
+        let mut edges = vec![area.min.x];
+        for s in seams {
+            if *s > area.min.x + 40.0 && *s < area.max.x - 40.0 {
+                edges.push(*s);
+            }
+        }
+        edges.push(area.max.x);
+        edges.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mut xs: Vec<f32> = Vec::new();
+        for w in edges.windows(2) {
+            let (a, b) = (w[0], w[1]);
+            if b - a < 80.0 {
+                continue;
+            }
+            xs.push(fx(a));
+            xs.push(fx((a + b) * 0.5));
+        }
+        xs.push(fx(area.max.x));
+        if xs.len() < 2 {
+            xs = vec![fx(area.min.x), fx(area.max.x)];
+        }
+        let rows = rows.clamp(1, 6);
+        let ys: Vec<f32> = (0..=rows)
+            .map(|i| fy(area.min.y + area.height() * i as f32 / rows as f32))
+            .collect();
+        DockGrid { vp, area, xs, ys }
     }
 
-    fn cell_h(&self) -> f32 {
-        self.rect.height() / self.rows as f32
+    fn cols(&self) -> usize {
+        self.xs.len() - 1
     }
 
-    /// A pane kept inside the area and no smaller than a sliver.
+    fn rows(&self) -> usize {
+        self.ys.len() - 1
+    }
+
+    fn to_px(&self, p: Pane) -> egui::Rect {
+        egui::Rect::from_min_max(
+            egui::pos2(
+                self.vp.min.x + p.x0 * self.vp.width(),
+                self.vp.min.y + p.y0 * self.vp.height(),
+            ),
+            egui::pos2(
+                self.vp.min.x + p.x1 * self.vp.width(),
+                self.vp.min.y + p.y1 * self.vp.height(),
+            ),
+        )
+    }
+
+    /// A pane kept inside the window and no smaller than a sliver.
     fn clamp(&self, p: Pane) -> Pane {
         let x0 = p.x0.clamp(0.0, 1.0 - Self::MIN);
         let y0 = p.y0.clamp(0.0, 1.0 - Self::MIN);
@@ -1762,73 +1824,101 @@ impl DockGrid {
         }
     }
 
+    /// Where a pane is drawn: its rectangle clipped to the free area, with a small margin, never
+    /// smaller than a sliver (a pane pushed under a panel keeps a sliver at the area's edge).
     fn block(&self, p: Pane) -> egui::Rect {
-        let p = self.clamp(p);
-        let m = 6.0;
-        egui::Rect::from_min_max(
-            egui::pos2(
-                self.rect.min.x + p.x0 * self.rect.width() + m,
-                self.rect.min.y + p.y0 * self.rect.height() + m,
-            ),
-            egui::pos2(
-                self.rect.min.x + p.x1 * self.rect.width() - m,
-                self.rect.min.y + p.y1 * self.rect.height() - m,
-            ),
-        )
+        let r = self.to_px(self.clamp(p));
+        let a = self.area;
+        let min_w = 120.0_f32.min(a.width());
+        let min_h = 80.0_f32.min(a.height());
+        let mut x0 = r.min.x.max(a.min.x);
+        let mut x1 = r.max.x.min(a.max.x);
+        if x1 - x0 < min_w {
+            if x0 + min_w <= a.max.x {
+                x1 = x0 + min_w;
+            } else {
+                x1 = a.max.x;
+                x0 = x1 - min_w;
+            }
+        }
+        let mut y0 = r.min.y.max(a.min.y);
+        let mut y1 = r.max.y.min(a.max.y);
+        if y1 - y0 < min_h {
+            if y0 + min_h <= a.max.y {
+                y1 = y0 + min_h;
+            } else {
+                y1 = a.max.y;
+                y0 = y1 - min_h;
+            }
+        }
+        egui::Rect::from_min_max(egui::pos2(x0, y0), egui::pos2(x1, y1)).shrink(6.0)
     }
 
     fn cell_rect(&self, c: usize, r: usize) -> egui::Rect {
-        egui::Rect::from_min_size(
-            egui::pos2(
-                self.rect.min.x + c as f32 * self.cell_w(),
-                self.rect.min.y + r as f32 * self.cell_h(),
-            ),
-            egui::vec2(self.cell_w(), self.cell_h()),
-        )
+        self.to_px(self.pane_of(c as u8, c as u8 + 1, r as u8, r as u8 + 1))
     }
 
     fn pane_of(&self, c0: u8, c1: u8, r0: u8, r1: u8) -> Pane {
+        let cx = |i: u8| self.xs[(i as usize).min(self.xs.len() - 1)];
+        let cy = |i: u8| self.ys[(i as usize).min(self.ys.len() - 1)];
         Pane {
-            x0: c0 as f32 / self.cols as f32,
-            x1: c1 as f32 / self.cols as f32,
-            y0: r0 as f32 / self.rows as f32,
-            y1: r1 as f32 / self.rows as f32,
+            x0: cx(c0),
+            x1: cx(c1),
+            y0: cy(r0),
+            y1: cy(r1),
         }
     }
 
-    /// Every block a card can be dropped into: each cell (a quarter of a monitor), each pair of
-    /// cells aligned to a 2x2 group (a half), and each whole group (a monitor). Their targets sit
-    /// at the blocks' centres, which never coincide. Once docked, edges move freely.
+    /// Every block a card can be dropped into: spans of 1, 2 and 4 cells in each direction, each
+    /// aligned to its own span. A quarter, a half, a monitor, a strip across the wall, the whole
+    /// wall. Their targets sit at the blocks' centres, which never coincide. Once docked, edges
+    /// move freely.
     fn targets(&self) -> Vec<Pane> {
-        let (cols, rows) = (self.cols as u8, self.rows as u8);
-        let mut out = Vec::new();
-        for r in 0..rows {
-            for c in 0..cols {
-                out.push(self.pane_of(c, c + 1, r, r + 1));
-                let wide = c % 2 == 0 && c + 2 <= cols;
-                let tall = r % 2 == 0 && r + 2 <= rows;
-                if wide {
-                    out.push(self.pane_of(c, c + 2, r, r + 1));
-                }
-                if tall {
-                    out.push(self.pane_of(c, c + 1, r, r + 2));
-                }
-                if wide && tall {
-                    out.push(self.pane_of(c, c + 2, r, r + 2));
+        let (cols, rows) = (self.cols() as u8, self.rows() as u8);
+        let mut out: Vec<Pane> = Vec::new();
+        for &w in &[1u8, 2, 4] {
+            for &h in &[1u8, 2, 4] {
+                for r in (0..rows).step_by(h as usize) {
+                    for c in (0..cols).step_by(w as usize) {
+                        if c + w <= cols && r + h <= rows {
+                            let p = self.pane_of(c, c + w, r, r + h);
+                            if !out.contains(&p) {
+                                out.push(p);
+                            }
+                        }
+                    }
                 }
             }
         }
         out
     }
 
-    /// How many grid cells a pane covers (for the target's label and size).
+    /// How many grid cells a pane covers: the cells whose centres fall inside it.
     fn cells(&self, p: Pane) -> f32 {
-        (p.x1 - p.x0) * self.cols as f32 * (p.y1 - p.y0) * self.rows as f32
+        let cols = self
+            .xs
+            .windows(2)
+            .filter(|w| {
+                let c = (w[0] + w[1]) * 0.5;
+                c > p.x0 && c < p.x1
+            })
+            .count();
+        let rows = self
+            .ys
+            .windows(2)
+            .filter(|w| {
+                let c = (w[0] + w[1]) * 0.5;
+                c > p.y0 && c < p.y1
+            })
+            .count();
+        (cols * rows) as f32
     }
 
     fn target_rect(&self, p: Pane) -> egui::Rect {
         let cells = self.cells(p);
-        let size = if cells >= 3.5 {
+        let size = if cells >= 7.5 {
+            egui::vec2(170.0, 94.0)
+        } else if cells >= 3.5 {
             egui::vec2(150.0, 84.0)
         } else if cells >= 1.5 {
             egui::vec2(130.0, 74.0)
@@ -1842,25 +1932,25 @@ impl DockGrid {
         self.targets().into_iter().find(|d| self.target_rect(*d).contains(p))
     }
 
-    /// A pointer x as a fraction of the area, pulled onto a grid line when within a few pixels.
+    /// A pointer x as a fraction of the window, pulled onto a grid line when within a few pixels.
     fn snap_x(&self, x: f32) -> f32 {
-        let f = ((x - self.rect.min.x) / self.rect.width()).clamp(0.0, 1.0);
-        let line = (f * self.cols as f32).round() / self.cols as f32;
-        if ((line - f) * self.rect.width()).abs() <= 12.0 {
-            line
-        } else {
-            f
-        }
+        let f = ((x - self.vp.min.x) / self.vp.width().max(1.0)).clamp(0.0, 1.0);
+        let px = |g: f32| self.vp.min.x + g * self.vp.width();
+        self.xs
+            .iter()
+            .copied()
+            .find(|g| (px(*g) - x).abs() <= 12.0)
+            .unwrap_or(f)
     }
 
     fn snap_y(&self, y: f32) -> f32 {
-        let f = ((y - self.rect.min.y) / self.rect.height()).clamp(0.0, 1.0);
-        let line = (f * self.rows as f32).round() / self.rows as f32;
-        if ((line - f) * self.rect.height()).abs() <= 12.0 {
-            line
-        } else {
-            f
-        }
+        let f = ((y - self.vp.min.y) / self.vp.height().max(1.0)).clamp(0.0, 1.0);
+        let py = |g: f32| self.vp.min.y + g * self.vp.height();
+        self.ys
+            .iter()
+            .copied()
+            .find(|g| (py(*g) - y).abs() <= 12.0)
+            .unwrap_or(f)
     }
 }
 
@@ -1886,11 +1976,7 @@ pub(super) fn begin_card(
     if area.width() < 240.0 || area.height() < 160.0 {
         area = vr;
     }
-    let grid = DockGrid {
-        rect: area,
-        cols: settings.grid_cols.clamp(1, 12) as usize,
-        rows: settings.grid_rows.clamp(1, 6) as usize,
-    };
+    let grid = DockGrid::new(vr, area, &store.monitor_seams, settings.grid_rows as usize);
     (cs, dock, grid)
 }
 
@@ -1944,11 +2030,11 @@ fn sash_follow(p: Pane, axis: u8, from: f32, to: f32) -> Pane {
 /// While a title is dragged: the grid, faint, and a target for every block a card can fill
 /// (quarter, half, whole monitor); the one under the pointer lights up. Dropping anywhere else
 /// leaves the card floating where it is.
-fn draw_dock_zones(ctx: &egui::Context, grid: DockGrid, pointer: egui::Pos2) {
+fn draw_dock_zones(ctx: &egui::Context, grid: &DockGrid, pointer: egui::Pos2) {
     let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dock-zones")));
     let hot = grid.target_at(pointer);
-    for r in 0..grid.rows {
-        for c in 0..grid.cols {
+    for r in 0..grid.rows() {
+        for c in 0..grid.cols() {
             let cell = grid.cell_rect(c, r).shrink(3.0);
             painter.rect_stroke(
                 cell,
@@ -1974,7 +2060,9 @@ fn draw_dock_zones(ctx: &egui::Context, grid: DockGrid, pointer: egui::Pos2) {
         let label = match cells {
             1 => "¼",
             2 => "½",
-            _ => "1",
+            4 => "1",
+            8 => "2",
+            _ => "·",
         };
         painter.rect_filled(
             t,
@@ -2192,7 +2280,7 @@ pub(super) fn floating_card(
             p[0] = (p[0] + out.drag_delta.x).clamp(vr.min.x, vr.max.x - 160.0);
             p[1] = (p[1] + out.drag_delta.y).clamp(vr.min.y, vr.max.y - 48.0);
         }
-        draw_dock_zones(ctx, grid, pointer);
+        draw_dock_zones(ctx, &grid, pointer);
         let released = out.drag_stopped || !ctx.input(|i| i.pointer.primary_down());
         if released {
             cs.dragging = false;
@@ -4820,14 +4908,42 @@ mod dock_tests {
             && (a.y1 - b.y1).abs() < 1e-4
     }
 
+    fn wall() -> egui::Rect {
+        egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(3400.0, 900.0))
+    }
+
+    #[test]
+    fn columns_follow_the_monitors() {
+        // two monitors, nothing open: four even columns
+        let grid = DockGrid::new(wall(), wall(), &[1700.0], 2);
+        assert_eq!(grid.cols(), 4);
+        assert!((grid.xs[2] - 0.5).abs() < 1e-6, "the seam is a grid line");
+        // a 300 px sidebar: the left monitor's free span is split, the seam stays put
+        let area = egui::Rect::from_min_max(egui::pos2(300.0, 0.0), egui::pos2(3400.0, 900.0));
+        let grid = DockGrid::new(wall(), area, &[1700.0], 2);
+        assert_eq!(grid.cols(), 4);
+        assert!((grid.xs[0] - 300.0 / 3400.0).abs() < 1e-6);
+        assert!((grid.xs[1] - 1000.0 / 3400.0).abs() < 1e-6);
+        assert!((grid.xs[2] - 0.5).abs() < 1e-6, "the seam is still a grid line");
+        let left = grid.block(grid.pane_of(0, 2, 0, 2));
+        assert!(
+            (left.max.x - (1700.0 - 6.0)).abs() < 0.5,
+            "a left-monitor pane ends at the seam"
+        );
+        assert!((left.min.x - (300.0 + 6.0)).abs() < 0.5, "and starts after the sidebar");
+        // a pane saved before the sidebar opened is clipped to the free area, down to a sliver
+        let under = grid.block(Pane {
+            x0: 0.0,
+            y0: 0.0,
+            x1: 0.05,
+            y1: 1.0,
+        });
+        assert!(under.min.x >= 300.0 && under.width() >= 120.0 - 12.0 - 0.5);
+    }
+
     #[test]
     fn dock_grid_math() {
-        let grid = DockGrid {
-            rect: egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(3400.0, 900.0)),
-            cols: 4,
-            rows: 2,
-        };
-        // a pane saved wild is pulled back inside the area and no thinner than a sliver
+        let grid = DockGrid::new(wall(), wall(), &[1700.0], 2);
         let wild = Pane {
             x0: 1.4,
             y0: -0.5,
@@ -4836,7 +4952,6 @@ mod dock_tests {
         };
         let c = grid.clamp(wild);
         assert!(c.x0 <= 1.0 - DockGrid::MIN && c.x1 >= c.x0 + DockGrid::MIN && c.y0 == 0.0 && c.y1 == 1.0);
-        // the full left monitor: half the area
         let left = grid.block(Pane {
             x0: 0.0,
             y0: 0.0,
@@ -4844,7 +4959,6 @@ mod dock_tests {
             y1: 1.0,
         });
         assert!((left.width() - (1700.0 - 12.0)).abs() < 0.5 && (left.height() - (900.0 - 12.0)).abs() < 0.5);
-        // targets: a quarter at a cell centre, a half between two cells, a monitor at its centre
         assert!(close(
             grid.target_at(egui::pos2(425.0, 225.0)).unwrap(),
             grid.pane_of(0, 1, 0, 1)
@@ -4874,6 +4988,20 @@ mod dock_tests {
             ),
             "whole monitor"
         );
+        assert!(
+            close(
+                grid.target_at(egui::pos2(1700.0, 225.0)).unwrap(),
+                grid.pane_of(0, 4, 0, 1)
+            ),
+            "top strip across the wall"
+        );
+        assert!(
+            close(
+                grid.target_at(egui::pos2(1700.0, 450.0)).unwrap(),
+                grid.pane_of(0, 4, 0, 2)
+            ),
+            "the whole wall"
+        );
         assert_eq!(
             grid.target_at(egui::pos2(600.0, 450.0)),
             None,
@@ -4881,13 +5009,12 @@ mod dock_tests {
         );
         assert_eq!(
             grid.targets().len(),
-            8 + 4 + 4 + 2,
-            "8 quarters, 4 top/bottom halves, 4 left/right halves, 2 monitors"
+            8 + 4 + 4 + 2 + 2 + 1,
+            "8 quarters, 4 top/bottom halves, 4 left/right halves, 2 monitors, 2 wall strips, the wall"
         );
-        // edges snap only near grid lines, otherwise they land where the pointer is
         assert!(
             (grid.snap_x(1690.0) - 0.5).abs() < 1e-6,
-            "ten pixels from the centre line snaps"
+            "ten pixels from the seam snaps"
         );
         assert!(
             (grid.snap_x(1300.0) - 1300.0 / 3400.0).abs() < 1e-6,
@@ -4898,7 +5025,6 @@ mod dock_tests {
 
     #[test]
     fn a_shared_edge_moves_the_neighbour() {
-        // files on the left quarter, editor beside it: shrinking files grows the editor
         let editor = Pane {
             x0: 0.25,
             y0: 0.0,
@@ -4907,7 +5033,6 @@ mod dock_tests {
         };
         let moved = sash_follow(editor, 0, 0.25, 0.15);
         assert!((moved.x0 - 0.15).abs() < 1e-6 && (moved.x1 - 0.5).abs() < 1e-6);
-        // an edge on a different line is left alone
         let other = Pane {
             x0: 0.5,
             y0: 0.0,
@@ -4915,7 +5040,6 @@ mod dock_tests {
             y1: 1.0,
         };
         assert_eq!(sash_follow(other, 0, 0.25, 0.15), other);
-        // a neighbour never collapses past a sliver
         let thin = Pane {
             x0: 0.25,
             y0: 0.0,

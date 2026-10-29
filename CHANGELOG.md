@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.23.1 - 2026-10-29
+- Dock columns follow the monitors: each monitor's free span (beside the sidebars and the agent panel) is split in two, so the seam between monitors is always a grid line and a pane docked on the left monitor never spills onto the right one. Pane positions are fractions of the whole window, clipped to the free area, so a sidebar opening pushes a pane and closing it gives the space back.
+- Dock targets for four-wide shapes: a strip across both monitors and the whole wall (labelled 2), beside the quarters, halves and monitors.
+
 ## 0.23.0 - 2026-10-29
 - Scoped zoom: Ctrl with + / - / 0 acts on the card under the pointer (the editor's font, the terminal's font, the text of the reply and turn cards). Only with no card under the pointer, and no text field typing, does it scale the whole UI. Inside the editor the page handles the keys itself.
 - Ctrl+Shift+V flips Markdown between edit and preview, from the app or from inside the editor.
