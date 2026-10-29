@@ -1871,9 +1871,7 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
                             if r.middle_clicked() {
                                 close_tab = Some(i);
                             }
-                            if tabs.len() > 1
-                                && i == active
-                                && ui.small_button("✕").on_hover_text("Close this tab (Ctrl+W)").clicked()
+                            if i == active && ui.small_button("✕").on_hover_text("Close this tab (Ctrl+W)").clicked()
                             {
                                 close_tab = Some(i);
                             }
@@ -1920,9 +1918,10 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
             )
         }
     };
+    let mut emptied = false;
     if let Some(set) = terms.set_mut(&sid, &cwd) {
         if let Some(i) = switch_to {
-            set.active = i.min(set.tabs.len() - 1);
+            set.active = i.min(set.tabs.len().saturating_sub(1));
         }
         if ctrl_t || new_tab {
             let here = set.active_mut().cwd.clone();
@@ -1931,16 +1930,24 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
         if let Some(i) = close_tab.or(if ctrl_w { Some(set.active) } else { None }) {
             set.close(i);
         }
-        if restart {
-            set.restart_active();
+        if set.is_empty() {
+            emptied = true;
+        } else {
+            if restart {
+                set.restart_active();
+            }
+            let tab = set.active_mut();
+            if clear {
+                tab.write(b"cls\r".to_vec());
+            }
+            if copy {
+                ctx.copy_text(tab.all_lines().join("\n"));
+            }
         }
-        let tab = set.active_mut();
-        if clear {
-            tab.write(b"cls\r".to_vec());
-        }
-        if copy {
-            ctx.copy_text(tab.all_lines().join("\n"));
-        }
+    }
+    if emptied {
+        terms.remove(&sid);
+        store.terminal_open = None;
     }
     store.terminal_query = query;
     if out.toggle_max {

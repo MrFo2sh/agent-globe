@@ -108,6 +108,10 @@ pub struct PtyTab {
 impl PtyTab {
     /// Start PowerShell in `cwd` behind a pseudo console of `cols` x `rows`.
     pub fn spawn(cwd: &str, cols: u16, rows: u16) -> std::io::Result<PtyTab> {
+        Self::spawn_with("powershell.exe", &["-NoLogo"], cwd, cols, rows)
+    }
+
+    pub fn spawn_with(program: &str, args: &[&str], cwd: &str, cols: u16, rows: u16) -> std::io::Result<PtyTab> {
         let size = WindowSize {
             num_lines: rows,
             num_cols: cols,
@@ -118,7 +122,10 @@ impl PtyTab {
         env.insert("COLORTERM".to_string(), "truecolor".to_string());
         env.insert("TERM_PROGRAM".to_string(), "agent-globe".to_string());
         let opts = tty::Options {
-            shell: Some(tty::Shell::new("powershell.exe".into(), vec!["-NoLogo".into()])),
+            shell: Some(tty::Shell::new(
+                program.into(),
+                args.iter().map(|a| a.to_string()).collect(),
+            )),
             working_directory: if cwd.is_empty() || !std::path::Path::new(cwd).is_dir() {
                 None
             } else {
@@ -128,6 +135,13 @@ impl PtyTab {
             env,
             escape_args: false,
         };
+        // A process started as its own process group (how shells and cargo launch us) carries an
+        // "ignore Ctrl+C" flag that every child inherits, console children included. Clear it
+        // here, in our own process, so the shell and whatever it runs can be interrupted.
+        #[cfg(windows)]
+        unsafe {
+            windows_sys::Win32::System::Console::SetConsoleCtrlHandler(None, 0);
+        }
         let pty = tty::new(&opts, size, 0)?;
         let proxy = Proxy::default();
         let config = Config {
@@ -209,8 +223,15 @@ impl PtyTab {
         self.proxy.clipboard.lock().ok().and_then(|mut c| c.take())
     }
 
+    /// What the program called its window, unless that is just its own exe path (PowerShell's
+    /// default), which says nothing.
     pub fn title(&self) -> Option<String> {
-        self.proxy.title.lock().ok().and_then(|t| t.clone())
+        self.proxy
+            .title
+            .lock()
+            .ok()
+            .and_then(|t| t.clone())
+            .filter(|t| !t.to_ascii_lowercase().ends_with(".exe") && !t.trim().is_empty())
     }
 
     /// Every line, scrollback first, with trailing blanks trimmed.
@@ -491,12 +512,16 @@ impl TabSet {
         Ok(())
     }
 
-    /// Close a tab; the last one stays.
+    /// Close a tab. Closing the last one leaves the set empty, which closes the card.
     pub fn close(&mut self, i: usize) {
-        if self.tabs.len() > 1 && i < self.tabs.len() {
+        if i < self.tabs.len() {
             self.tabs.remove(i);
-            self.active = self.active.min(self.tabs.len() - 1);
+            self.active = self.active.min(self.tabs.len().saturating_sub(1));
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.tabs.is_empty()
     }
 
     pub fn active_mut(&mut self) -> &mut PtyTab {
@@ -541,6 +566,11 @@ pub struct Terminals {
 }
 
 impl Terminals {
+    /// Drop a session's consoles (after its last tab was closed).
+    pub fn remove(&mut self, session_id: &str) {
+        self.sets.remove(session_id);
+    }
+
     pub fn set_mut(&mut self, session_id: &str, cwd: &str) -> Option<&mut TabSet> {
         if !self.sets.contains_key(session_id) {
             match TabSet::new(cwd) {
@@ -597,6 +627,30 @@ mod tests {
                 "no answer from the console: {:?}",
                 tab.all_lines()
             );
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+
+    /// Ctrl+C as the ETX byte interrupts a running command. This needs the inherited
+    /// "ignore Ctrl+C" flag cleared before the console child is created (see `spawn_with`).
+    #[test]
+    #[cfg(windows)]
+    fn ctrl_c_interrupts_a_running_command() {
+        let tab = PtyTab::spawn("", 80, 24).expect("conpty");
+        std::thread::sleep(std::time::Duration::from_millis(1200));
+        tab.write(b"ping -t 127.0.0.1".to_vec());
+        tab.write(vec![13u8]);
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        tab.write(vec![3u8]);
+        std::thread::sleep(std::time::Duration::from_millis(600));
+        tab.write(b"echo AG_AFTER".to_vec());
+        tab.write(vec![13u8]);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+        loop {
+            if tab.all_lines().iter().any(|l| l.trim() == "AG_AFTER") {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline, "ping was not interrupted");
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
     }

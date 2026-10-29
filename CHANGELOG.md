@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.19.1 - 2026-10-29
+- Terminal Ctrl+C works. Windows children inherit an "ignore Ctrl+C" flag from any parent started as its own process group (shells and cargo do that), so nothing in the console could be interrupted. The flag is cleared before each console is created; a test interrupts a running ping to prove it.
+- The last terminal tab has a close button too: closing it closes the card. Tabs no longer show PowerShell's exe path as their title.
+
 ## 0.19.0 - 2026-10-29
 - The raid: a wave shooter in cinematic mode. Saucers spawn at the edge of the scene and fly at the units; click one to fire the turret under the camera; a saucer that lands drains data integrity, at zero the raid is over. Waves grow (3 + 2n ships), every third wave is a new level with tougher, faster ships. Score, kills and a best score. Controls in the bottom-left console and with P: start, pause, resume, replay, stop (stop clears the sky). Pause writes the raid to disk, ships included, so it survives closing the app; leaving cinematic mode pauses it.
 
