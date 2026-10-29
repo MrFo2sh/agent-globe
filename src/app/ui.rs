@@ -197,6 +197,7 @@ pub fn draw(
         let mut cards: Vec<egui::Rect> = Vec::new();
         cards.extend(draw_reply(ctx, &mut store));
         cards.extend(draw_terminal(ctx, &mut store, &mut terms));
+        cards.extend(draw_turn_card(ctx, &mut store, settings.narrator));
         store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
         draw_toasts(ctx, &store);
         return Ok(());
@@ -675,6 +676,7 @@ pub fn draw(
     let mut docker_armed = store.docker_armed.take();
     let mut kill_request: Option<u32> = None;
     let mut docker_request: Option<(String, String, String)> = None;
+    let mut open_turn: Option<usize> = None;
     let mut inset_right = 0.0_f32;
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
     *last_panel = selected.as_ref().map(|a| a.id.clone());
@@ -746,12 +748,20 @@ pub fn draw(
                     &mut docker_armed,
                     &mut kill_request,
                     &mut docker_request,
+                    &mut open_turn,
                 );
             });
         inset_right = right.response.rect.width();
         ui_rects.push(right.response.rect);
     }
     store.artifact_query = query;
+    if let Some(ti) = open_turn
+        && let Some(sid) = store.current.clone()
+        && let Some(aid) = selected.as_ref().map(|a| a.id.clone())
+    {
+        store.turn_open = Some((sid, aid, ti));
+        store.turn_tab = 0;
+    }
     store.history_query = history;
     store.fold_groups = fold_groups;
     store.kill_armed = kill_armed.filter(|(_, at)| at.elapsed().as_secs_f32() < 3.0);
@@ -842,15 +852,12 @@ pub fn draw(
             maxed,
             egui::pos2(260.0, 80.0),
             egui::vec2(440.0, 600.0),
-            |ui, out| {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("⚙").size(16.0));
-                    ui.label(egui::RichText::new("settings").font(stencil(14.0)).color(SAND));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        card_buttons(ui, maxed, out);
-                    });
-                });
-                ui.separator();
+            None,
+            |ui| {
+                ui.label(egui::RichText::new("⚙").size(16.0));
+                ui.label(egui::RichText::new("settings").font(stencil(14.0)).color(SAND));
+            },
+            |ui, _q| {
                 egui::ScrollArea::vertical()
                     .id_salt("settings-scroll")
                     .auto_shrink([false, false])
@@ -1075,6 +1082,7 @@ pub fn draw(
     let mut cards: Vec<egui::Rect> = Vec::new();
     cards.extend(draw_reply(ctx, &mut store));
     cards.extend(draw_terminal(ctx, &mut store, &mut terms));
+    cards.extend(draw_turn_card(ctx, &mut store, settings.narrator));
     cards.extend(settings_rect);
     store.card_rects = cards.iter().map(|r| [r.min.x, r.min.y, r.max.x, r.max.y]).collect();
     ui_rects.extend(cards);
@@ -1409,16 +1417,20 @@ struct CardOut {
     rect: Option<egui::Rect>,
 }
 
-/// The chrome shared by the reply and terminal cards: a Tooltip-order area (above the badges
-/// and file labels), solid frame, drag to move and a corner to resize when floating, or pinned
-/// to fill the screen.
+/// The chrome shared by every card (reply, terminal, turn, settings): a Tooltip-order area above
+/// the badges and labels, solid frame, a title row that drags the card even over its text, ✕ and
+/// ⛶, an optional search box (Ctrl+F) whose lowercase text the body receives, a corner to resize
+/// when floating, or pinned to fill the screen.
+#[allow(clippy::too_many_arguments)]
 fn floating_card(
     ctx: &egui::Context,
     id: &str,
     maxed: bool,
     default_pos: egui::Pos2,
     default_size: egui::Vec2,
-    body: impl FnOnce(&mut egui::Ui, &mut CardOut),
+    query: Option<&mut String>,
+    header: impl FnOnce(&mut egui::Ui),
+    body: impl FnOnce(&mut egui::Ui, &str),
 ) -> CardOut {
     let vr = ctx.viewport_rect();
     let margin = 16.0;
@@ -1433,6 +1445,48 @@ fn floating_card(
         area.fixed_pos(vr.min + egui::vec2(margin, margin)).movable(false)
     } else {
         area.default_pos(default_pos).movable(true).constrain(true)
+    };
+    let find = ctx.input(|i| i.modifiers.command && i.key_pressed(egui::Key::F));
+    let content = |ui: &mut egui::Ui, out: &mut CardOut| {
+        let mut q_lower = String::new();
+        ui.horizontal(|ui| {
+            // Title text does not select, so a drag anywhere on this row moves the card.
+            ui.style_mut().interaction.selectable_labels = false;
+            header(ui);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("✕  (Esc)").clicked() {
+                    out.close = true;
+                }
+                if ui
+                    .small_button(if maxed { "🗗 restore" } else { "⛶ full" })
+                    .on_hover_text(if maxed {
+                        "Back to the floating card"
+                    } else {
+                        "Fill the screen (or drag the bottom-right corner to resize)"
+                    })
+                    .clicked()
+                {
+                    out.toggle_max = true;
+                }
+                if let Some(q) = query {
+                    if !q.is_empty() && ui.small_button("⌫").on_hover_text("Clear the search").clicked() {
+                        q.clear();
+                    }
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(q)
+                            .desired_width(180.0)
+                            .font(egui::TextStyle::Monospace)
+                            .hint_text("🔍 search  (Ctrl+F)"),
+                    );
+                    if find {
+                        resp.request_focus();
+                    }
+                    q_lower = q.trim().to_ascii_lowercase();
+                }
+            });
+        });
+        ui.separator();
+        body(ui, &q_lower);
     };
     let resp = area.show(ctx, |ui| {
         egui::Frame::NONE
@@ -1450,14 +1504,14 @@ fn floating_card(
                 if maxed {
                     ui.set_width(max_size.x);
                     ui.set_height(max_size.y);
-                    body(ui, &mut out);
+                    content(ui, &mut out);
                 } else {
                     egui::Resize::default()
                         .id_salt((id, "size"))
                         .default_size(default_size)
                         .min_size(egui::vec2(320.0, 160.0))
                         .max_size(max_size)
-                        .show(ui, |ui| body(ui, &mut out));
+                        .show(ui, |ui| content(ui, &mut out));
                 }
             });
     });
@@ -1465,21 +1519,31 @@ fn floating_card(
     out
 }
 
-/// ✕ and ⛶ for a card header. Call inside a right-to-left layout, before the card's own buttons.
-fn card_buttons(ui: &mut egui::Ui, maxed: bool, out: &mut CardOut) {
-    if ui.small_button("✕  (Esc)").clicked() {
-        out.close = true;
+/// Search mode for a block of text: only the lines that match, numbered, with the hits lit.
+fn search_lines(ui: &mut egui::Ui, text: &str, q_lower: &str, mono: bool) {
+    let font = if mono {
+        egui::FontId::monospace(13.0)
+    } else {
+        egui::FontId::proportional(14.0)
+    };
+    let mut n = 0;
+    for (ln, line) in text.lines().enumerate() {
+        if !contains_ci(line, q_lower) {
+            continue;
+        }
+        n += 1;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(
+                egui::RichText::new(format!("{:>4}", ln + 1))
+                    .small()
+                    .monospace()
+                    .color(DIM),
+            );
+            ui.add(egui::Label::new(highlighted(line, q_lower, font.clone(), TEXT)).wrap());
+        });
     }
-    if ui
-        .small_button(if maxed { "🗗 restore" } else { "⛶ full" })
-        .on_hover_text(if maxed {
-            "Back to the floating card"
-        } else {
-            "Fill the screen (or drag the bottom-right corner to resize)"
-        })
-        .clicked()
-    {
-        out.toggle_max = true;
+    if n == 0 {
+        ui.label(egui::RichText::new("no matches").color(DIM));
     }
 }
 
@@ -1502,48 +1566,49 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) -> Option<egui::Rect> {
     let height = (vr.height() * 0.45).clamp(220.0, 520.0);
     let default_pos = anchor.unwrap_or_else(|| vr.center() - egui::vec2(width / 2.0, height / 2.0));
     let maxed = store.reply_max;
+    let mut query = std::mem::take(&mut store.reply_query);
     let out = floating_card(
         ctx,
         "reply-card",
         maxed,
         default_pos,
         egui::vec2(width, height),
-        |ui, out| {
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("💬").size(16.0));
-                ui.label(
-                    egui::RichText::new(format!("{project} · {}", agent_title(&agent)))
-                        .font(stencil(14.0))
-                        .color(SAND),
-                );
-                ui.label(
-                    egui::RichText::new(clock(agent.last_activity))
-                        .small()
-                        .monospace()
-                        .color(DIM),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    card_buttons(ui, maxed, out);
-                    if ui
-                        .small_button("⧉ copy")
-                        .on_hover_text("Copy the whole reply")
-                        .clicked()
-                    {
-                        ctx.copy_text(agent.last_said.clone());
-                    }
-                });
-            });
-            ui.separator();
+        Some(&mut query),
+        |ui| {
+            ui.label(egui::RichText::new("💬").size(16.0));
+            ui.label(
+                egui::RichText::new(format!("{project} · {}", agent_title(&agent)))
+                    .font(stencil(14.0))
+                    .color(SAND),
+            );
+            ui.label(
+                egui::RichText::new(clock(agent.last_activity))
+                    .small()
+                    .monospace()
+                    .color(DIM),
+            );
+            if ui
+                .small_button("⧉ copy")
+                .on_hover_text("Copy the whole reply")
+                .clicked()
+            {
+                ctx.copy_text(agent.last_said.clone());
+            }
+        },
+        |ui, q| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 ui.set_min_width(ui.available_width() - 8.0);
                 if agent.last_said.trim().is_empty() {
                     ui.label(egui::RichText::new("nothing said yet").color(DIM));
-                } else {
+                } else if q.is_empty() {
                     render_reply(ui, &agent.last_said);
+                } else {
+                    search_lines(ui, &agent.last_said, q, false);
                 }
             });
         },
     );
+    store.reply_query = query;
     if out.toggle_max {
         store.reply_max = !store.reply_max;
     }
@@ -1553,8 +1618,10 @@ fn draw_reply(ctx: &egui::Context, store: &mut Store) -> Option<egui::Rect> {
     out.rect
 }
 
-/// The integrated terminal: a persistent PowerShell in the session's folder, in the same card as
-/// the reply. Enter runs a line, ↑↓ walk the history, ⟲ restarts the shell.
+/// The integrated terminal: persistent PowerShell tabs in the session's folder, in the same card
+/// as the reply. Enter runs a line, Tab completes through PowerShell's own engine, ↑↓ walk the
+/// history, Ctrl+C ends the running command, Ctrl+T / Ctrl+W open and close tabs, ⟲ restarts the
+/// shell. The search box filters the scrollback.
 fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) -> Option<egui::Rect> {
     let sid = store.terminal_open.clone()?;
     let Some((project, cwd)) = store.sessions.get(&sid).map(|s| (s.project.clone(), s.cwd.clone())) else {
@@ -1569,134 +1636,395 @@ fn draw_terminal(ctx: &egui::Context, store: &mut Store, terms: &mut Terminals) 
         (vr.max.y - height - 56.0).max(vr.min.y + 56.0),
     );
     let maxed = store.terminal_max;
-    let mut restart = false;
+    let mut query = std::mem::take(&mut store.terminal_query);
     let spawn_error = terms.error.clone();
-    let out = floating_card(
-        ctx,
-        "terminal-card",
-        maxed,
-        default_pos,
-        egui::vec2(width, height),
-        |ui, out| {
-            let Some(shell) = terms.get_or_spawn(&sid, &cwd) else {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("⌨").size(16.0));
-                    ui.label(
-                        egui::RichText::new(format!("{project} · terminal"))
-                            .font(stencil(14.0))
-                            .color(SAND),
-                    );
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        card_buttons(ui, maxed, out)
-                    });
-                });
-                ui.separator();
+    let mut restart = false;
+    let mut clear = false;
+    let mut copy = false;
+    let mut new_tab = false;
+    let mut close_tab: Option<usize> = None;
+    let mut switch_to: Option<usize> = None;
+    let (ctrl_t, ctrl_w) = ctx.input(|i| {
+        (
+            i.modifiers.command && i.key_pressed(egui::Key::T),
+            i.modifiers.command && i.key_pressed(egui::Key::W),
+        )
+    });
+    let out = match terms.set_mut(&sid, &cwd) {
+        None => floating_card(
+            ctx,
+            "terminal-card",
+            maxed,
+            default_pos,
+            egui::vec2(width, height),
+            None,
+            |ui| {
+                ui.label(egui::RichText::new("⌨").size(16.0));
+                ui.label(
+                    egui::RichText::new(format!("{project} · terminal"))
+                        .font(stencil(14.0))
+                        .color(SAND),
+                );
+            },
+            |ui, _q| {
                 ui.label(egui::RichText::new(spawn_error.unwrap_or_default()).color(RED));
-                return;
-            };
+            },
+        ),
+        Some(set) => {
+            let tabs = set.tabs();
+            let active = set.active;
+            let shell = set.active_mut();
+            shell.poll_completion();
             let busy = shell.is_busy();
             let dead = shell.is_dead();
             let now_cwd = shell.cwd();
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("⌨").size(16.0));
-                ui.label(egui::RichText::new(&project).font(stencil(14.0)).color(SAND));
-                ui.add(egui::Label::new(egui::RichText::new(&now_cwd).small().monospace().color(DIM)).truncate());
-                if busy {
-                    ui.spinner();
-                }
-                if dead {
-                    ui.label(egui::RichText::new("shell exited").small().color(RED));
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    card_buttons(ui, maxed, out);
+            let folder = now_cwd
+                .rsplit(['\\', '/'])
+                .find(|p| !p.is_empty())
+                .unwrap_or("")
+                .to_string();
+            let lines = shell.snapshot();
+            floating_card(
+                ctx,
+                "terminal-card",
+                maxed,
+                default_pos,
+                egui::vec2(width, height),
+                Some(&mut query),
+                |ui| {
+                    ui.label(egui::RichText::new("⌨").size(16.0));
+                    ui.label(egui::RichText::new(&project).font(stencil(14.0)).color(SAND));
+                    ui.add(egui::Label::new(egui::RichText::new(&now_cwd).small().monospace().color(DIM)).truncate());
+                    if dead {
+                        ui.label(egui::RichText::new("shell exited").small().color(RED));
+                    }
                     if ui
                         .small_button("⟲")
-                        .on_hover_text("Restart the shell (ends whatever is running)")
+                        .on_hover_text("Restart this tab's shell (ends whatever is running)")
                         .clicked()
                     {
                         restart = true;
                     }
-                    if ui.small_button("🗑").on_hover_text("Clear the screen").clicked() {
-                        shell.clear();
+                    if ui
+                        .small_button("🗑")
+                        .on_hover_text("Clear the screen (or type cls)")
+                        .clicked()
+                    {
+                        clear = true;
                     }
                     if ui.small_button("⧉").on_hover_text("Copy everything").clicked() {
-                        let all: Vec<String> = shell.snapshot().into_iter().map(|l| l.text).collect();
-                        ctx.copy_text(all.join("\n"));
+                        copy = true;
                     }
-                });
-            });
-            ui.separator();
-            let input_h = ui.spacing().interact_size.y + 12.0;
-            let lines = shell.snapshot();
-            let avail = (ui.available_height() - input_h).max(60.0);
-            egui::ScrollArea::vertical()
-                .id_salt("terminal-scroll")
-                .auto_shrink([false, false])
-                .max_height(avail)
-                .stick_to_bottom(true)
-                .show(ui, |ui| {
-                    ui.set_min_width(ui.available_width() - 8.0);
-                    let start = lines.len().saturating_sub(1500);
-                    for l in &lines[start..] {
-                        let rt = match l.kind {
-                            LineKind::Cmd => egui::RichText::new(&l.text).monospace().color(SAND).strong(),
-                            LineKind::Out => egui::RichText::new(&l.text).monospace().color(TEXT),
-                            LineKind::Note => egui::RichText::new(&l.text).monospace().small().color(DIM),
-                        };
-                        ui.add(egui::Label::new(rt).selectable(true).wrap());
-                    }
-                });
-            ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("❯").monospace().color(ACCENT));
-                let hint = if busy {
-                    "running… Enter queues the next command"
-                } else {
-                    "command · Enter runs · ↑ ↓ history"
-                };
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut shell.input)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(f32::INFINITY)
-                        .hint_text(hint)
-                        .lock_focus(true),
-                );
-                if shell.want_focus {
-                    resp.request_focus();
-                    shell.want_focus = false;
-                }
-                if resp.has_focus() {
-                    let (up, down) = ctx.input(|i| {
-                        let hit = |k: egui::Key| {
-                            i.raw
-                                .events
-                                .iter()
-                                .any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if *key == k))
-                        };
-                        (hit(egui::Key::ArrowUp), hit(egui::Key::ArrowDown))
+                },
+                |ui, q| {
+                    // ---- tab bar
+                    ui.horizontal(|ui| {
+                        ui.style_mut().interaction.selectable_labels = false;
+                        for (i, (title, folder, tab_busy)) in tabs.iter().enumerate() {
+                            let label = if *tab_busy {
+                                format!("{title}: {folder} ●")
+                            } else {
+                                format!("{title}: {folder}")
+                            };
+                            let r = ui.selectable_label(i == active, egui::RichText::new(label).monospace().small());
+                            if r.clicked() {
+                                switch_to = Some(i);
+                            }
+                            if r.middle_clicked() {
+                                close_tab = Some(i);
+                            }
+                            if tabs.len() > 1
+                                && i == active
+                                && ui.small_button("✕").on_hover_text("Close this tab (Ctrl+W)").clicked()
+                            {
+                                close_tab = Some(i);
+                            }
+                        }
+                        if ui.small_button("+").on_hover_text("New tab here (Ctrl+T)").clicked() {
+                            new_tab = true;
+                        }
+                        if busy {
+                            ui.spinner();
+                            ui.label(egui::RichText::new("Ctrl+C stops it").small().color(DIM));
+                        }
                     });
-                    if up {
-                        shell.recall(-1);
-                    }
-                    if down {
-                        shell.recall(1);
-                    }
-                }
-                if resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
-                    let cmd = std::mem::take(&mut shell.input);
-                    shell.run(&cmd);
-                    shell.want_focus = true;
-                }
-            });
-        },
-    );
-    if restart {
-        terms.restart(&sid, &cwd);
+                    // ---- scrollback
+                    let input_h = ui.spacing().interact_size.y + 12.0;
+                    let avail = (ui.available_height() - input_h).max(60.0);
+                    egui::ScrollArea::vertical()
+                        .id_salt(("terminal-scroll", active))
+                        .auto_shrink([false, false])
+                        .max_height(avail)
+                        .stick_to_bottom(q.is_empty())
+                        .show(ui, |ui| {
+                            ui.set_min_width(ui.available_width() - 8.0);
+                            let start = if q.is_empty() {
+                                lines.len().saturating_sub(1500)
+                            } else {
+                                0
+                            };
+                            let mut shown = 0;
+                            for l in &lines[start..] {
+                                if !q.is_empty() && !contains_ci(&l.text, q) {
+                                    continue;
+                                }
+                                shown += 1;
+                                let color = match l.kind {
+                                    LineKind::Cmd => SAND,
+                                    LineKind::Out => TEXT,
+                                    LineKind::Note => DIM,
+                                };
+                                if q.is_empty() {
+                                    let rt = match l.kind {
+                                        LineKind::Cmd => egui::RichText::new(&l.text).monospace().color(color).strong(),
+                                        LineKind::Out => egui::RichText::new(&l.text).monospace().color(color),
+                                        LineKind::Note => egui::RichText::new(&l.text).monospace().small().color(color),
+                                    };
+                                    ui.add(egui::Label::new(rt).selectable(true).wrap());
+                                } else {
+                                    ui.add(
+                                        egui::Label::new(highlighted(&l.text, q, egui::FontId::monospace(13.0), color))
+                                            .selectable(true)
+                                            .wrap(),
+                                    );
+                                }
+                            }
+                            if !q.is_empty() && shown == 0 {
+                                ui.label(egui::RichText::new("no matches").color(DIM));
+                            }
+                        });
+                    // ---- prompt line
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("PS {folder}>")).monospace().color(ACCENT))
+                            .on_hover_text(&now_cwd);
+                        let hint = if busy {
+                            "running… Enter queues the next command"
+                        } else {
+                            "command · Enter runs · Tab completes · ↑ ↓ history"
+                        };
+                        let resp = ui.add(
+                            egui::TextEdit::singleline(&mut shell.input)
+                                .font(egui::TextStyle::Monospace)
+                                .desired_width(f32::INFINITY)
+                                .hint_text(hint)
+                                .lock_focus(true),
+                        );
+                        if shell.want_focus {
+                            resp.request_focus();
+                            shell.want_focus = false;
+                        }
+                        if resp.has_focus() {
+                            let (up, down, tab, shift, ctrl_c) = ctx.input(|i| {
+                                let hit = |k: egui::Key| {
+                                    i.raw
+                                        .events
+                                        .iter()
+                                        .any(|e| matches!(e, egui::Event::Key { key, pressed: true, .. } if *key == k))
+                                };
+                                (
+                                    hit(egui::Key::ArrowUp),
+                                    hit(egui::Key::ArrowDown),
+                                    hit(egui::Key::Tab),
+                                    i.modifiers.shift,
+                                    i.modifiers.command && hit(egui::Key::C),
+                                )
+                            });
+                            if up {
+                                shell.recall(-1);
+                            }
+                            if down {
+                                shell.recall(1);
+                            }
+                            if tab {
+                                shell.tab(shift);
+                            }
+                            if ctrl_c && busy {
+                                shell.restart_in_place("^C");
+                            }
+                        }
+                        if resp.lost_focus() && ctx.input(|i| i.key_pressed(egui::Key::Enter)) {
+                            let cmd = std::mem::take(&mut shell.input);
+                            shell.run(&cmd);
+                            shell.want_focus = true;
+                        }
+                    });
+                },
+            )
+        }
+    };
+    if let Some(set) = terms.set_mut(&sid, &cwd) {
+        if let Some(i) = switch_to {
+            set.active = i.min(set.shells.len() - 1);
+            set.active_mut().want_focus = true;
+        }
+        if ctrl_t || new_tab {
+            let here = set.active_mut().cwd();
+            let _ = set.open(&here);
+        }
+        if let Some(i) = close_tab.or(if ctrl_w { Some(set.active) } else { None }) {
+            set.close(i);
+            set.active_mut().want_focus = true;
+        }
+        let shell = set.active_mut();
+        if clear {
+            shell.clear();
+        }
+        if copy {
+            let all: Vec<String> = shell.snapshot().into_iter().map(|l| l.text).collect();
+            ctx.copy_text(all.join("\n"));
+        }
+        if restart {
+            shell.restart_in_place("shell restarted");
+        }
     }
+    store.terminal_query = query;
     if out.toggle_max {
         store.terminal_max = !store.terminal_max;
     }
     if out.close {
         store.terminal_open = None;
+    }
+    out.rect
+}
+
+/// A prompt group as a card, opened by double-clicking its header: the conversation (your prompt
+/// and the commander's reply) and the details (that turn's tool calls, with the narrator lines).
+/// The search box lights hits in whichever segment is showing.
+fn draw_turn_card(ctx: &egui::Context, store: &mut Store, narrator: bool) -> Option<egui::Rect> {
+    let (sid, aid, ti) = store.turn_open.clone()?;
+    let Some(agent) = store.sessions.get(&sid).and_then(|s| s.agent(&aid)).cloned() else {
+        store.turn_open = None;
+        return None;
+    };
+    let Some(turn) = agent.turn_log.get(ti).cloned() else {
+        store.turn_open = None;
+        return None;
+    };
+    let project = store.sessions.get(&sid).map(|s| s.project.clone()).unwrap_or_default();
+    let range = agent.turn_range(ti);
+    let stalled = store.stalled.clone();
+    let mut expanded = std::mem::take(&mut store.expanded_calls);
+    let mut query = std::mem::take(&mut store.turn_query);
+    let mut tab = store.turn_tab;
+    let maxed = store.turn_max;
+    let vr = ctx.viewport_rect();
+    let width = (vr.width() * 0.5).clamp(480.0, 960.0);
+    let height = (vr.height() * 0.6).clamp(300.0, 720.0);
+    let default_pos = vr.center() - egui::vec2(width / 2.0, height / 2.0);
+    let first_line: String = turn
+        .prompt
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or("")
+        .trim()
+        .chars()
+        .take(70)
+        .collect();
+    let out = floating_card(
+        ctx,
+        "turn-card",
+        maxed,
+        default_pos,
+        egui::vec2(width, height),
+        Some(&mut query),
+        |ui| {
+            ui.label(
+                egui::RichText::new(format!("#{}", ti + 1))
+                    .font(stencil(14.0))
+                    .color(ACCENT),
+            );
+            ui.label(
+                egui::RichText::new(format!("{project} · {}", agent_title(&agent)))
+                    .font(stencil(14.0))
+                    .color(SAND),
+            );
+            ui.label(egui::RichText::new(clock(turn.started)).small().monospace().color(DIM));
+            ui.add(egui::Label::new(egui::RichText::new(&first_line).color(TEXT)).truncate());
+        },
+        |ui, q| {
+            ui.horizontal(|ui| {
+                if ui.selectable_label(tab == 0, "💬 conversation").clicked() {
+                    tab = 0;
+                }
+                let calls = format!(
+                    "⚙ details · {} call{}",
+                    range.len(),
+                    if range.len() == 1 { "" } else { "s" }
+                );
+                if ui.selectable_label(tab == 1, calls).clicked() {
+                    tab = 1;
+                }
+            });
+            ui.add_space(4.0);
+            egui::ScrollArea::vertical()
+                .id_salt("turn-scroll")
+                .auto_shrink([false, false])
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width() - 8.0);
+                    if tab == 0 {
+                        ui.label(egui::RichText::new("YOU").small().color(DIM));
+                        egui::Frame::NONE
+                            .fill(INK)
+                            .inner_margin(8.0)
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                if q.is_empty() {
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(&turn.prompt).color(TEXT))
+                                            .selectable(true)
+                                            .wrap(),
+                                    );
+                                } else {
+                                    search_lines(ui, &turn.prompt, q, false);
+                                }
+                            });
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("COMMANDER").small().color(DIM));
+                        egui::Frame::NONE
+                            .fill(INK)
+                            .inner_margin(8.0)
+                            .corner_radius(4.0)
+                            .show(ui, |ui| {
+                                ui.set_width(ui.available_width());
+                                if turn.reply.trim().is_empty() {
+                                    ui.label(egui::RichText::new("no reply yet").color(DIM));
+                                } else if q.is_empty() {
+                                    render_reply(ui, &turn.reply);
+                                } else {
+                                    search_lines(ui, &turn.reply, q, false);
+                                }
+                            });
+                    } else {
+                        let mut shown = 0;
+                        for i in range.clone() {
+                            let c = &agent.calls[i];
+                            if !q.is_empty() && !call_matches(c, q) {
+                                continue;
+                            }
+                            shown += 1;
+                            call_row(ui, i, c, &stalled, narrator, &mut expanded, q);
+                        }
+                        if shown == 0 {
+                            let msg = if range.is_empty() {
+                                "no tool calls in this turn"
+                            } else {
+                                "no matches"
+                            };
+                            ui.label(egui::RichText::new(msg).color(DIM));
+                        }
+                    }
+                });
+        },
+    );
+    store.expanded_calls = expanded;
+    store.turn_query = query;
+    store.turn_tab = tab;
+    if out.toggle_max {
+        store.turn_max = !store.turn_max;
+    }
+    if out.close {
+        store.turn_open = None;
     }
     out.rect
 }
@@ -1974,6 +2302,45 @@ fn code_block(
 }
 
 /// One tool call in the history list: time, status mark, header, narrator line, command and output.
+/// A prompt group header with an absolute id: the arrow and the title toggle it on click, fold /
+/// unfold set it from outside, and a double-click is reported back (it opens the turn card).
+fn group_header(
+    ui: &mut egui::Ui,
+    id: egui::Id,
+    title: egui::WidgetText,
+    default_open: bool,
+    fold: Option<bool>,
+    body: impl FnOnce(&mut egui::Ui),
+) -> bool {
+    let mut st = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, default_open);
+    if let Some(open) = fold {
+        st.set_open(open);
+    }
+    let openness = st.openness(ui.ctx());
+    let row = ui.horizontal(|ui| {
+        ui.style_mut().interaction.selectable_labels = false;
+        let (_, icon) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+        egui::collapsing_header::paint_default_icon(ui, openness, &icon);
+        ui.add(egui::Label::new(title).truncate());
+    });
+    let hit = ui.interact(row.response.rect, id.with("row"), egui::Sense::click());
+    let double = hit.double_clicked();
+    if hit.clicked() && !double {
+        st.toggle(ui);
+    }
+    if hit.hovered() {
+        ui.painter().rect_stroke(
+            row.response.rect.expand(1.0),
+            3.0,
+            egui::Stroke::new(1.0, DIM),
+            egui::StrokeKind::Outside,
+        );
+    }
+    st.show_body_indented(&row.response, ui, body);
+    st.store(ui.ctx());
+    double
+}
+
 fn call_row(
     ui: &mut egui::Ui,
     i: usize,
@@ -2089,12 +2456,13 @@ fn agent_panel(
     cwd: &str,
     touched: &HashMap<String, usize>,
     history: &mut String,
-    fold_all: &mut bool,
+    fold_all: &mut Option<bool>,
     servers: &Snapshot,
     kill_armed: &mut Option<(u32, std::time::Instant)>,
     docker_armed: &mut Option<(String, std::time::Instant)>,
     kill_request: &mut Option<u32>,
     docker_request: &mut Option<(String, String, String)>,
+    open_turn: &mut Option<usize>,
 ) {
     let (label, color) = status_label(a, now, stalled);
     ui.horizontal(|ui| {
@@ -2422,13 +2790,24 @@ fn agent_panel(
                     .small()
                     .color(SAND),
             );
-            let label = if all { "▴ collapse" } else { "▾ expand" };
-            if ui.small_button(egui::RichText::new(label).small()).clicked() {
-                toggle = true;
+            // Three rows always show; the button only exists when there is more to reveal.
+            if changes.len() > 3 {
+                let label = if all {
+                    "▴ collapse".to_string()
+                } else {
+                    format!("▾ {} more", changes.len() - 3)
+                };
+                if ui.small_button(egui::RichText::new(label).small()).clicked() {
+                    toggle = true;
+                }
             }
         });
         let row_h = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-        let max_h = if all { 360.0 } else { row_h * 3.0 + 4.0 };
+        let max_h = if all || changes.len() <= 3 {
+            360.0
+        } else {
+            row_h * 3.0 + 4.0
+        };
         egui::ScrollArea::vertical()
             .id_salt(&key)
             .max_height(max_h)
@@ -2521,28 +2900,26 @@ fn agent_panel(
             }
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("TOOL CALLS").small().color(DIM));
-                if !a.turn_log.is_empty()
-                    && ui
+                if !a.turn_log.is_empty() {
+                    if ui
                         .small_button(egui::RichText::new("▴ fold all").small())
-                        .on_hover_text("Collapse every prompt group")
+                        .on_hover_text("Collapse every prompt group: a list of turns to jump between")
                         .clicked()
-                {
-                    *fold_all = true;
+                    {
+                        *fold_all = Some(false);
+                    }
+                    if ui
+                        .small_button(egui::RichText::new("▾ unfold").small())
+                        .on_hover_text("Open every prompt group")
+                        .clicked()
+                    {
+                        *fold_all = Some(true);
+                    }
                 }
             });
-            // On a "fold all" click, write the collapsed state into egui's memory for each group
-            // id (matching the CollapsingHeader ids below), so it sticks and can be reopened one by one.
-            if *fold_all {
-                let mut ids: Vec<egui::Id> = (0..a.turn_log.len())
-                    .map(|ti| ui.make_persistent_id((&a.id, ti)))
-                    .collect();
-                ids.push(ui.make_persistent_id((&a.id, "lead")));
-                for id in ids {
-                    let mut st = egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, true);
-                    st.set_open(false);
-                    st.store(ui.ctx());
-                }
-            }
+            // Fold / unfold: every group below applies it to its own state this frame. Groups use
+            // absolute ids (not ui-relative ones), so the state can be driven from anywhere.
+            let fold = *fold_all;
             if !needle.is_empty() && hits.is_empty() {
                 ui.label(
                     egui::RichText::new(format!("nothing in this unit's history matches \"{}\"", history.trim()))
@@ -2561,18 +2938,21 @@ fn agent_panel(
                     .filter(|i| hit_set.contains(i))
                     .collect();
                 if !lead.is_empty() {
-                    egui::CollapsingHeader::new(
-                        egui::RichText::new(format!("before the first prompt · {} calls", lead.len()))
-                            .small()
-                            .color(DIM),
-                    )
-                    .id_salt((&a.id, "lead"))
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        for i in lead {
-                            call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
-                        }
-                    });
+                    let title = egui::RichText::new(format!("before the first prompt · {} calls", lead.len()))
+                        .small()
+                        .color(DIM);
+                    group_header(
+                        ui,
+                        egui::Id::new(("turn-group", &a.id, "lead")),
+                        title.into(),
+                        false,
+                        fold,
+                        |ui| {
+                            for i in lead {
+                                call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
+                            }
+                        },
+                    );
                 }
                 for ti in 0..n {
                     let t = &a.turn_log[ti];
@@ -2633,66 +3013,68 @@ fn agent_panel(
                     };
                     band.show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        egui::CollapsingHeader::new(header)
-                            .id_salt((&a.id, ti))
-                            .default_open((ti + 1 == n && !searching) || matched)
-                            .show(ui, |ui| {
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(
-                                        egui::RichText::new(format!(
-                                            "{} calls · {} units · {}",
-                                            range.len(),
-                                            units,
-                                            dur(took)
-                                        ))
-                                        .small()
-                                        .monospace()
-                                        .color(DIM),
-                                    );
-                                    if t.ended.is_none() {
-                                        ui.label(egui::RichText::new("● in progress").small().color(ACCENT));
-                                    }
-                                });
-                                if t.prompt.trim().len() > first_line.len() {
-                                    ui.collapsing(egui::RichText::new("full prompt").small().color(DIM), |ui| {
-                                        code_block(ui, &format!("{}:turn{ti}", a.id), &t.prompt, TEXT, expanded, "");
-                                    });
-                                }
-                                if searching && !matched {
-                                    ui.label(egui::RichText::new("no matches in this turn").small().color(DIM));
-                                }
-                                for i in idx {
-                                    call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
-                                }
-                                if !t.reply.trim().is_empty() {
-                                    let reply_first: String = t
-                                        .reply
-                                        .lines()
-                                        .find(|l| !l.trim().is_empty())
-                                        .unwrap_or("")
-                                        .trim()
-                                        .chars()
-                                        .take(80)
-                                        .collect();
-                                    let head = egui::RichText::new(format!("💬 {reply_first}")).color(if reply_hit {
-                                        egui::Color32::from_rgb(230, 255, 220)
-                                    } else {
-                                        SAND
-                                    });
-                                    egui::CollapsingHeader::new(head)
-                                        .id_salt((&a.id, ti, "reply"))
-                                        .default_open(range.is_empty() || ti + 1 == n || reply_hit)
-                                        .show(ui, |ui| {
-                                            egui::Frame::NONE.fill(INK).inner_margin(8.0).corner_radius(4.0).show(
-                                                ui,
-                                                |ui| {
-                                                    ui.set_width(ui.available_width());
-                                                    render_reply(ui, &t.reply);
-                                                },
-                                            );
-                                        });
+                        let gid = egui::Id::new(("turn-group", &a.id, ti));
+                        let default_open = (ti + 1 == n && !searching) || matched;
+                        let double = group_header(ui, gid, header, default_open, fold, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.label(
+                                    egui::RichText::new(format!(
+                                        "{} calls · {} units · {}",
+                                        range.len(),
+                                        units,
+                                        dur(took)
+                                    ))
+                                    .small()
+                                    .monospace()
+                                    .color(DIM),
+                                );
+                                if t.ended.is_none() {
+                                    ui.label(egui::RichText::new("● in progress").small().color(ACCENT));
                                 }
                             });
+                            if t.prompt.trim().len() > first_line.len() {
+                                ui.collapsing(egui::RichText::new("full prompt").small().color(DIM), |ui| {
+                                    code_block(ui, &format!("{}:turn{ti}", a.id), &t.prompt, TEXT, expanded, "");
+                                });
+                            }
+                            if searching && !matched {
+                                ui.label(egui::RichText::new("no matches in this turn").small().color(DIM));
+                            }
+                            for i in idx {
+                                call_row(ui, i, &a.calls[i], stalled, narrator, expanded, &needle);
+                            }
+                            if !t.reply.trim().is_empty() {
+                                let reply_first: String = t
+                                    .reply
+                                    .lines()
+                                    .find(|l| !l.trim().is_empty())
+                                    .unwrap_or("")
+                                    .trim()
+                                    .chars()
+                                    .take(80)
+                                    .collect();
+                                let head = egui::RichText::new(format!("💬 {reply_first}")).color(if reply_hit {
+                                    egui::Color32::from_rgb(230, 255, 220)
+                                } else {
+                                    SAND
+                                });
+                                egui::CollapsingHeader::new(head)
+                                    .id_salt((&a.id, ti, "reply"))
+                                    .default_open(range.is_empty() || ti + 1 == n || reply_hit)
+                                    .show(ui, |ui| {
+                                        egui::Frame::NONE.fill(INK).inner_margin(8.0).corner_radius(4.0).show(
+                                            ui,
+                                            |ui| {
+                                                ui.set_width(ui.available_width());
+                                                render_reply(ui, &t.reply);
+                                            },
+                                        );
+                                    });
+                            }
+                        });
+                        if double {
+                            *open_turn = Some(ti);
+                        }
                     });
                 }
             }
@@ -2703,7 +3085,7 @@ fn agent_panel(
                 ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
             }
         });
-    *fold_all = false;
+    *fold_all = None;
 }
 
 fn hover_card(ui: &mut egui::Ui, a: &Agent, now: i64) {

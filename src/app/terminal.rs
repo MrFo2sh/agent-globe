@@ -1,8 +1,10 @@
 //! An integrated shell per session: one persistent PowerShell behind a pipe, started in the
 //! session's folder. Commands go in on stdin, output lines come back on a reader thread, and a
 //! sentinel line marks the end of each command and carries the folder the shell is in now.
-//! Not a terminal emulator: no cursor control, no interactive programs. Right for `git status`,
-//! `npm run build`, `cargo test` and friends, which is what a session's folder needs.
+//! Tab completion comes from PowerShell's own engine (TabExpansion2) in a side process, Ctrl+C
+//! ends the running command by restarting the shell in place, and a session can hold several
+//! tabs. Not a terminal emulator: no cursor control, no full-screen programs. Right for
+//! `git status`, `npm run build`, `cargo test` and friends, which is what a session's folder needs.
 
 use bevy::prelude::*;
 use std::collections::HashMap;
@@ -32,6 +34,16 @@ pub struct Line {
     pub kind: LineKind,
 }
 
+/// One answer from TabExpansion2: what to replace in `base`, and the candidates.
+#[derive(Debug, Clone)]
+pub struct Completion {
+    pub base: String,
+    pub index: usize,
+    pub len: usize,
+    pub matches: Vec<String>,
+    pub pick: usize,
+}
+
 pub struct Shell {
     child: Child,
     stdin: ChildStdin,
@@ -44,6 +56,14 @@ pub struct Shell {
     pub hist_pos: Option<usize>,
     /// Put the caret in the input on the next frame (just opened, or just ran a command).
     pub want_focus: bool,
+    /// Tab label.
+    pub title: String,
+    /// The completion answer landing from the side process.
+    inbox: Arc<Mutex<Option<Completion>>>,
+    comp_inflight: Arc<AtomicBool>,
+    /// The completion being cycled with Tab, and the input text it last produced.
+    active_comp: Option<Completion>,
+    applied: Option<String>,
 }
 
 fn push(lines: &Mutex<Vec<Line>>, line: Line) {
@@ -143,7 +163,105 @@ impl Shell {
             history: Vec::new(),
             hist_pos: None,
             want_focus: true,
+            title: String::new(),
+            inbox: Arc::new(Mutex::new(None)),
+            comp_inflight: Arc::new(AtomicBool::new(false)),
+            active_comp: None,
+            applied: None,
         })
+    }
+
+    /// Kill the child and start a fresh shell in the same folder, keeping the scrollback, the
+    /// history and the tab. Ctrl+C and ⟲ both land here.
+    pub fn restart_in_place(&mut self, note: &str) {
+        let cwd = self.cwd();
+        let _ = self.child.kill();
+        let Ok(mut fresh) = Shell::spawn(&cwd) else {
+            push(
+                &self.lines,
+                Line {
+                    text: "could not restart the shell".into(),
+                    kind: LineKind::Note,
+                },
+            );
+            return;
+        };
+        if let (Ok(mut new), Ok(old)) = (fresh.lines.lock(), self.lines.lock()) {
+            let keep: Vec<Line> = old.iter().cloned().collect();
+            new.splice(0..0, keep);
+            new.push(Line {
+                text: note.to_string(),
+                kind: LineKind::Note,
+            });
+        }
+        fresh.history = std::mem::take(&mut self.history);
+        fresh.title = std::mem::take(&mut self.title);
+        fresh.want_focus = true;
+        *self = fresh;
+    }
+
+    /// Tab: cycle the current completion, or ask PowerShell for one.
+    pub fn tab(&mut self, backwards: bool) {
+        self.input = self.input.replace('\t', "");
+        if self.active_comp.is_some() && self.applied.as_deref() == Some(self.input.as_str()) {
+            self.cycle(if backwards { -1 } else { 1 });
+            return;
+        }
+        self.active_comp = None;
+        self.request_completion();
+    }
+
+    fn request_completion(&mut self) {
+        if self.comp_inflight.swap(true, Ordering::Relaxed) || self.input.trim().is_empty() {
+            self.comp_inflight.store(false, Ordering::Relaxed);
+            return;
+        }
+        let input = self.input.clone();
+        let cwd = self.cwd();
+        let inbox = self.inbox.clone();
+        let inflight = self.comp_inflight.clone();
+        std::thread::Builder::new()
+            .name("shell-complete".into())
+            .spawn(move || {
+                let got = complete_via_powershell(&cwd, &input);
+                if let Ok(mut slot) = inbox.lock() {
+                    *slot = got;
+                }
+                inflight.store(false, Ordering::Relaxed);
+            })
+            .expect("spawn completion");
+    }
+
+    /// Take a landed completion if it is still about the current input, and apply its first match.
+    pub fn poll_completion(&mut self) {
+        let landed = self.inbox.lock().ok().and_then(|mut s| s.take());
+        if let Some(c) = landed
+            && c.base == self.input
+            && !c.matches.is_empty()
+        {
+            self.active_comp = Some(c);
+            self.apply_comp();
+        }
+    }
+
+    fn cycle(&mut self, dir: i32) {
+        if let Some(c) = self.active_comp.as_mut() {
+            let n = c.matches.len() as i32;
+            c.pick = ((c.pick as i32 + dir).rem_euclid(n.max(1))) as usize;
+        }
+        self.apply_comp();
+    }
+
+    fn apply_comp(&mut self) {
+        let Some(c) = &self.active_comp else { return };
+        let Some(m) = c.matches.get(c.pick) else { return };
+        let chars: Vec<char> = c.base.chars().collect();
+        let i = c.index.min(chars.len());
+        let j = (c.index + c.len).min(chars.len());
+        let head: String = chars[..i].iter().collect();
+        let tail: String = chars[j..].iter().collect();
+        self.input = format!("{head}{m}{tail}");
+        self.applied = Some(self.input.clone());
     }
 
     pub fn is_busy(&self) -> bool {
@@ -165,10 +283,14 @@ impl Shell {
         if cmd.is_empty() {
             return;
         }
+        if cmd.eq_ignore_ascii_case("cls") || cmd.eq_ignore_ascii_case("clear") {
+            self.clear();
+            return;
+        }
         push(
             &self.lines,
             Line {
-                text: format!("❯ {cmd}"),
+                text: format!("PS {}> {cmd}", self.cwd()),
                 kind: LineKind::Cmd,
             },
         );
@@ -176,6 +298,8 @@ impl Shell {
             self.history.push(cmd.to_string());
         }
         self.hist_pos = None;
+        self.active_comp = None;
+        self.applied = None;
         self.busy.store(true, Ordering::Relaxed);
         let wrapped =
             format!(". {{ {cmd} }} 2>&1 | Out-String -Stream\nWrite-Output ('{SENTINEL}' + (Get-Location).Path)\n");
@@ -229,25 +353,117 @@ pub fn hist_step(n: usize, pos: Option<usize>, dir: i32) -> Option<usize> {
     }
 }
 
+/// Ask a side PowerShell what TabExpansion2 would offer for `input` in `cwd`.
+fn complete_via_powershell(cwd: &str, input: &str) -> Option<Completion> {
+    let quoted = input.replace('\'', "''");
+    let cwd_q = cwd.replace('\'', "''");
+    let script = format!(
+        "Set-Location '{cwd_q}'; $r = TabExpansion2 -inputScript '{quoted}' -cursorColumn {}; \
+         \"$($r.ReplacementIndex)|$($r.ReplacementLength)\"; $r.CompletionMatches | ForEach-Object {{ $_.CompletionText }}",
+        input.chars().count()
+    );
+    let mut cmd = Command::new("powershell");
+    cmd.args(["-NoProfile", "-NoLogo", "-NonInteractive", "-Command", &script]);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let out = cmd.output().ok()?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    let mut lines = text.lines();
+    let head = lines.next()?;
+    let (i, l) = head.split_once('|')?;
+    let matches: Vec<String> = lines
+        .map(|m| m.trim_end().to_string())
+        .filter(|m| !m.is_empty())
+        .collect();
+    Some(Completion {
+        base: input.to_string(),
+        index: i.trim().parse().ok()?,
+        len: l.trim().parse().ok()?,
+        matches,
+        pick: 0,
+    })
+}
+
 impl Drop for Shell {
     fn drop(&mut self) {
         let _ = self.child.kill();
     }
 }
 
-/// One shell per session, started on first use in that session's folder.
+/// The tabs of one session: several shells, one active.
+pub struct TabSet {
+    pub shells: Vec<Shell>,
+    pub active: usize,
+    next_no: usize,
+}
+
+impl TabSet {
+    fn new(cwd: &str) -> std::io::Result<TabSet> {
+        let mut t = TabSet {
+            shells: Vec::new(),
+            active: 0,
+            next_no: 1,
+        };
+        t.open(cwd)?;
+        Ok(t)
+    }
+
+    /// A new tab in `cwd`, made active.
+    pub fn open(&mut self, cwd: &str) -> std::io::Result<()> {
+        let mut sh = Shell::spawn(cwd)?;
+        sh.title = self.next_no.to_string();
+        self.next_no += 1;
+        self.shells.push(sh);
+        self.active = self.shells.len() - 1;
+        Ok(())
+    }
+
+    /// Close a tab; the last one stays.
+    pub fn close(&mut self, i: usize) {
+        if self.shells.len() > 1 && i < self.shells.len() {
+            self.shells.remove(i);
+            self.active = self.active.min(self.shells.len() - 1);
+        }
+    }
+
+    pub fn active_mut(&mut self) -> &mut Shell {
+        let i = self.active.min(self.shells.len() - 1);
+        &mut self.shells[i]
+    }
+
+    /// (title, folder name, busy) per tab, for the tab bar.
+    pub fn tabs(&self) -> Vec<(String, String, bool)> {
+        self.shells
+            .iter()
+            .map(|s| {
+                let cwd = s.cwd();
+                let folder = cwd
+                    .rsplit(['\\', '/'])
+                    .find(|p| !p.is_empty())
+                    .unwrap_or("")
+                    .to_string();
+                (s.title.clone(), folder, s.is_busy())
+            })
+            .collect()
+    }
+}
+
+/// One tab set per session, started on first use in that session's folder.
 #[derive(Resource, Default)]
 pub struct Terminals {
-    shells: HashMap<String, Shell>,
+    sets: HashMap<String, TabSet>,
     pub error: Option<String>,
 }
 
 impl Terminals {
-    pub fn get_or_spawn(&mut self, session_id: &str, cwd: &str) -> Option<&mut Shell> {
-        if !self.shells.contains_key(session_id) {
-            match Shell::spawn(cwd) {
-                Ok(s) => {
-                    self.shells.insert(session_id.to_string(), s);
+    pub fn set_mut(&mut self, session_id: &str, cwd: &str) -> Option<&mut TabSet> {
+        if !self.sets.contains_key(session_id) {
+            match TabSet::new(cwd) {
+                Ok(t) => {
+                    self.sets.insert(session_id.to_string(), t);
                 }
                 Err(e) => {
                     self.error = Some(format!("could not start powershell: {e}"));
@@ -255,27 +471,7 @@ impl Terminals {
                 }
             }
         }
-        self.shells.get_mut(session_id)
-    }
-
-    /// Kill the session's shell and start a fresh one in the same folder.
-    pub fn restart(&mut self, session_id: &str, cwd: &str) {
-        let keep: Vec<String> = self
-            .shells
-            .get(session_id)
-            .map(|s| s.history.clone())
-            .unwrap_or_default();
-        self.shells.remove(session_id);
-        if let Some(s) = self.get_or_spawn(session_id, cwd) {
-            s.history = keep;
-            push(
-                &s.lines,
-                Line {
-                    text: "shell restarted".into(),
-                    kind: LineKind::Note,
-                },
-            );
-        }
+        self.sets.get_mut(session_id)
     }
 }
 

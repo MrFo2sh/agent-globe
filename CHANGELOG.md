@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+## 0.17.0 - 2026-10-29
+- Double-click a prompt group to open it as a card: a conversation segment (your prompt and the commander's reply) and a details segment (that turn's tool calls with the narrator lines).
+- Every card has a search box (Ctrl+F): the reply and turn cards filter to matching lines with the hits lit, the terminal filters its scrollback, the turn details reuse the call-row highlighting.
+- Card title rows drag the card even over their text.
+- Terminal tabs: + or Ctrl+T opens a tab in the current folder, ✕, middle-click or Ctrl+W closes one; each tab is its own shell. Tab completion through PowerShell's own engine (Tab cycles, Shift+Tab back), a PS-style prompt, Ctrl+C ends the running command, cls clears.
+- CHANGES: the expand button only appears when more than three files changed, and says how many are hidden.
+- Fold all works: the collapse was written to ids inside a different ui scope than the headers. Groups now have absolute ids driven directly; fold sticks, and an unfold button opens every group again. Group headers toggle on click of the arrow or the title.
+
 ## 0.16.0 - 2026-10-29
 - Integrated terminal: the HUD's ⌨ opens a persistent PowerShell in the session's folder, inside the app. Enter runs a line, ↑ ↓ walk the history, cd and variables stick between commands, errors show inline, ⟲ restarts the shell, 🗑 clears, ⧉ copies. Right-click ⌨ still opens a native window. One shell per session; closed shells end with the app.
 - One card chrome for the reply, the terminal and settings: drag to move, drag the corner to resize, ⛶ to fill the screen, Esc to close. Cards sit above the badges and file labels; badges under a card are not drawn.

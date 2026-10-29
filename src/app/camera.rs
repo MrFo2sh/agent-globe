@@ -150,7 +150,9 @@ pub fn drive(
         return;
     }
     if keys.just_pressed(KeyCode::Escape) && !store.typing {
-        if store.terminal_open.is_some() {
+        if store.turn_open.is_some() {
+            store.turn_open = None;
+        } else if store.terminal_open.is_some() {
             store.terminal_open = None;
         } else if store.reply_open.is_some() {
             store.reply_open = None;

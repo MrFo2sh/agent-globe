@@ -216,7 +216,7 @@ pub struct Store {
     /// The plan-usage window (session, weekly, per-model limits).
     pub show_usage: bool,
     /// One-frame request from the "fold all" button: collapse every prompt group.
-    pub fold_groups: bool,
+    pub fold_groups: Option<bool>,
     /// The reply card: (session, agent) whose last message is open for reading.
     pub reply_open: Option<(String, String)>,
     /// The reply card fills the screen (⛶) instead of floating next to the unit.
@@ -225,6 +225,15 @@ pub struct Store {
     pub terminal_open: Option<String>,
     pub terminal_max: bool,
     pub settings_max: bool,
+    /// A prompt group opened as a card: (session, agent, turn index).
+    pub turn_open: Option<(String, String, usize)>,
+    pub turn_max: bool,
+    /// 0 = conversation, 1 = details.
+    pub turn_tab: u8,
+    /// Search text of each card, kept while the card is open.
+    pub reply_query: String,
+    pub terminal_query: String,
+    pub turn_query: String,
     /// An egui text field has the keyboard: scene shortcuts (R, Esc) stay out of the way.
     pub typing: bool,
     /// Screen rects of the open cards this frame (min x, min y, max x, max y): badges under
@@ -300,7 +309,7 @@ impl Store {
             pointer_over_ui: false,
             show_settings: false,
             show_usage: false,
-            fold_groups: false,
+            fold_groups: None,
             kill_armed: None,
             docker_armed: None,
             reply_open: None,
@@ -308,6 +317,12 @@ impl Store {
             terminal_open: None,
             terminal_max: false,
             settings_max: false,
+            turn_open: None,
+            turn_max: false,
+            turn_tab: 0,
+            reply_query: String::new(),
+            terminal_query: String::new(),
+            turn_query: String::new(),
             typing: false,
             card_rects: Vec::new(),
             hide_ui: false,
