@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+## 0.27.5 - 2026-10-29
+- Touch beams from a unit to the files it read or edited last four minutes instead of forty-five seconds, fading as they age. They were drawn before, but rarely for long enough to be seen. AGENT_GLOBE_BEAM_LOG=1 logs the beam pass, a development aid.
+
 ## 0.27.4 - 2026-10-29
 - The hot ring only shows touched files that exist, as given or under the session folder. A fixture name or a path relative to somewhere else used to get a node of its own.
 

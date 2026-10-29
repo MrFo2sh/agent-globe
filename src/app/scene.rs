@@ -76,7 +76,7 @@ pub const FILE_RING_MAX: usize = 24;
 pub const FILE_ALL_MAX: usize = 1_500;
 /// Cold files closer than this to the camera show their names.
 pub const LABEL_DISTANCE: f32 = 22.0;
-pub const BEAM_MS: i64 = 45_000;
+pub const BEAM_MS: i64 = 240_000;
 pub const FILE_GLOW_MS: i64 = 20_000;
 
 /// One of the two clickable circles around a satellite constellation: click to go there.
@@ -719,6 +719,38 @@ pub fn draw_file_beams(
             let p1 = Vec3::from(layout::orbit_point(outer, a)) + Vec3::Y * 0.02;
             gizmos.line(p0, p1, Color::srgba(0.45, 0.95, 0.85, 0.05));
         }
+    }
+    if std::env::var("AGENT_GLOBE_BEAM_LOG").is_ok()
+        && (time.elapsed_secs() as u64).is_multiple_of(5)
+        && time.delta_secs() > 0.0
+        && (time.elapsed_secs() % 5.0) < time.delta_secs()
+    {
+        let touches: usize = fscene.files.iter().map(|f| f.touches.len()).sum();
+        let with_pos = fscene
+            .files
+            .iter()
+            .filter(|f| fscene.positions.contains_key(&f.path))
+            .count();
+        let agents: Vec<String> = world_pos
+            .0
+            .keys()
+            .filter(|(s, _)| *s == current)
+            .map(|(_, a)| a.clone())
+            .collect();
+        let touch_agents: Vec<String> = fscene
+            .files
+            .iter()
+            .flat_map(|f| f.touches.iter().map(|t| t.agent_id.clone()))
+            .collect();
+        info!(
+            "beams: hot={} with_pos={} touches={} agents_in_scene={:?} touch_agents={:?} sample_paths={:?}",
+            fscene.files.len(),
+            with_pos,
+            touches,
+            agents,
+            touch_agents.iter().take(4).collect::<Vec<_>>(),
+            fscene.files.iter().take(3).map(|f| &f.path).collect::<Vec<_>>()
+        );
     }
     for f in &fscene.files {
         let Some(&to) = fscene.positions.get(&f.path) else {
