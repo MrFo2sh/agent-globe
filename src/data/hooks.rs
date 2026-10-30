@@ -74,6 +74,8 @@ pub fn from_claude_hook(v: &Value) -> Option<Event> {
             kind: v["agent_type"].as_str().unwrap_or("subagent").to_string(),
             model: String::new(),
             prompt: String::new(),
+            // SubagentStop reports the end, whatever the spawning call does.
+            background: false,
             at,
         },
         "SubagentStop" => Event::AgentEnd {

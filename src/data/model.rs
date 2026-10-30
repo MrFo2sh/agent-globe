@@ -36,6 +36,9 @@ pub enum Event {
         model: String,
         #[serde(default)]
         prompt: String,
+        /// Launched in the background: its spawning call returns at launch, not when it is done.
+        #[serde(default)]
+        background: bool,
         #[serde(default)]
         at: Millis,
     },
@@ -272,6 +275,10 @@ pub struct Agent {
     pub waiting_for_user: bool,
     /// Order in which this agent was spawned within the session (0 = root).
     pub order: u32,
+    /// Runs in the background: the call that spawned it returned at launch, so that call's end
+    /// says nothing about this agent's.
+    #[serde(default)]
+    pub background: bool,
 }
 
 impl Agent {
@@ -463,6 +470,7 @@ impl Session {
             turns: 0,
             waiting_for_user: false,
             order,
+            background: false,
         });
         let i = self.agents.len() - 1;
         self.index.insert(id.to_string(), i);
@@ -543,10 +551,11 @@ impl Session {
                 kind,
                 model,
                 prompt,
+                background,
                 at,
                 ..
             } => {
-                self.ensure_agent(
+                let i = self.ensure_agent(
                     &agent_id,
                     parent_id,
                     spawn_tool_use_id,
@@ -556,6 +565,7 @@ impl Session {
                     &prompt,
                     at,
                 );
+                self.agents[i].background |= background;
                 self.touch(&agent_id, at);
                 self.resolve_tree();
             }
@@ -622,11 +632,12 @@ impl Session {
                     found = artifacts::from_call(c);
                 }
                 a.add_artifacts(found);
-                // A finished spawn call means the child agent is done.
+                // A finished spawn call means the child agent is done, unless the child runs in
+                // the background: then the call returned at launch and the source reports the end.
                 let child: Option<String> = self
                     .agents
                     .iter()
-                    .find(|x| x.spawn_tool_use_id.as_deref() == Some(call_id.as_str()))
+                    .find(|x| !x.background && x.spawn_tool_use_id.as_deref() == Some(call_id.as_str()))
                     .map(|x| x.id.clone());
                 if let Some(child) = child
                     && let Some(c) = self.agent_mut(&child)
@@ -776,6 +787,7 @@ mod tests {
             kind: "fork".into(),
             model: String::new(),
             prompt: String::new(),
+            background: false,
             at,
         }
     }
@@ -829,6 +841,26 @@ mod tests {
         assert_eq!(s.root().status(10, 100), Status::Active);
         assert_eq!(s.root().status(1000, 100), Status::Idle);
         assert_eq!(s.agent("a").unwrap().status(10, 100), Status::Done);
+    }
+
+    /// A background launch returns at once: the child keeps working until its own end arrives.
+    #[test]
+    fn background_child_outlives_its_spawning_call() {
+        let mut s = Session::new("s", "p", 1);
+        s.apply(tool(ROOT_AGENT, "t1", 2));
+        let mut ev = spawn("a", "t1", 2);
+        if let Event::AgentSpawn { background, .. } = &mut ev {
+            *background = true;
+        }
+        s.apply(ev);
+        s.apply(end("t1", false, 3));
+        assert_eq!(s.agent("a").unwrap().ended, None);
+        s.apply(Event::AgentEnd {
+            session_id: "s".into(),
+            agent_id: "a".into(),
+            at: 0,
+        });
+        assert!(s.agent("a").unwrap().ended.is_some());
     }
 
     fn end(call: &str, is_error: bool, at: Millis) -> Event {

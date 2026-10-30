@@ -258,13 +258,15 @@ pub fn drive(
 /// fly-to target) lands in the visible middle rather than behind a panel.
 pub fn apply_viewport(
     store: Res<Store>,
+    settings: Res<Settings>,
     windows: Query<&Window, With<PrimaryWindow>>,
     mut cams: Query<&mut Camera, With<PanOrbitCamera>>,
 ) {
     let (Some((left, top, right, bottom)), Ok(window)) = (store.scene_insets, windows.single()) else {
         return;
     };
-    let scale = window.scale_factor();
+    // Insets are egui points: physical pixels are points times the window scale times the zoom.
+    let scale = window.scale_factor() * settings.ui_scale.max(0.1);
     let (pw, ph) = (window.physical_width(), window.physical_height());
     if pw == 0 || ph == 0 {
         return;

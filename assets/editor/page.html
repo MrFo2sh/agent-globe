@@ -50,6 +50,8 @@
 <script>
 (function () {
   const post = (m) => { try { window.ipc.postMessage(JSON.stringify(m)); } catch (e) {} };
+  // A press here never reaches the app's UI: say so, and the editor card comes to the front.
+  window.addEventListener('pointerdown', () => post({ type: 'pointer' }), true);
   const $ = (id) => document.getElementById(id);
   const show = (which) => {
     for (const id of ['editor', 'preview', 'image', 'empty']) $(id).style.display = 'none';

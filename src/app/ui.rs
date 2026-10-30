@@ -93,6 +93,11 @@ fn style_once(ctx: &egui::Context, done: &mut bool) -> bool {
     v.selection.stroke = egui::Stroke::new(1.0, ACCENT);
     v.hyperlink_color = ACCENT;
     ctx.set_visuals(v);
+    // Zoom is `ui_scale`, set by the app's own keys. egui's built-in Ctrl +/- would zoom on top
+    // of it from the same keypress, and everything projected from 3D (labels, spinners, badges)
+    // divides by `ui_scale`: they drifted away from their figures, more the further from the
+    // window's corner.
+    ctx.options_mut(|o| o.zoom_with_keyboard = false);
     *done = true;
     true
 }
@@ -165,16 +170,15 @@ pub fn draw(
     mut side: Side,
     mut images: Local<HashMap<String, Option<egui::TextureHandle>>>,
     mut styled: Local<bool>,
-    mut last_scale: Local<f32>,
     mut last_panel: Local<Option<String>>,
 ) -> Result {
     let ctx = contexts.ctx_mut()?;
     if style_once(ctx, &mut styled) {
         return Ok(());
     }
-    if (*last_scale - settings.ui_scale).abs() > 1e-3 {
+    // Checked against egui's own value every frame, so nothing else can leave the two apart.
+    if (ctx.zoom_factor() - settings.ui_scale).abs() > 1e-3 {
         ctx.set_zoom_factor(settings.ui_scale);
-        *last_scale = settings.ui_scale;
     }
     let now = now_millis();
     store.typing = ctx.memory(|m| m.focused().is_some());
@@ -340,7 +344,7 @@ pub fn draw(
         draw_satellites(ctx, &mut store, now);
         draw_files(ctx, &mut store);
         draw_bubbles(ctx, &mut store, &probe, git.as_ref(), &mut images, now);
-        draw_viewer(ctx, &mut store, &mut images);
+        draw_viewer(ctx, &mut store, &mut settings, &mut images);
         let mut cards: Vec<(&str, egui::Rect)> = Vec::new();
         if let Some(r) = draw_reply(ctx, &mut store, &mut settings) {
             cards.push(("reply-card", r));
@@ -964,6 +968,14 @@ pub fn draw(
     let mut inset_right = 0.0_f32;
     let just_opened = selected.as_ref().map(|a| &a.id) != last_panel.as_ref();
     *last_panel = selected.as_ref().map(|a| a.id.clone());
+    let mut reconnect = false;
+    // The commander's session id is what `claude --resume` takes: with it, a session whose
+    // terminal was closed can be picked up again.
+    let resume_cmd = selected
+        .as_ref()
+        .filter(|a| a.depth == 0)
+        .and(store.current.as_ref())
+        .map(|sid| format!("claude --resume {sid}"));
     if let Some(agent) = selected.as_ref() {
         let narrator = settings.narrator;
         let stalled = store.stalled.clone();
@@ -1015,34 +1027,53 @@ pub fn draw(
                     if ui.small_button("✕ close  (Esc)").clicked() {
                         close = true;
                     }
+                    if let Some(cmd) = &resume_cmd {
+                        if ui
+                            .small_button("⟲ reconnect")
+                            .on_hover_text(format!("Pick this session up again in a new terminal tab:\n{cmd}"))
+                            .clicked()
+                        {
+                            reconnect = true;
+                        }
+                        if ui.small_button("⧉").on_hover_text(format!("Copy  {cmd}")).clicked() {
+                            ui.ctx().copy_text(cmd.clone());
+                        }
+                    }
                 });
-                agent_panel(
-                    ui,
-                    agent,
-                    now,
-                    &mut store.expanded_calls,
-                    just_opened,
-                    narrator,
-                    &stalled,
-                    &probe,
-                    git.as_ref(),
-                    &mut images,
-                    &mut view_image,
-                    &mut query,
-                    &changes,
-                    &cwd,
-                    &touched,
-                    &mut history,
-                    &mut fold_groups,
-                    &servers_snap,
-                    &mut kill_armed,
-                    &mut docker_armed,
-                    &mut kill_request,
-                    &mut docker_request,
-                    &mut open_turn,
-                );
+                // Clipped: the width you drag the panel to holds, whatever the agent's rows are.
+                clipped(ui, |ui| {
+                    agent_panel(
+                        ui,
+                        agent,
+                        now,
+                        &mut store.expanded_calls,
+                        just_opened,
+                        narrator,
+                        &stalled,
+                        &probe,
+                        git.as_ref(),
+                        &mut images,
+                        &mut view_image,
+                        &mut query,
+                        &changes,
+                        &cwd,
+                        &touched,
+                        &mut history,
+                        &mut fold_groups,
+                        &servers_snap,
+                        &mut kill_armed,
+                        &mut docker_armed,
+                        &mut kill_request,
+                        &mut docker_request,
+                        &mut open_turn,
+                    )
+                });
             });
         inset_right = right.response.rect.width();
+        if reconnect && let (Some(cmd), Some(sid)) = (resume_cmd.clone(), store.current.clone()) {
+            store.term_run = Some(cmd);
+            store.terminal_open = Some(sid);
+        }
         // The width you dragged it to is the width it opens at, this run and the next.
         if (inset_right - settings.agent_panel_width).abs() > 1.0 && inset_right > 100.0 {
             settings.agent_panel_width = inset_right;
@@ -1414,7 +1445,7 @@ pub fn draw(
             store.focus_file = Some(path);
         }
     }
-    if let Some(rect) = draw_viewer(ctx, &mut store, &mut images) {
+    if let Some(rect) = draw_viewer(ctx, &mut store, &mut settings, &mut images) {
         ui_rects.push(rect);
     }
     if let Some(rect) = draw_approvals(ctx, &mut store, &bridge.0, inset_top) {
@@ -1737,10 +1768,38 @@ fn draw_files(ctx: &egui::Context, store: &mut Store) {
     );
     let mut open: Option<String> = None;
     let mut reveal_dir: Option<String> = None;
-    for (path, label, x, y, reads, edits) in store.file_screen.clone() {
+    // Labels that would land on one already drawn are skipped, the busiest files first: folder
+    // captions, the hovered file, then by edits and reads. Sizes are last frame's.
+    let mut labels = store.file_screen.clone();
+    let hovered = store.hovered_file.clone();
+    labels.sort_by_key(|(path, _, _, _, reads, edits)| {
+        (
+            !path.starts_with("dir:"),
+            hovered.as_deref() != Some(path.as_str()),
+            std::cmp::Reverse((*edits, *reads)),
+        )
+    });
+    let mut taken: Vec<egui::Rect> = Vec::new();
+    for (path, label, x, y, reads, edits) in labels {
         let pos = egui::pos2(x, y + 10.0);
         if !scene.contains(pos) {
             continue;
+        }
+        let id = if let Some(dir) = path.strip_prefix("dir:") {
+            egui::Id::new(("dir", dir))
+        } else {
+            egui::Id::new(("file", &path))
+        };
+        if let Some(size) = ctx.memory(|m| m.area_rect(id)).map(|r| r.size()) {
+            let rect = if path.starts_with("dir:") {
+                egui::Rect::from_center_size(pos, size)
+            } else {
+                egui::Rect::from_min_size(pos - egui::vec2(size.x * 0.5, 0.0), size)
+            };
+            if taken.iter().any(|t| t.intersects(rect)) {
+                continue;
+            }
+            taken.push(rect);
         }
         if let Some(dir) = path.strip_prefix("dir:") {
             egui::Area::new(egui::Id::new(("dir", dir)))
@@ -2284,6 +2343,25 @@ fn draw_dock_zones(ctx: &egui::Context, grid: &DockGrid, pointer: egui::Pos2) {
     }
 }
 
+/// Run `add` in a child that cannot grow `ui`: what is wider or taller than the room left is
+/// clipped, and `ui` advances by that room at most. egui containers grow to fit their content and
+/// never shrink below it, so without this one long line (or a terminal grid sized to its last,
+/// bigger block) made a card or the agent panel spring back after every resize.
+pub(super) fn clipped<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    let rect = ui.available_rect_before_wrap();
+    let mut child = ui.new_child(
+        egui::UiBuilder::new()
+            .id_salt("clipped")
+            .max_rect(rect)
+            .layout(*ui.layout()),
+    );
+    child.set_clip_rect(rect.intersect(ui.clip_rect()));
+    let r = add(&mut child);
+    let used = child.min_rect().height().min(rect.height());
+    ui.advance_cursor_after_rect(egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), used)));
+    r
+}
+
 /// The chrome shared by every card (reply, terminal, turn, settings): a Tooltip-order area above
 /// the badges and labels, solid frame, a title row that drags the card (drop it on a dock target
 /// to dock it, drag it again to undock), ✕ and ⛶, an optional search box (Ctrl+F) whose
@@ -2402,14 +2480,14 @@ pub(super) fn floating_card(
                     if let Some(size) = fixed_size {
                         ui.set_width(size.x - pad);
                         ui.set_height(size.y - pad);
-                        content(ui, &mut out);
+                        clipped(ui, |ui| content(ui, &mut out));
                     } else {
                         egui::Resize::default()
                             .id_salt((id, "size"))
                             .default_size(default_size)
                             .min_size(egui::vec2(320.0, 160.0))
                             .max_size(max_size)
-                            .show(ui, |ui| content(ui, &mut out));
+                            .show(ui, |ui| clipped(ui, |ui| content(ui, &mut out)));
                     }
                     // Edges of a docked card: drag to grow or shrink by whole cells.
                     if docked.is_some() && !maxed {
@@ -2672,6 +2750,9 @@ fn draw_terminal(
     let mut new_tab = false;
     let mut close_tab: Option<usize> = None;
     let mut switch_to: Option<usize> = None;
+    // Reconnect: a command for a fresh tab (the first tab, when this opens the consoles).
+    let run = store.term_run.take();
+    let had_tabs = terms.has(&sid);
     let free = ctx.memory(|m| m.focused().is_none());
     let (ctrl_t, ctrl_w) = ctx.input(|i| {
         (
@@ -2817,6 +2898,12 @@ fn draw_terminal(
         if ctrl_t || new_tab {
             let here = set.active_mut().cwd.clone();
             let _ = set.open(&here);
+        }
+        if let Some(cmd) = run {
+            let opened = !had_tabs || set.open(&cwd).is_ok();
+            if opened {
+                set.active_mut().write(format!("{cmd}\r").into_bytes());
+            }
         }
         if let Some(i) = close_tab.or(if ctrl_w { Some(set.active) } else { None }) {
             set.close(i);
@@ -4820,6 +4907,7 @@ fn open_viewer(store: &mut Store, path: &str) {
         index,
         zoom: 1.0,
         offset: (0.0, 0.0),
+        max: false,
     });
 }
 
@@ -4842,12 +4930,12 @@ fn full_image<'a>(
     images.get(&key).and_then(|t| t.as_ref())
 }
 
-/// `code` and **bold** inside a line.
-/// Centered, movable, resizable viewer. Images: drag to pan, scroll to zoom. Markdown is rendered,
-/// PDFs show extracted text. ◀ ▶ or arrow keys browse the unit's items, Esc or ✕ closes.
+/// The image viewer, a card like the others (drag the title, dock it, ⛶, ✕). Drag the image to
+/// pan, scroll to zoom. ◀ ▶ or arrow keys browse the unit's images, Esc or ✕ closes.
 fn draw_viewer(
     ctx: &egui::Context,
     store: &mut Store,
+    settings: &mut Settings,
     images: &mut HashMap<String, Option<egui::TextureHandle>>,
 ) -> Option<egui::Rect> {
     let mut viewer = store.viewer.clone()?;
@@ -4874,60 +4962,47 @@ fn draw_viewer(
     let path = viewer.items.get(viewer.index).cloned().unwrap_or_default();
     let kind = doc_kind(&path);
     let vr = ctx.viewport_rect();
-    let default_size = egui::vec2(vr.width() * 0.7, vr.height() * 0.75);
+    let default_size = egui::vec2(vr.width() * 0.5, vr.height() * 0.6);
     let mut close = false;
     let mut open_ext = false;
-    let win = egui::Window::new("viewer")
-        .title_bar(false)
-        .default_pos(vr.center() - default_size / 2.0)
-        .default_size(default_size)
-        .resizable(true)
-        .collapsible(false)
-        .frame(
-            egui::Frame::NONE
-                .fill(INK)
-                .stroke(egui::Stroke::new(1.5, SAND))
-                .inner_margin(10.0)
-                .corner_radius(8.0),
-        )
-        .show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                let name = path.rsplit(['/', '\\']).next().unwrap_or("").to_string();
-                ui.add(egui::Label::new(egui::RichText::new(name).font(stencil(14.0)).color(SAND)).truncate())
-                    .on_hover_text(&path);
-                ui.label(
-                    egui::RichText::new(format!("{} / {}", viewer.index + 1, n.max(1)))
-                        .small()
-                        .color(DIM),
-                );
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("✕  (Esc)").clicked() {
-                        close = true;
-                    }
-                    if ui.button("open externally").clicked() {
-                        open_ext = true;
-                    }
-                    if n > 1 && ui.button("▶").clicked() {
-                        step(&mut viewer, 1);
-                    }
-                    if n > 1 && ui.button("◀").clicked() {
-                        step(&mut viewer, -1);
-                    }
-                    if kind == DocKind::Image {
-                        ui.label(
-                            egui::RichText::new(format!(
-                                "{:.0}%  · drag to pan · scroll to zoom · drag the corner to resize",
-                                viewer.zoom * 100.0
-                            ))
-                            .small()
-                            .color(DIM),
-                        );
-                    } else {
-                        ui.label(egui::RichText::new("drag the corner to resize").small().color(DIM));
-                    }
-                });
-            });
-            ui.add_space(6.0);
+    let mut nav = 0isize;
+    let (index, zoom) = (viewer.index, viewer.zoom);
+    let name = path.rsplit(['/', '\\']).next().unwrap_or("").to_string();
+    let (mut cs, mut dock, grid) = begin_card(store, settings, "viewer-card", ctx);
+    let out = floating_card(
+        ctx,
+        "viewer-card",
+        viewer.max,
+        &mut cs,
+        &mut dock,
+        grid,
+        vr.center() - default_size / 2.0,
+        default_size,
+        None,
+        |ui| {
+            ui.label(egui::RichText::new("🖼").size(16.0));
+            ui.add(egui::Label::new(egui::RichText::new(&name).font(stencil(14.0)).color(SAND)).truncate())
+                .on_hover_text(&path);
+            ui.label(
+                egui::RichText::new(format!("{} / {}  ·  {:.0}%", index + 1, n.max(1), zoom * 100.0))
+                    .small()
+                    .color(DIM),
+            );
+            if n > 1 && ui.small_button("◀").on_hover_text("Previous (←)").clicked() {
+                nav = -1;
+            }
+            if n > 1 && ui.small_button("▶").on_hover_text("Next (→)").clicked() {
+                nav = 1;
+            }
+            if ui
+                .small_button("↗")
+                .on_hover_text("Open in the system's viewer")
+                .clicked()
+            {
+                open_ext = true;
+            }
+        },
+        |ui, _q| {
             let avail = ui.available_size();
             match kind {
                 DocKind::Image => match full_image(ctx, images, &path) {
@@ -4935,12 +5010,12 @@ fn draw_viewer(
                         let fitted = fit(tex.size_vec2(), avail.x.min(avail.y)) * viewer.zoom;
                         let out = egui::ScrollArea::both()
                             .id_salt("viewer-scroll")
+                            .auto_shrink([false, false])
                             .scroll_offset(egui::vec2(viewer.offset.0, viewer.offset.1))
-                            .max_width(avail.x)
-                            .max_height(avail.y)
                             .show(ui, |ui| {
                                 ui.add(egui::Image::new(egui::load::SizedTexture::new(tex.id(), fitted)))
                                     .interact(egui::Sense::drag())
+                                    .on_hover_text("drag to pan · scroll to zoom")
                             });
                         let resp = out.inner;
                         let mut offset = out.state.offset;
@@ -4948,10 +5023,9 @@ fn draw_viewer(
                             offset -= resp.drag_delta();
                         }
                         let scroll = ui.input(|i| i.smooth_scroll_delta.y);
-                        if (resp.hovered()
-                            || out
-                                .inner_rect
-                                .contains(ui.input(|i| i.pointer.hover_pos().unwrap_or_default())))
+                        if out
+                            .inner_rect
+                            .contains(ui.input(|i| i.pointer.hover_pos().unwrap_or_default()))
                             && scroll != 0.0
                         {
                             viewer.zoom = (viewer.zoom * (1.0 + scroll * 0.002)).clamp(0.2, 8.0);
@@ -4963,10 +5037,19 @@ fn draw_viewer(
                     }
                 },
                 DocKind::Other => {
-                    ui.label(egui::RichText::new("this file opens in VS Code, not here").color(DIM));
+                    ui.label(egui::RichText::new("this file opens in the editor, not here").color(DIM));
                 }
             }
-        })?;
+        },
+    );
+    end_card(store, settings, "viewer-card", cs, dock, &out.sash);
+    if nav != 0 {
+        step(&mut viewer, nav);
+    }
+    if out.toggle_max {
+        viewer.max = !viewer.max;
+    }
+    close |= out.close;
     if open_ext {
         let p = path.clone();
         std::thread::spawn(move || {
@@ -4978,7 +5061,7 @@ fn draw_viewer(
     } else {
         store.viewer = Some(viewer);
     }
-    Some(win.response.rect)
+    out.rect
 }
 
 /// Under every unit: a ring with the task-list percentage when the agent keeps one, and a hint of

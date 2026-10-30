@@ -167,6 +167,8 @@ pub struct Viewer {
     pub zoom: f32,
     /// Scroll offset of the content, driven by dragging.
     pub offset: (f32, f32),
+    /// Filling the screen (⛶).
+    pub max: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -345,6 +347,13 @@ pub struct Store {
     pub focus_app: bool,
     /// Where the WebView surface goes this frame, in physical pixels (x, y, w, h); None hides it.
     pub webview_rect: Option<[f32; 4]>,
+    /// What is drawn above the editor card and overlaps its surface, in physical pixels
+    /// (x, y, w, h): cut out of the native surface, so cards stack over it like any other.
+    pub webview_holes: Vec<[f32; 4]>,
+    /// The surface just took the keyboard (it was clicked): the editor card comes to the front.
+    pub raise_editor: bool,
+    /// A command line to run in a fresh terminal tab of the current session (Reconnect).
+    pub term_run: Option<String>,
     pub webview_logged: bool,
     /// An egui text field has the keyboard: scene shortcuts (R, Esc) stay out of the way.
     pub typing: bool,
@@ -462,6 +471,9 @@ impl Store {
             followed: HashSet::new(),
             focus_app: false,
             webview_rect: None,
+            webview_holes: Vec::new(),
+            raise_editor: false,
+            term_run: None,
             webview_logged: false,
             typing: false,
             card_rects: Vec::new(),

@@ -139,6 +139,7 @@ mod tests {
             kind: String::new(),
             model: String::new(),
             prompt: String::new(),
+            background: false,
             at: 2,
         });
     }

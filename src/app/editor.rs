@@ -424,6 +424,15 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
     let ppp = ctx.pixels_per_point();
     let vr = ctx.viewport_rect();
     let default_pos = egui::pos2(vr.center().x - 420.0, vr.min.y + 80.0);
+    // A click inside the surface reaches the page, not egui: the surface taking the keyboard is
+    // that click, and it brings the card forward like a click on any other card.
+    let layer = egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("editor-card"));
+    if std::mem::take(&mut store.raise_editor) {
+        ctx.move_to_top(layer);
+    }
+    // Floating, the resize corner is the card's bottom right: the surface stops short of it, or
+    // the page would take every press there.
+    let corner_room = if dock.is_none() && !maxed { 16.0 } else { 0.0 };
     let out = floating_card(
         ctx,
         "editor-card",
@@ -490,8 +499,8 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
                     }
                 }
             });
-            let avail = ui.available_size();
-            let (rect, _) = ui.allocate_exact_size(avail, egui::Sense::hover());
+            let avail = ui.available_size() - egui::vec2(0.0, corner_room);
+            let (rect, _) = ui.allocate_exact_size(avail.max(egui::vec2(1.0, 1.0)), egui::Sense::hover());
             ui.painter().rect_filled(rect, 4.0, INK);
             if docs.is_empty() {
                 ui.painter().text(
@@ -518,6 +527,25 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
     store.webview_rect = surface
         .filter(|_| !docs.is_empty() && !store.quick_open)
         .map(|r| [r.min.x * ppp, r.min.y * ppp, r.width() * ppp, r.height() * ppp]);
+    // Everything egui stacks above this card (cards brought forward, menus, tooltips) is cut out
+    // of the surface, so the card sits in the stack like the others. Rects are last frame's.
+    store.webview_holes = match surface {
+        Some(s) => ctx.memory(|m| {
+            let ids: Vec<egui::LayerId> = m.layer_ids().collect();
+            let above = ids
+                .iter()
+                .position(|l| *l == layer)
+                .map_or(&ids[..0], |i| &ids[i + 1..]);
+            above
+                .iter()
+                .filter(|l| m.areas().is_visible(l))
+                .filter_map(|l| m.area_rect(l.id))
+                .filter(|r| r.intersects(s))
+                .map(|r| [r.min.x * ppp, r.min.y * ppp, r.width() * ppp, r.height() * ppp])
+                .collect()
+        }),
+        None => Vec::new(),
+    };
     if store.webview_rect.is_some() && !store.webview_logged {
         store.webview_logged = true;
         bevy::log::info!("editor card: surface rect {:?} (ppp {ppp})", store.webview_rect);

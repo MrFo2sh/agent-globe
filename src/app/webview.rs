@@ -2,8 +2,8 @@
 //! the editor card's rectangle. One page carries Monaco for code, Markdown rendered with Mermaid,
 //! Word documents converted in the page, and images; a second view shows PDFs in Edge's own
 //! viewer. Runs on the main thread (the views are not `Send`), one frame behind the UI that
-//! reserved the rectangle. A native child window always paints above the scene and above any
-//! card that overlaps it: that is the price of a real editor.
+//! reserved the rectangle. A native child window paints above everything egui draws, so what
+//! egui stacks above the editor card is cut out of the surface's window region.
 
 use super::files::{DocKind, kind_of, language_of};
 use super::state::{EditorCmd, Store, ToastKind};
@@ -17,12 +17,22 @@ const PAGE: &str = include_str!("../../assets/editor/page.html");
 
 enum Ipc {
     Ready,
+    /// The page was pressed: the editor card comes to the front.
+    Pointer,
     Log(String),
     QuickOpen,
-    Mode { preview: bool },
+    Mode {
+        preview: bool,
+    },
     CloseTab,
-    Dirty { path: String, dirty: bool },
-    Save { path: String, content: String },
+    Dirty {
+        path: String,
+        dirty: bool,
+    },
+    Save {
+        path: String,
+        content: String,
+    },
 }
 
 fn parse_ipc(body: &str) -> Option<Ipc> {
@@ -30,6 +40,7 @@ fn parse_ipc(body: &str) -> Option<Ipc> {
     let path = v["path"].as_str().unwrap_or("").to_string();
     match v["type"].as_str()? {
         "ready" => Some(Ipc::Ready),
+        "pointer" => Some(Ipc::Pointer),
         "log" => Some(Ipc::Log(v["text"].as_str().unwrap_or("").to_string())),
         "quickopen" => Some(Ipc::QuickOpen),
         "mode" => Some(Ipc::Mode {
@@ -61,6 +72,50 @@ pub struct WebViews {
     warned: bool,
     failed: bool,
     shown: bool,
+    /// The holes last cut, relative to the surface, with its size: the region changes only when
+    /// they do (setting it repaints the surface).
+    region: Vec<[i32; 4]>,
+}
+
+/// Cut `holes` (window physical pixels) out of the surface at `surface`, so what egui stacks
+/// above the editor card shows through. A native child window otherwise paints over everything.
+#[cfg(windows)]
+fn cut_holes(view: &wry::WebView, key: &[[i32; 4]]) {
+    use windows_sys::Win32::Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, RGN_DIFF, SetWindowRgn};
+    use wry::WebViewExtWindows;
+    let hwnd = view.hwnd().0 as windows_sys::Win32::Foundation::HWND;
+    let Some((size, holes)) = key.split_first() else { return };
+    // SAFETY: the region handles are created here and either handed to the system by a
+    // successful SetWindowRgn or deleted; the window belongs to this thread's WebView.
+    unsafe {
+        if holes.is_empty() {
+            SetWindowRgn(hwnd, std::ptr::null_mut(), 1);
+            return;
+        }
+        let rgn = CreateRectRgn(0, 0, size[2], size[3]);
+        for h in holes {
+            let hole = CreateRectRgn(h[0], h[1], h[2], h[3]);
+            CombineRgn(rgn, rgn, hole, RGN_DIFF);
+            DeleteObject(hole);
+        }
+        if SetWindowRgn(hwnd, rgn, 1) == 0 {
+            DeleteObject(rgn);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn cut_holes(_view: &wry::WebView, _key: &[[i32; 4]]) {}
+
+/// The region key for a surface: its size first, then each hole relative to it (x0, y0, x1, y1).
+fn region_key(surface: [f32; 4], holes: &[[f32; 4]]) -> Vec<[i32; 4]> {
+    let mut key = vec![[0, 0, surface[2].round() as i32, surface[3].round() as i32]];
+    for h in holes {
+        let x0 = (h[0] - surface[0]).round() as i32;
+        let y0 = (h[1] - surface[1]).round() as i32;
+        key.push([x0, y0, x0 + h[2].round() as i32, y0 + h[3].round() as i32]);
+    }
+    key
 }
 
 fn bounds(r: [f32; 4]) -> wry::Rect {
@@ -197,6 +252,7 @@ pub fn sync(
     }
     for m in inbox {
         match m {
+            Ipc::Pointer => store.raise_editor = true,
             Ipc::Log(text) => info!("editor page: {text}"),
             Ipc::QuickOpen => {
                 store.quick_open = true;
@@ -266,7 +322,11 @@ pub fn sync(
                             .with_bounds(bounds(r))
                             .build_as_child(&window)
                         {
-                            Ok(v) => views.pdf = Some(v),
+                            Ok(v) => {
+                                views.pdf = Some(v);
+                                // The new view gets the current holes too.
+                                views.region.clear();
+                            }
                             Err(e) => store.toast(ToastKind::Error, format!("pdf view failed: {e}")),
                         }
                     } else if views.pdf_url != url
@@ -308,6 +368,13 @@ pub fn sync(
 
     // ---- placement: the page or the pdf view fills the reserved rectangle, the other hides
     let show_pdf = active_kind == Some(DocKind::Pdf);
+    let key = want.map(|r| region_key(r, &store.webview_holes)).unwrap_or_default();
+    if want.is_some() && key != views.region {
+        for v in [&views.page, &views.pdf].into_iter().flatten() {
+            cut_holes(v, &key);
+        }
+        views.region = key;
+    }
     if let Some(v) = &views.page {
         match (want, show_pdf) {
             (Some(r), false) => {

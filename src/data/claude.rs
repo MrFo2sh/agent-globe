@@ -91,6 +91,9 @@ struct FileState {
 pub struct Tailer {
     session: SessionRef,
     files: HashMap<PathBuf, FileState>,
+    /// Subagents whose end only their `.meta.json` reports (background launches, or no meta
+    /// yet when found): (meta path, agent id), re-read each poll until it says `finished`.
+    unfinished: Vec<(PathBuf, String)>,
     started: bool,
     pub parse_errors: u32,
 }
@@ -100,6 +103,7 @@ impl Tailer {
         Tailer {
             session,
             files: HashMap::new(),
+            unfinished: Vec::new(),
             started: false,
             parse_errors: 0,
         }
@@ -133,7 +137,29 @@ impl Tailer {
         for p in paths {
             self.read_appended(&p, &mut events);
         }
+        self.check_finished(&mut events);
         events
+    }
+
+    /// End the background subagents whose meta now says `finished`. Their spawning call returned
+    /// at launch, and their own transcript carries no end marker: without this they would show
+    /// as thinking forever. At 0: the end is the agent's last event.
+    fn check_finished(&mut self, events: &mut Vec<Event>) {
+        let session_id = self.session.id.clone();
+        self.unfinished.retain(|(meta_path, agent_id)| {
+            let finished = fs::read_to_string(meta_path)
+                .ok()
+                .and_then(|s| serde_json::from_str::<Value>(&s).ok())
+                .is_some_and(|v| v["finished"].as_bool() == Some(true));
+            if finished {
+                events.push(Event::AgentEnd {
+                    session_id: session_id.clone(),
+                    agent_id: agent_id.clone(),
+                    at: 0,
+                });
+            }
+            !finished
+        });
     }
 
     fn discover_subagents(&mut self, events: &mut Vec<Event>) {
@@ -159,6 +185,10 @@ impl Tailer {
                 .filter(|m| *m != "inherit")
                 .unwrap_or("")
                 .to_string();
+            let background = meta["requestShape"].as_str() == Some("background");
+            if background || meta.is_null() {
+                self.unfinished.push((meta_path.clone(), agent_id.clone()));
+            }
             events.push(Event::AgentSpawn {
                 session_id: self.session.id.clone(),
                 agent_id: agent_id.clone(),
@@ -168,6 +198,7 @@ impl Tailer {
                 kind: meta["agentType"].as_str().unwrap_or("subagent").to_string(),
                 model,
                 prompt: String::new(),
+                background,
                 at: fs::metadata(&p).map(|m| file_millis(&m)).unwrap_or(0),
             });
             self.files.insert(
@@ -518,6 +549,33 @@ fn user_message(session_id: &str, agent: &str, text: &str, cwd: &str, at: Millis
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `AGENT_GLOBE_SESSION=<id> cargo test real_session_subagents_end -- --ignored --nocapture`:
+    /// tail a real session and list its subagents that never ended (should be none once done).
+    #[test]
+    #[ignore]
+    fn real_session_subagents_end() {
+        let Ok(id) = std::env::var("AGENT_GLOBE_SESSION") else {
+            return;
+        };
+        let r = discover(&default_claude_dir())
+            .into_iter()
+            .find(|s| s.id == id)
+            .expect("session");
+        let mut session = crate::data::model::Session::new(&r.id, &r.project, 0);
+        let mut tail = Tailer::new(r);
+        session.apply_all(tail.poll());
+        for a in session.agents.iter().filter(|a| a.depth > 0) {
+            eprintln!("{} bg={} ended={:?} {}", a.id, a.background, a.ended, a.name);
+        }
+        let open: Vec<&str> = session
+            .agents
+            .iter()
+            .filter(|a| a.depth > 0 && a.ended.is_none())
+            .map(|a| a.name.as_str())
+            .collect();
+        eprintln!("never ended: {open:?}");
+    }
 
     #[test]
     fn summarizes_common_tools() {

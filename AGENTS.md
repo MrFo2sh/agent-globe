@@ -60,8 +60,16 @@ The app tails up to six recently modified sessions at once; `Store.current` is t
 - Never chain `ship` after a step that can fail. A ship on an unchanged version re-tags and
   duplicates the factory's SHIPPED.md row. Gate with `grep -q 'version = "X"' Cargo.toml &&`.
 - The editor surface is a WebView2 child window: it paints above everything in its rectangle,
-  takes the keyboard once clicked (the app takes it back on any click outside), and is created
-  only on the first open. Monaco loads from the internet.
+  so what egui stacks above the editor card is cut out of its window region (`webview_holes`).
+  It takes the keyboard once clicked (the app takes it back on any click outside), reports
+  presses over IPC (`pointer`: the card comes forward), and is created only on the first open.
+  Monaco loads from the internet.
+- Zoom is `settings.ui_scale` only: egui's own keyboard zoom is off, and `draw` re-applies the
+  scale whenever egui's differs. Everything projected from 3D divides by it.
+- egui containers (panels, `Resize`) grow to fit content and never shrink below it: card bodies
+  and the agent panel run inside `clipped`, or one long row pins their width.
+- Background subagents (`requestShape: background` in `.meta.json`): their spawning call returns
+  at launch. The tailer re-reads the meta until `finished` and only then ends them.
 
 - Bevy system tuples hold 20 systems at most: `mod.rs` chains two halves.
 - egui 0.36: `Panel::top/left/...` inside a root `Ui`, `Button::image`, `style_mut_of`; a font

@@ -668,6 +668,10 @@ impl Terminals {
         self.sets.remove(session_id);
     }
 
+    pub fn has(&self, session_id: &str) -> bool {
+        self.sets.contains_key(session_id)
+    }
+
     pub fn set_mut(&mut self, session_id: &str, cwd: &str) -> Option<&mut TabSet> {
         if !self.sets.contains_key(session_id) {
             match TabSet::new(cwd) {
