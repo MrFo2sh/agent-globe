@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <title>Agent Globe editor</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/github-markdown-css@5.8.1/github-markdown-dark.min.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/styles/github-dark.min.css">
 <style>
   :root { color-scheme: dark; }
   html, body { margin: 0; height: 100%; background: #060c05; color: #bee4b4; font-family: Consolas, "Cascadia Mono", monospace; overflow: hidden; }
@@ -14,6 +15,7 @@
   #preview .markdown-body a { color: #a0e86e; }
   #preview .markdown-body code { background: #0b1a09; color: #e6ffdc; }
   #preview .markdown-body pre { background: #0b1a09; border: 1px solid #244a1e; }
+  #preview .markdown-body pre code.hljs { background: transparent; padding: 0; }
   #preview .markdown-body table tr { background: transparent; }
   #preview .markdown-body table tr:nth-child(2n) { background: #0b1a09; }
   #preview .markdown-body blockquote { color: #8fb985; border-left-color: #3d7a32; }
@@ -42,6 +44,7 @@
 </script>
 <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mermaid@11.4.1/dist/mermaid.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@highlightjs/cdn-assets@11.10.0/highlight.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/mammoth@1.8.0/mammoth.browser.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.2/min/vs/loader.js"></script>
 <script>
@@ -78,6 +81,12 @@
     }
     if (window.mermaid && i > 0) {
       try { await mermaid.run({ nodes: $('md').querySelectorAll('.mermaid') }); } catch (e) { status('mermaid: ' + e.message); }
+    }
+    // the remaining fenced blocks get syntax colours: by their language tag, or guessed
+    if (window.hljs) {
+      for (const code of $('md').querySelectorAll('pre > code')) {
+        try { hljs.highlightElement(code); } catch (e) {}
+      }
     }
     show('preview');
   }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.29.2 - 2026-10-30
+- The file index stopped rebuilding itself every frame. Since 0.26.0 it only counted as built after a search, so with nobody searching it walked every repository again and launched a `git log` per repository, frame after frame. Dozens of git processes piled up under the app and took CPU from everything, the terminal included. A test now proves an unchanged folder is not rebuilt.
+- Markdown preview colours code blocks: fenced blocks get syntax highlighting (highlight.js, GitHub dark theme) by their language tag, or a guessed one, on the phosphor background. Mermaid blocks still become diagrams.
+
 ## 0.29.1 - 2026-10-29
 - The terminal uses Microsoft's modern console host (ConPTY 1.25, the one Windows Terminal and VS Code ship) instead of the one built into Windows: keystrokes reach the screen in about half the time, and Claude Code no longer lags inside the app. Bundled under vendor/conpty and installed beside the app.
 

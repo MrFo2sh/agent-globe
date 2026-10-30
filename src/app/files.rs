@@ -222,7 +222,10 @@ impl FileIndex {
             return;
         }
         self.root = root.to_string();
-        self.built = false;
+        // Built (or being built) for this root and these options: only a new root, new options
+        // or `force` start another walk. Before 0.29.2 this stayed false until someone searched,
+        // so every frame started a full rebuild and a `git log` per repository.
+        self.built = true;
         self.built_with = opts;
         self.dirs.clear();
         self.building.store(true, Ordering::Relaxed);
@@ -308,9 +311,6 @@ impl FileIndex {
 
     /// Fuzzy matches for `query`, best first: (relative path, matched char positions).
     pub fn search(&mut self, query: &str, limit: usize) -> Vec<(String, Vec<usize>)> {
-        if !self.building.load(Ordering::Relaxed) {
-            self.built = true;
-        }
         let q = query.trim();
         if q.is_empty() {
             return Vec::new();
@@ -391,6 +391,13 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert_eq!(index.len(), 3);
+        // one build bumps the generation twice (the list, then its connections): let it settle
+        std::thread::sleep(Duration::from_millis(1500));
+        let generation = index.generation();
+        index.ensure(&dir.to_string_lossy(), false);
+        std::thread::sleep(Duration::from_millis(300));
+        assert_eq!(index.generation(), generation, "an unchanged root must not rebuild");
+        assert!(!index.is_building());
         let hits = index.search("term", 5);
         assert_eq!(hits[0].0, "src/app/terminal.rs");
         assert!(!hits[0].1.is_empty(), "matched positions light up in the list");
