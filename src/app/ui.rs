@@ -2422,7 +2422,9 @@ pub(super) fn floating_card(
             ui.set_min_height(row_h);
             // Title text does not select, so a drag anywhere on this row moves the card.
             ui.style_mut().interaction.selectable_labels = false;
-            header(ui);
+            // Buttons first, from the right; the title gets what is left and truncates in it.
+            // Laid out the other way round, a long title pushed the buttons past the card's edge
+            // and widened the room the body measured (egui grows a layout to what it holds).
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.small_button("✕  (Esc)").clicked() {
                     out.close = true;
@@ -2454,6 +2456,7 @@ pub(super) fn floating_card(
                     }
                     q_lower = q.trim().to_ascii_lowercase();
                 }
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), header);
             });
         });
         ui.separator();

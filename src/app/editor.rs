@@ -519,7 +519,9 @@ pub fn draw_editor_card(ctx: &egui::Context, store: &mut Store, settings: &mut S
                     DIM,
                 );
             }
-            surface = Some(rect);
+            // The surface is a native window that egui's clipping does not reach: never past
+            // what the card shows.
+            surface = Some(rect.intersect(ui.clip_rect()));
         },
     );
     end_card(store, settings, "editor-card", cs, dock, &out.sash);
