@@ -120,7 +120,9 @@ pub struct RingEntities(pub HashMap<(String, u32), Entity>);
 /// Where one shown session sits in the world and how it is laid out.
 pub struct SessionScene {
     pub layout: Layout,
-    pub agent_count: usize,
+    /// What the layout was built from: agents, how many have retired, the selected one. Any
+    /// change rebuilds it.
+    pub built_from: (usize, usize, Option<String>),
     pub offset: Vec3,
     pub scale: f32,
     dirty: bool,
@@ -953,17 +955,42 @@ pub fn sync_nodes(
         } else {
             (satellite_offset(i - 1, satellites), theme::SATELLITE_SCALE)
         };
+        // Finished subagents leave the scene after a while; the selected one stays.
+        let selected = store.selected.clone().filter(|_| i == 0);
+        let keep = |a: &agent_globe::data::model::Agent| {
+            a.ended.is_none_or(|e| now - e < theme::RETIRE_MS) || selected.as_deref() == Some(a.id.as_str())
+        };
+        let retired = session.agents.iter().filter(|a| a.depth > 0 && !keep(a)).count();
+        let built_from = (session.agents.len(), retired, selected.clone());
         let entry = scene.per.entry(sid.clone()).or_insert_with(|| SessionScene {
-            layout: layout::layout(session),
-            agent_count: session.agents.len(),
+            layout: layout::layout_where(session, keep),
+            built_from: built_from.clone(),
             offset,
             scale,
             dirty: true,
         });
-        if dirty || entry.agent_count != session.agents.len() {
-            entry.layout = layout::layout(session);
-            entry.agent_count = session.agents.len();
+        if dirty || entry.built_from != built_from {
+            entry.layout = layout::layout_where(session, keep);
+            entry.built_from = built_from;
             entry.dirty = true;
+        }
+        // Units and rings the layout no longer holds leave with it.
+        if entry.dirty {
+            let layout = &entry.layout;
+            entities.0.retain(|(s, id), e| {
+                let keep = s != sid || layout.node(id).is_some();
+                if !keep {
+                    commands.entity(*e).despawn();
+                }
+                keep
+            });
+            rings.0.retain(|(s, depth), e| {
+                let keep = s != sid || *depth <= layout.max_depth;
+                if !keep {
+                    commands.entity(*e).despawn();
+                }
+                keep
+            });
         }
         entry.offset = offset;
         entry.scale = scale;

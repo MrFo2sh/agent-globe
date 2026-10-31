@@ -70,6 +70,9 @@ The app tails up to six recently modified sessions at once; `Store.current` is t
   and the agent panel run inside `clipped`, or one long row pins their width.
 - Background subagents (`requestShape: background` in `.meta.json`): their spawning call returns
   at launch. The tailer re-reads the meta until `finished` and only then ends them.
+- Finished subagents leave the scene after `theme::RETIRE_MS` (`layout::layout_where` keeps the
+  root, live agents, recent ends, the selected one and their ancestors); `sync_nodes` rebuilds
+  the layout when that set changes and despawns units and rings that left it.
 
 - Bevy system tuples hold 20 systems at most: `mod.rs` chains two halves.
 - egui 0.36: `Panel::top/left/...` inside a root `Ui`, `Button::image`, `style_mut_of`; a font

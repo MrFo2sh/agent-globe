@@ -4,8 +4,8 @@
 //! placed near their parent's angle so a parent's cluster reads as one constellation. Links are
 //! quadratic curves lifted out of the ring plane.
 
-use super::model::Session;
-use std::collections::HashMap;
+use super::model::{Agent, Session};
+use std::collections::{HashMap, HashSet};
 use std::f32::consts::TAU;
 
 pub type Vec3 = [f32; 3];
@@ -56,9 +56,31 @@ pub fn orbit_point(depth: u32, angle: f32) -> Vec3 {
 }
 
 pub fn layout(session: &Session) -> Layout {
-    let mut nodes = Vec::with_capacity(session.agents.len());
+    layout_where(session, |_| true)
+}
+
+/// The layout of the agents `keep` accepts, plus their ancestors (a kept child needs its parent
+/// on screen) and the root. The rings close up over the agents left out.
+pub fn layout_where(session: &Session, keep: impl Fn(&Agent) -> bool) -> Layout {
+    let mut shown: HashSet<&str> = HashSet::new();
+    for a in session.agents.iter().filter(|a| a.depth == 0 || keep(a)) {
+        let mut cur = Some(a);
+        while let Some(x) = cur {
+            if !shown.insert(x.id.as_str()) {
+                break;
+            }
+            cur = x.parent.as_deref().and_then(|p| session.agent(p));
+        }
+    }
+    let mut nodes = Vec::with_capacity(shown.len());
     let mut angle_of: HashMap<String, f32> = HashMap::new();
-    let max_depth = session.agents.iter().map(|a| a.depth).max().unwrap_or(0);
+    let max_depth = session
+        .agents
+        .iter()
+        .filter(|a| shown.contains(a.id.as_str()))
+        .map(|a| a.depth)
+        .max()
+        .unwrap_or(0);
 
     for a in session.agents.iter().filter(|a| a.depth == 0) {
         nodes.push(NodePos {
@@ -72,7 +94,11 @@ pub fn layout(session: &Session) -> Layout {
     }
 
     for depth in 1..=max_depth {
-        let mut ring: Vec<&super::model::Agent> = session.agents.iter().filter(|a| a.depth == depth).collect();
+        let mut ring: Vec<&Agent> = session
+            .agents
+            .iter()
+            .filter(|a| a.depth == depth && shown.contains(a.id.as_str()))
+            .collect();
         if ring.is_empty() {
             continue;
         }
@@ -171,6 +197,23 @@ mod tests {
             child.angle,
             parent.angle
         );
+    }
+
+    /// Left-out agents leave the ring, which closes up; a kept child keeps its parent.
+    #[test]
+    fn filtered_layout_keeps_ancestors_and_closes_rings() {
+        let mut s = Session::new("s", "p", 1);
+        for i in 0..4 {
+            spawn(&mut s, &format!("a{i}"), ROOT_AGENT);
+        }
+        spawn(&mut s, "b0", "a1");
+        let l = layout_where(&s, |a| a.id == "b0" || a.id == "a3");
+        let ids: HashSet<&str> = l.nodes.iter().map(|n| n.agent_id.as_str()).collect();
+        assert_eq!(ids, HashSet::from([ROOT_AGENT, "a1", "a3", "b0"]));
+        assert_eq!(l.max_depth, 2);
+        let l = layout_where(&s, |_| false);
+        assert_eq!(l.nodes.len(), 1, "the root always stays");
+        assert_eq!(l.max_depth, 0);
     }
 
     #[test]

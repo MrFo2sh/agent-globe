@@ -35,6 +35,9 @@ pub const NODE_HOVER: Color = Color::srgb(0.78, 0.96, 0.62);
 
 /// An agent counts as active if it did something within this window.
 pub const ACTIVE_WINDOW_MS: i64 = 20_000;
+/// A finished subagent stays this long, so its end is seen, then leaves the scene (it stays in
+/// the sidebar tree and its history; selecting it there brings it back while selected).
+pub const RETIRE_MS: i64 = 45_000;
 /// An open tool call older than this is a stall.
 pub const STALL_AFTER_MS: i64 = 120_000;
 /// Sessions modified within this window are tailed alongside the current one.
