@@ -2444,10 +2444,12 @@ pub(super) fn floating_card(
                     if !q.is_empty() && ui.small_button("⌫").on_hover_text("Clear the search").clicked() {
                         q.clear();
                     }
+                    // Narrows with the card, so the title keeps some room.
+                    let width = (ui.available_width() * 0.3).clamp(60.0, 180.0);
                     let resp = ui.add(
                         egui::TextEdit::singleline(q)
                             .id(egui::Id::new((id, "search")))
-                            .desired_width(180.0)
+                            .desired_width(width)
                             .font(egui::TextStyle::Monospace)
                             .hint_text("🔍 search  (Ctrl+F)"),
                     );
@@ -2456,7 +2458,13 @@ pub(super) fn floating_card(
                     }
                     q_lower = q.trim().to_ascii_lowercase();
                 }
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), header);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    // Squeezed, the title shortens with "…" and stays in its room: a label
+                    // otherwise keeps its full width and paints under the search box and buttons.
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
+                    ui.set_clip_rect(ui.max_rect().intersect(ui.clip_rect()));
+                    header(ui)
+                });
             });
         });
         ui.separator();

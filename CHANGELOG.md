@@ -2,6 +2,7 @@
 
 ## Unreleased
 - Ctrl+C goes only to the card you are in. Selecting text in another card takes no keyboard focus, so the terminal kept it and the Ctrl+C meant to copy that text interrupted the program running in the console (Claude Code included). A press anywhere outside the terminal now hands the keyboard back; a press on the console takes it again.
+- Squeezed card headers stay readable: the title shortens with "…" in the room the buttons leave instead of painting under the search box and buttons, and the search box narrows with the card.
 
 ## 0.30.1 - 2026-10-30
 - A card's title row no longer pushes its buttons past the card's edge: the buttons come first and the title truncates in what is left. The overflow had widened the room the body measured, so the editor surface (a native window egui cannot clip) stuck out of the card, minimap and all.
