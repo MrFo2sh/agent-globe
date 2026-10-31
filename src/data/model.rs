@@ -666,6 +666,11 @@ impl Session {
                 }
                 self.ensure_agent(&agent_id, None, None, "", "", &model, "", at);
                 let a = self.agent_mut(&agent_id).expect("ensured");
+                // The model of the latest reply: a session switched with /model shows the new one.
+                // Claude Code's own placeholder messages ("<synthetic>") are no model.
+                if !model.is_empty() && !model.starts_with('<') {
+                    a.model = model.clone();
+                }
                 a.waiting_for_user = false;
                 a.messages += 1;
                 if role == "assistant" && !text.trim().is_empty() {
@@ -942,6 +947,25 @@ mod tests {
         assert_eq!(s.throttles[0].resets_at, 1_000_000);
         assert_eq!(snippet("  \n first line here\nsecond", 8), "first li…");
         assert_eq!(snippet("short", 10), "short");
+    }
+
+    /// `/model` mid-session: the panel shows the model of the latest reply, not the first.
+    #[test]
+    fn the_model_follows_the_latest_reply() {
+        let mut s = Session::new("s", "p", 1);
+        s.apply(msg("assistant", "hi", 5, 1));
+        assert_eq!(s.root().model, "claude-opus-5-5");
+        let reply = |model: &str| -> Event {
+            serde_json::from_value(serde_json::json!({
+                "type": "message", "session_id": "s", "agent_id": ROOT_AGENT, "role": "assistant",
+                "text": "x", "model": model, "at": 9
+            }))
+            .expect("message event")
+        };
+        s.apply(reply("claude-opus-4-8"));
+        assert_eq!(s.root().model, "claude-opus-4-8");
+        s.apply(reply("<synthetic>"));
+        assert_eq!(s.root().model, "claude-opus-4-8", "placeholders are no model");
     }
 
     #[test]

@@ -3,6 +3,7 @@
 ## Unreleased
 - Ctrl+C goes only to the card you are in. Selecting text in another card takes no keyboard focus, so the terminal kept it and the Ctrl+C meant to copy that text interrupted the program running in the console (Claude Code included). A press anywhere outside the terminal now hands the keyboard back; a press on the console takes it again.
 - Finished subagents leave the scene 45 seconds after they end, and the ring closes up over them: a long session no longer keeps a crowd of "done" units around the commander. They stay in the sidebar tree and their history; selecting one brings it back while it is selected, and a finished parent stays while a child of it still runs.
+- The panel shows the model of the latest reply: switching with `/model` mid-session used to leave the first model on screen. The copy button beside ⟲ reconnect says "copy" (its symbol was missing from the font).
 - Squeezed card headers stay readable: the title shortens with "…" in the room the buttons leave instead of painting under the search box and buttons, and the search box narrows with the card.
 
 ## 0.30.1 - 2026-10-30

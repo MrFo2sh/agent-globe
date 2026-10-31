@@ -1035,7 +1035,7 @@ pub fn draw(
                         {
                             reconnect = true;
                         }
-                        if ui.small_button("⧉").on_hover_text(format!("Copy  {cmd}")).clicked() {
+                        if ui.small_button("copy").on_hover_text(format!("Copy  {cmd}")).clicked() {
                             ui.ctx().copy_text(cmd.clone());
                         }
                     }
