@@ -1,9 +1,18 @@
 # Changelog
 
 ## Unreleased
+- Ctrl+C goes only to the card you are in. Selecting text in another card takes no keyboard focus, so the terminal kept it and the Ctrl+C meant to copy that text interrupted the program running in the console (Claude Code included). A press anywhere outside the terminal now hands the keyboard back; a press on the console takes it again.
 
 ## 0.30.1 - 2026-10-30
+- A card's title row no longer pushes its buttons past the card's edge: the buttons come first and the title truncates in what is left. The overflow had widened the room the body measured, so the editor surface (a native window egui cannot clip) stuck out of the card, minimap and all.
+
 ## 0.30.0 - 2026-10-30
+- Background subagents finish: their spawning call returns at launch, so they showed as thinking forever. Their `.meta.json` is re-read until it says `finished`.
+- Labels, spinners and badges stay on their figures: egui's own Ctrl +/- zoom stacked on the app's UI scale, and everything projected from 3D drifted away from the window's corner. The 3D viewport now accounts for the scale too, and file labels that would overlap are skipped, busiest files first.
+- Cards and the agent panel keep the size you give them: long rows no longer pin their width (the terminal grid sized to its last dock block held an undocked card wide).
+- The editor stacks with the other cards: whatever is above it is cut out of its native surface, a click on it brings it forward, and the floating card's resize corner is no longer under the page.
+- The image viewer is a card like the others (dock, fill, title truncates).
+- ⟲ reconnect in the commander's panel opens a terminal tab running `claude --resume <session>`; ⧉ copies the command.
 ## 0.29.2 - 2026-10-30
 - The file index stopped rebuilding itself every frame. Since 0.26.0 it only counted as built after a search, so with nobody searching it walked every repository again and launched a `git log` per repository, frame after frame. Dozens of git processes piled up under the app and took CPU from everything, the terminal included. A test now proves an unchanged folder is not rebuilt.
 - Markdown preview colours code blocks: fenced blocks get syntax highlighting (highlight.js, GitHub dark theme) by their language tag, or a guessed one, on the phosphor background. Mermaid blocks still become diagrams.

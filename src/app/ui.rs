@@ -2979,6 +2979,14 @@ fn draw_grid_inner(ui: &mut egui::Ui, tab: &mut terminal::PtyTab, font_px: f32) 
     if resp.clicked() || resp.drag_started() {
         resp.request_focus();
     }
+    // A press anywhere else (another card, a panel, the scene) hands the keyboard back. Selecting
+    // text in another card takes no egui focus, so without this the console kept it, and the
+    // Ctrl+C meant to copy that text interrupted whatever ran here.
+    let press = ui.input(|i| i.pointer.any_pressed().then(|| i.pointer.interact_pos()).flatten());
+    let pressed_elsewhere = press.is_some_and(|p| !rect.contains(p) || ui.ctx().layer_id_at(p) != Some(ui.layer_id()));
+    if pressed_elsewhere && resp.has_focus() {
+        resp.surrender_focus();
+    }
     let focused = resp.has_focus();
     // Mouse selection: drag selects cells; a plain click clears; right-click copies.
     let origin = rect.min + egui::vec2(3.0, 3.0);
